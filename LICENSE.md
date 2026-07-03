@@ -1,4 +1,4 @@
-##### Source-Available-Community-Lizenz für Bonni Core
+##### Source-Available-Community-Lizenz für BONNI < CORE
 
 ##### Version 1.0 – Stand: 2026
 
