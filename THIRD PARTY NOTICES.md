@@ -2,7 +2,7 @@ Dieses Projekt verwendet Komponenten, Bibliotheken und Werkzeuge Dritter.
 
 
 
-Diese Drittkomponenten bleiben unter ihren jeweiligen eigenen Lizenzen. Die BONNI < Core Source-Available-Community-Lizenz ändert keine Rechte und Pflichten aus diesen Drittlizenzen.
+Diese Drittkomponenten bleiben unter ihren jeweiligen eigenen Lizenzen. BONNI < CORE Source-Available-Community-Lizenz ändert keine Rechte und Pflichten aus diesen Drittlizenzen.
 
 
 
