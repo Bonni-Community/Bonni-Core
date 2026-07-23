@@ -6,7 +6,7 @@ Anwendungen können diese Funktionen gemeinsam nutzen und sich auf ihre eigentli
 
 Bonni Core lässt sich durch verschiedene Erweiterungen ergänzen.
 
->App
+##App
 
 Eine App ist eine eigenständige Anwendung mit einem größeren Funktionsumfang.
 
@@ -14,13 +14,13 @@ Sie erweitert Bonni Core um einen eigenen Aufgabenbereich.
 
 Beispiele sind die StüberlApp oder die HocketApp.
 
->Add-on
+##Add-on
 
 Ein Add-on erweitert eine bestehende App um zusätzliche Funktionen.
 
 Es eignet sich besonders für Funktionen, die nicht zum Kern einer Anwendung gehören oder von mehreren Anwendungen gemeinsam genutzt werden.
 
->Plugin
+##Plugin
 
 Ein Plugin erweitert Bonni Core oder eine Anwendung um kleinere Zusatzfunktionen.
 
@@ -32,7 +32,7 @@ Typische Beispiele sind Druckertreiber, Barcode-Scanner sowie weitere Geräte- u
 
 
 
-  Die Philosophie
+###Die Philosophie
 
 Bonni Core verfolgt einen modularen Ansatz.
 
