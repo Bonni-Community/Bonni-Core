@@ -1,4 +1,9 @@
 # Bonni Core
+# 🧩 Bonni Core
+
+[![License](https://img.shields.io/badge/License-BCL%20v1.0-orange)](https://github.com/Bonni-Community/bonni-core/blob/main/LICENSE.md)
+[![Version](https://img.shields.io/github/v/release/Bonni-Community/bonni-core?display_name=tag&sort=semver)](https://github.com/Bonni-Community/bonni-core/releases)
+[![Website](https://img.shields.io/badge/Webseite-bonni--core.org-0366d6)](https://bonni-core.org)
 
 > **Die modulare Plattform für Vereine, das Ehrenamt und weitere Organisationen.**
 
