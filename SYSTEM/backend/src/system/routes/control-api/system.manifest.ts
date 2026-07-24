@@ -1,0 +1,27 @@
+export const systemManifest = {
+  key: "system",
+  legacyKeys: ["system"],
+  label: "System",
+  kind: "system",
+  version: "0.1.13",
+  provides: [
+    "system",
+    "system.overview",
+    "system.modules",
+    "system.security",
+    "system.backup",
+    "system.backup.restore",
+    "system.monitoring",
+    "system.update-center",
+    "system.diagnostics",
+    "system.settings",
+    "system.aliases",
+    "system.compatibility",
+    "system.runtime",
+    "system.modules.lifecycle.facade",
+    "system.modules.install-plan.facade",
+    "system.modules.runtime.facade",
+    "core.network-requests"
+  ],
+  sourceRoot: "System/backend/src/system/application",
+} as const;

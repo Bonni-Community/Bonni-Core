@@ -1,0 +1,51 @@
+// =====================================================
+// SYSTEM CORE: BOOT
+// =====================================================
+// Cold-boot unlock state.
+// Boot key is required only when no trusted system runner is already alive.
+// =====================================================
+
+
+enum SystemBootKeyStatus {
+  active
+  used
+  expired
+  revoked
+}
+
+enum SystemBootStateStatus {
+  locked
+  unlocked
+  trusted_runner_alive
+  failed
+}
+
+model SystemBootKey {
+  id        String              @id @default(cuid())
+
+  keyHash   String
+  status    SystemBootKeyStatus @default(active)
+  label     String?
+
+  createdAt DateTime            @default(now())
+  expiresAt DateTime?
+  usedAt    DateTime?
+  revokedAt DateTime?
+
+  @@index([status])
+  @@index([expiresAt])
+}
+
+model SystemBootState {
+  id          String                @id @default(cuid())
+
+  status      SystemBootStateStatus @default(locked)
+  runnerId    String?
+  unlockedBy  String?
+  message     String?
+
+  createdAt   DateTime              @default(now())
+  updatedAt   DateTime              @updatedAt
+
+  @@index([status])
+}

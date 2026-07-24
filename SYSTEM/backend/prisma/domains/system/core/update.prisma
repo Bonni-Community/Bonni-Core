@@ -1,0 +1,132 @@
+// =====================================================
+// SYSTEM CORE: UPDATE
+// =====================================================
+// System update lifecycle for active/candidate/previous/emergency backend versions.
+// backend-emergency is protected by a 14-day delayed update window.
+// =====================================================
+
+
+enum SystemVersionStatus {
+  uploaded
+  candidate
+  active
+  stable
+  emergency
+  defective
+  retired
+}
+
+enum SystemUpdateType {
+  config
+  database
+  backend
+  frontend
+  full
+  emergency_followup
+}
+
+enum SystemUpdateStatus {
+  pending
+  preparing
+  running
+  waiting_for_switch
+  waiting_for_emergency_window
+  completed
+  failed
+  rolled_back
+  cancelled
+}
+
+enum SystemUpdateStepStatus {
+  pending
+  running
+  skipped
+  completed
+  failed
+}
+
+model SystemVersion {
+  id                  String              @id @default(cuid())
+
+  version             String              @unique
+  label               String?
+  buildHash           String?
+  artifactPath        String?
+  status              SystemVersionStatus @default(uploaded)
+
+  activatedAt         DateTime?
+  emergencyEligibleAt DateTime?
+  markedDefectiveAt   DateTime?
+  defectReason        String?
+
+  runtimeSlots        SystemRuntimeSlot[]
+  updates             SystemUpdate[]
+
+  createdAt           DateTime            @default(now())
+  updatedAt           DateTime            @updatedAt
+
+  @@index([status])
+  @@index([emergencyEligibleAt])
+}
+
+model SystemUpdate {
+  id                    String             @id @default(cuid())
+
+  targetVersionId        String?
+  targetVersion          SystemVersion?     @relation(fields: [targetVersionId], references: [id])
+  targetVersionLabel     String
+
+  type                  SystemUpdateType
+  status                SystemUpdateStatus @default(pending)
+
+  activeSlotKey          String?
+  candidateSlotKey       String?
+  previousSlotKey        String?
+  emergencySlotKey       String?
+
+  emergencyHoldDays      Int                @default(14)
+  emergencyHoldUntil     DateTime?
+  emergencyWasAccessed   Boolean            @default(false)
+
+  title                 String?
+  description           String?
+  errorMessage          String?
+
+  startedAt             DateTime?
+  switchedAt            DateTime?
+  finishedAt            DateTime?
+
+  steps                 SystemUpdateStep[]
+
+  createdAt             DateTime            @default(now())
+  updatedAt             DateTime            @updatedAt
+
+  @@index([status])
+  @@index([type])
+  @@index([targetVersionLabel])
+  @@index([emergencyHoldUntil])
+}
+
+model SystemUpdateStep {
+  id           String                 @id @default(cuid())
+
+  updateId     String
+  update       SystemUpdate           @relation(fields: [updateId], references: [id])
+
+  key          String
+  label        String
+  status       SystemUpdateStepStatus @default(pending)
+  sortOrder    Int                    @default(0)
+
+  startedAt    DateTime?
+  finishedAt   DateTime?
+  errorMessage String?
+  metadataJson Json?
+
+  createdAt    DateTime               @default(now())
+  updatedAt    DateTime               @updatedAt
+
+  @@index([updateId])
+  @@index([status])
+  @@unique([updateId, key])
+}

@@ -1,0 +1,78 @@
+// =====================================================
+// SYSTEM IDENTITY: PERSON / MEMBER PROFILE
+// =====================================================
+// Kleine Bonni-Basis für Personen und Mitgliedsprofil.
+// Erweiterte Fachprofile, Gesundheit, Karten, Allergene, Präsenz usw.
+// gehören später in Apps/Add-ons/Plugins.
+// =====================================================
+
+enum MemberStatus {
+  MEMBER
+  FORMER_MEMBER
+  GUEST
+}
+
+// Fachlicher Vereinsstatus für KontorApp. MemberStatus bleibt daneben als
+// technischer Bonni-Core-Lebenszyklus bestehen, damit vorhandene Accounts und
+// andere Apps weiterhin kompatibel bleiben.
+enum ClubMembershipStatus {
+  ACTIVE_MEMBER
+  PASSIVE_MEMBER
+  SUPPORTING_MEMBER
+  HONORARY_MEMBER
+  SPONSOR
+  RESIGNED
+}
+
+model Person {
+  id          String    @id @default(cuid())
+  displayName String
+  firstName   String?
+  lastName    String?
+  nickname    String?
+  email       String?
+  phone       String?
+  birthDate   DateTime?
+
+  member              MemberProfile?
+  accounts            Account[]
+  archiveOwnedFolders ArchiveFolder[]            @relation("ArchiveFolderOwner")
+  archiveOwnedFiles   ArchiveFile[]               @relation("ArchiveFileOwner")
+  archiveFolderGrants ArchiveFolderGrant[]       @relation("ArchiveFolderGrantee")
+  accountLinkRequests AccountPersonLinkRequest[] @relation("AccountLinkPrimaryPerson")
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([displayName])
+  @@index([email])
+}
+
+model MemberProfile {
+  id       String @id @default(cuid())
+  personId String @unique
+  person   Person @relation(fields: [personId], references: [id], onDelete: Cascade)
+
+  memberNumber     String?              @unique
+  status           MemberStatus         @default(MEMBER)
+  membershipStatus ClubMembershipStatus @default(ACTIVE_MEMBER)
+  joinedAt         DateTime?
+  leftAt           DateTime?
+
+  // KontorApp-Bankdaten werden ausschließlich über den geschützten
+  // Manager-Detailendpunkt ausgegeben, nie über die allgemeine Benutzerliste.
+  iban String?
+  bic  String?
+
+  allowNegativeBalance Boolean @default(false)
+  notes                String?
+
+  account     MemberAccount?
+  presenceLog MemberPresenceLog[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([status])
+  @@index([membershipStatus])
+}

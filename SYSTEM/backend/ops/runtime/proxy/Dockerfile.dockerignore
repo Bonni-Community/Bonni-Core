@@ -1,0 +1,12 @@
+# The proxy build needs exactly one nginx template. No source, environment,
+# runtime storage, backup or key material is sent to its builder.
+**
+!System/
+!System/backend/
+!System/backend/ops/
+!System/backend/ops/runtime/
+!System/backend/ops/runtime/nginx/
+!System/backend/ops/runtime/nginx/default.conf.template
+!System/backend/ops/runtime/proxy/
+!System/backend/ops/runtime/proxy/Dockerfile
+!System/backend/ops/runtime/proxy/Dockerfile.dockerignore

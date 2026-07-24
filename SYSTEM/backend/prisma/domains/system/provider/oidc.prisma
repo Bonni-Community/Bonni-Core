@@ -1,0 +1,52 @@
+// =====================================================
+// BONNI CORE V3 / provider.bonni.prisma
+// Auth-Provider für LOCAL/OIDC/SANDBOX.
+// =====================================================
+
+enum AuthProviderType {
+  LOCAL
+  OIDC
+  SANDBOX
+}
+
+model AuthProvider {
+  id        String           @id @default(cuid())
+  key       String           @unique
+  type      AuthProviderType
+  name      String
+  issuerUrl String?
+  clientId  String?
+  active    Boolean          @default(true)
+  createdAt DateTime         @default(now())
+  updatedAt DateTime         @updatedAt
+
+  accounts           Account[]
+  syncRuns           AuthIdentitySync[]
+  externalIdentities ExternalIdentity[]
+}
+
+model AuthIdentitySync {
+  id         String       @id @default(cuid())
+  providerId String
+  provider   AuthProvider @relation(fields: [providerId], references: [id])
+  status     String
+  startedAt  DateTime     @default(now())
+  finishedAt DateTime?
+  resultJson Json?
+}
+
+model ExternalIdentity {
+  id              String       @id @default(cuid())
+  accountId       String
+  account         Account      @relation(fields: [accountId], references: [id])
+  providerId      String
+  provider        AuthProvider @relation(fields: [providerId], references: [id])
+  externalSubject String
+  email           String?
+  displayName     String?
+  rawProfileJson  Json?
+  createdAt       DateTime     @default(now())
+  updatedAt       DateTime     @updatedAt
+
+  @@unique([providerId, externalSubject])
+}

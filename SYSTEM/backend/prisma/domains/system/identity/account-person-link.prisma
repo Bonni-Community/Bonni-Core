@@ -1,0 +1,40 @@
+// =====================================================
+// SYSTEM IDENTITY: CONFIRMED ACCOUNT LINK
+// =====================================================
+// Ein zweites Login wird erst nach Zustimmung in beiden Sitzungen als
+// Sub-Account derselben Person zugeordnet.
+// =====================================================
+
+enum AccountPersonLinkStatus {
+  PENDING
+  ACCEPTED
+  REJECTED
+  CANCELLED
+  EXPIRED
+}
+
+model AccountPersonLinkRequest {
+  id     String                  @id @default(cuid())
+  status AccountPersonLinkStatus @default(PENDING)
+
+  primaryPersonId String
+  primaryPerson   Person @relation("AccountLinkPrimaryPerson", fields: [primaryPersonId], references: [id], onDelete: Cascade)
+
+  requestedByAccountId String
+  requestedByAccount   Account @relation("AccountLinkRequester", fields: [requestedByAccountId], references: [id], onDelete: Cascade)
+
+  targetAccountId String
+  targetAccount   Account @relation("AccountLinkTarget", fields: [targetAccountId], references: [id], onDelete: Cascade)
+
+  requesterApprovedAt DateTime @default(now())
+  targetApprovedAt    DateTime?
+  expiresAt           DateTime
+  completedAt         DateTime?
+  metadataJson        Json?
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  @@index([targetAccountId, status, expiresAt])
+  @@index([requestedByAccountId, status, expiresAt])
+  @@index([primaryPersonId, status])
+}

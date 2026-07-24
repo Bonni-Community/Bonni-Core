@@ -1,0 +1,140 @@
+// =====================================================
+// SYSTEM MODULE REGISTRY
+// =====================================================
+// Bonni Core speichert hier, welche Apps, Add-ons und Plug-ins bekannt,
+// installiert, aktiviert, aktualisiert, deinstalliert oder gelöscht wurden.
+// Fachmodelle der Erweiterungen gehören NICHT hierhin.
+// =====================================================
+
+enum ModuleKind {
+  APP
+  ADD_ON
+  PLUG_IN
+}
+
+enum ModuleInstallStatus {
+  DISCOVERED
+  INSTALLED
+  ENABLED
+  DISABLED
+  UPDATE_AVAILABLE
+  UPDATE_FAILED
+  ERROR
+  UNINSTALLED
+  DELETED
+}
+
+enum ModuleInstallEventType {
+  DISCOVERED
+  INSTALLED
+  UPDATED
+  ENABLED
+  DISABLED
+  UNINSTALLED
+  DELETED
+  FAILED
+  ROLLED_BACK
+}
+
+enum ModuleSourceType {
+  LOCAL_PATH
+  UPLOAD
+  URL
+}
+
+enum ModuleSourceStatus {
+  PENDING
+  SCANNED
+  INVALID
+  IMPORTED
+  FAILED
+}
+
+model InstalledModule {
+  id      String              @id @default(cuid())
+  key     String              @unique
+  kind    ModuleKind
+  name    String
+  version String
+  status  ModuleInstallStatus @default(INSTALLED)
+
+  sourcePath          String?
+  installPath         String?
+  backendEntry        String?
+  frontendEntry       String?
+  prismaSourcePath    String?
+  assembledPrismaPath String?
+
+  manifestJson Json?
+  lastError    String?
+
+  installedAt   DateTime?
+  enabledAt     DateTime?
+  disabledAt    DateTime?
+  uninstalledAt DateTime?
+  deletedAt     DateTime?
+
+  events        ModuleInstallEvent[]
+  runtimeStates ModuleRuntimeState[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([kind])
+  @@index([status])
+  @@index([version])
+}
+
+model ModuleInstallEvent {
+  id       String                 @id @default(cuid())
+
+  moduleId String
+  module   InstalledModule        @relation(fields: [moduleId], references: [id], onDelete: Cascade)
+
+  type        ModuleInstallEventType
+  fromVersion String?
+  toVersion   String?
+
+  message      String?
+  errorMessage String?
+  metadataJson Json?
+
+  createdByAccountId String?
+  createdAt          DateTime @default(now())
+
+  @@index([moduleId])
+  @@index([type])
+  @@index([createdAt])
+}
+
+model ModuleSource {
+  id     String             @id @default(cuid())
+  type   ModuleSourceType
+  status ModuleSourceStatus @default(PENDING)
+
+  label                String?
+  url                  String?
+  localPath            String?
+  uploadedFileName     String?
+  uploadedRelativePath String?
+
+  detectedKey      String?
+  detectedKind     ModuleKind?
+  detectedName     String?
+  detectedVersion  String?
+  manifestJson     Json?
+
+  message     String?
+  errorJson   Json?
+
+  createdByAccountId String?
+  scannedAt          DateTime?
+  importedAt         DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([type])
+  @@index([status])
+  @@index([detectedKey])
+}

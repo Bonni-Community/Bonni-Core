@@ -1,0 +1,106 @@
+// =====================================================
+// BONNI CORE V3 / system/stewardship/stewardship.prisma
+// Quelle: backend/prisma/domains/system/stewardship/stewardship.prisma
+// Bonni-Core-Rollen/Rechte/Member-Basis. Keine Stueberl-/Finance-Relationen.
+// =====================================================
+
+
+enum MemberCapabilityKey {
+  TREASURER
+  STOREMAN
+  MANAGER
+  HELPER
+}
+
+
+model Role {
+  id        String   @id @default(cuid())
+  key       String   @unique
+  label     String
+  createdAt DateTime @default(now())
+
+  accounts    AccountRole[]
+  permissions RolePermission[]
+}
+
+
+model Permission {
+  id        String   @id @default(cuid())
+  key       String   @unique
+  label     String
+  createdAt DateTime @default(now())
+
+  roles        RolePermission[]
+  capabilities MemberCapabilityPermission[]
+}
+
+
+model AccountRole {
+  accountId String
+  roleId    String
+
+  account Account @relation(fields: [accountId], references: [id])
+  role    Role    @relation(fields: [roleId], references: [id])
+
+  @@id([accountId, roleId])
+}
+
+
+model RolePermission {
+  roleId       String
+  permissionId String
+
+  role       Role       @relation(fields: [roleId], references: [id])
+  permission Permission @relation(fields: [permissionId], references: [id])
+
+  @@id([roleId, permissionId])
+}
+
+
+
+model MemberCapability {
+  id        String              @id @default(cuid())
+  key       MemberCapabilityKey @unique
+  label     String
+  createdAt DateTime            @default(now())
+
+  accounts    AccountMemberCapability[]
+  permissions MemberCapabilityPermission[]
+}
+
+
+model MemberCapabilityPermission {
+  capabilityId String
+  permissionId String
+
+  capability MemberCapability @relation(fields: [capabilityId], references: [id])
+  permission Permission       @relation(fields: [permissionId], references: [id])
+
+  @@id([capabilityId, permissionId])
+}
+
+
+model AccountMemberCapability {
+  accountId    String
+  capabilityId String
+
+  account    Account          @relation(fields: [accountId], references: [id])
+  capability MemberCapability @relation(fields: [capabilityId], references: [id])
+
+  createdAt DateTime @default(now())
+
+  @@id([accountId, capabilityId])
+}
+
+
+model MemberAccount {
+  id            String        @id @default(cuid())
+  memberId      String        @unique
+  member        MemberProfile @relation(fields: [memberId], references: [id])
+  balanceCached Decimal       @default(0)
+  lastSettledAt DateTime?
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+}
+
+

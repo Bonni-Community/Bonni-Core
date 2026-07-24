@@ -1,0 +1,101 @@
+// =====================================================
+// SYSTEM DIAGNOSTICS: HEALTH / FAILOVER
+// =====================================================
+// Diagnostics/health events, emergency access events, failover history and defective-version markings.
+// Technical health pings do not count as emergency access.
+// This belongs to system/diagnostics, not system/core, because it evaluates and records system state.
+// =====================================================
+
+
+enum SystemHealthCheckType {
+  live
+  ready
+  database
+  module_registry
+  emergency_access
+}
+
+enum SystemHealthCheckStatus {
+  healthy
+  degraded
+  unhealthy
+  failed
+}
+
+enum SystemFailoverReason {
+  manual
+  healthcheck_failed
+  update_failed
+  emergency_access
+  cold_boot_recovery
+}
+
+model SystemHealthCheck {
+  id           String                  @id @default(cuid())
+
+  slotId       String?
+  slot         SystemRuntimeSlot?       @relation(fields: [slotId], references: [id])
+
+  type         SystemHealthCheckType
+  status       SystemHealthCheckStatus
+  message      String?
+  durationMs   Int?
+  metadataJson Json?
+
+  checkedAt    DateTime                @default(now())
+
+  @@index([slotId])
+  @@index([type, status])
+  @@index([checkedAt])
+}
+
+model SystemFailoverEvent {
+  id              String               @id @default(cuid())
+
+  fromSlotKey      String?
+  toSlotKey        String
+  fromVersionLabel String?
+  toVersionLabel   String?
+
+  reason          SystemFailoverReason
+  message         String?
+  metadataJson    Json?
+
+  createdAt       DateTime             @default(now())
+
+  @@index([toSlotKey])
+  @@index([reason])
+  @@index([createdAt])
+}
+
+model SystemEmergencyAccessEvent {
+  id           String   @id @default(cuid())
+
+  slotKey      String
+  versionLabel String?
+  accountId    String?
+  ipAddress    String?
+  userAgent    String?
+  reason       String?
+
+  createdAt    DateTime @default(now())
+
+  @@index([slotKey])
+  @@index([versionLabel])
+  @@index([createdAt])
+}
+
+model SystemDefectiveVersionEvent {
+  id           String   @id @default(cuid())
+
+  versionLabel String
+  updateId     String?
+  reason       String
+  markedBy     String?
+  metadataJson Json?
+
+  createdAt    DateTime @default(now())
+
+  @@index([versionLabel])
+  @@index([createdAt])
+}

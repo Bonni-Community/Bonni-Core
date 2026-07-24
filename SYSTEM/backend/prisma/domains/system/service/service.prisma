@@ -1,0 +1,205 @@
+// =====================================================
+// BONNI CORE V3 / system/service/service.prisma
+// Quelle: backend/prisma/domains/system/service/service.prisma
+// Bonni-Core-Service: Einstellungen, Logs, Backup, Notification
+// =====================================================
+
+
+enum AuthMode {
+  OIDC
+  LOCAL
+  SANDBOX
+  MAINTENANCE
+}
+
+
+enum LogLevel {
+  DEBUG
+  INFO
+  WARN
+  ERROR
+  FATAL
+}
+
+
+model SystemSetting {
+  id        String   @id @default(cuid())
+  key       String   @unique
+  value     Json
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+
+model SystemAuthMode {
+  id           String   @id @default(cuid())
+  mode         AuthMode
+  reason       String?
+  switchedById String?
+  active       Boolean  @default(true)
+  switchedAt   DateTime @default(now())
+}
+
+
+model SystemLog {
+  id           String   @id @default(cuid())
+  level        LogLevel
+  module       String
+  message      String
+  errorName    String?
+  stack        String?
+  requestId    String?
+  accountId    String?
+  terminalId   String?
+  localNodeId  String?
+  entityType   String?
+  entityId     String?
+  metadataJson Json?
+  createdAt    DateTime @default(now())
+
+  @@index([level, createdAt])
+  @@index([module, createdAt])
+  @@index([requestId])
+  @@index([entityType, entityId])
+}
+
+
+model SystemBackup {
+  id                 String    @id @default(cuid())
+  status             String
+  filePath           String?
+  startedAt          DateTime?
+  finishedAt         DateTime?
+  createdByAccountId String?
+  createdAt          DateTime  @default(now())
+}
+
+
+model RequestLog {
+  id          String   @id @default(cuid())
+  requestId   String   @unique
+  method      String
+  path        String
+  statusCode  Int?
+  durationMs  Int?
+  ipAddress   String?
+  userAgent   String?
+  accountId   String?
+  terminalId  String?
+  localNodeId String?
+  createdAt   DateTime @default(now())
+
+  @@index([path, createdAt])
+  @@index([accountId, createdAt])
+}
+
+
+model ApiLog {
+  id           String   @id @default(cuid())
+  requestId    String?
+  module       String
+  action       String
+  inputHash    String?
+  outputHash   String?
+  metadataJson Json?
+  createdAt    DateTime @default(now())
+}
+
+
+model SecurityLog {
+  id           String   @id @default(cuid())
+  category     String
+  event        String
+  severity     LogLevel @default(WARN)
+  accountId    String?
+  terminalId   String?
+  ipAddress    String?
+  userAgent    String?
+  reason       String?
+  metadataJson Json?
+  createdAt    DateTime @default(now())
+}
+
+
+model AuthFailureLog {
+  id         String            @id @default(cuid())
+  provider   AuthProviderType?
+  loginName  String?
+  reason     String
+  ipAddress  String?
+  userAgent  String?
+  terminalId String?
+  createdAt  DateTime          @default(now())
+
+  @@index([loginName, createdAt])
+  @@index([ipAddress, createdAt])
+}
+
+
+model TokenProblemLog {
+  id         String   @id @default(cuid())
+  tokenType  String?
+  reason     String
+  accountId  String?
+  terminalId String?
+  ipAddress  String?
+  userAgent  String?
+  createdAt  DateTime @default(now())
+}
+
+
+
+model JobExecutionLog {
+  id           String    @id @default(cuid())
+  jobName      String
+  status       String
+  startedAt    DateTime  @default(now())
+  finishedAt   DateTime?
+  resultJson   Json?
+  errorMessage String?
+}
+
+
+model NotificationLog {
+  id             String   @id @default(cuid())
+  notificationId String?
+  channel        String
+  target         String?
+  status         String
+  errorMessage   String?
+  createdAt      DateTime @default(now())
+}
+
+
+model LogRetentionPolicy {
+  id            String   @id @default(cuid())
+  level         LogLevel
+  retentionDays Int
+  active        Boolean  @default(true)
+  createdAt     DateTime @default(now())
+}
+
+
+model Notification {
+  id         String   @id @default(cuid())
+  type       String
+  severity   LogLevel @default(INFO)
+  message    String
+
+  targetRole String?
+  accountId  String?
+
+  relatedEntityType String?
+  relatedEntityId   String?
+  metadataJson      Json?
+
+  readAt     DateTime?
+  archivedAt DateTime?
+  createdAt  DateTime  @default(now())
+
+  @@index([accountId, createdAt])
+  @@index([targetRole, createdAt])
+  @@index([type, createdAt])
+  @@index([archivedAt])
+}
+

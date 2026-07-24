@@ -1,0 +1,46 @@
+// Technische Prisma-Kopie aus app/kontorapp/prisma/domains/kontorapp.
+// Fachliche Quelle: KontorApp.
+
+model KontorMeeting {
+  id           String   @id @default(cuid())
+  title        String
+  scheduledFor DateTime
+  agendaText   String?
+  protocolText String?
+  createdById  String?
+
+  attendance   KontorMeetingAttendance[]
+  protocolFile KontorMeetingProtocolFile?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([scheduledFor])
+}
+
+model KontorMeetingProtocolFile {
+  id        String        @id @default(cuid())
+  meetingId String        @unique
+  meeting   KontorMeeting @relation(fields: [meetingId], references: [id], onDelete: Cascade)
+
+  fileName    String
+  mimeType    String
+  sizeInBytes Int
+  data        Bytes
+  uploadedAt  DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+model KontorMeetingAttendance {
+  id        String        @id @default(cuid())
+  meetingId String
+  meeting   KontorMeeting @relation(fields: [meetingId], references: [id], onDelete: Cascade)
+  memberId  String
+  present   Boolean       @default(false)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([meetingId, memberId])
+  @@index([memberId])
+}

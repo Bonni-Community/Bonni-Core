@@ -1,0 +1,155 @@
+// =====================================================
+// MODULE: STUEBERLAPP / KITCHEN
+// =====================================================
+// Küche, Küchenbons, Zutaten, Gewürze und Rezepte.
+//
+// Ingredient bleibt eigenständig. Wenn eine Zutat bestandsgeführt wird,
+// verweist sie auf Article.
+//
+// Hinweis: Diese Datei enthält die fachlich zugehörigen
+// Modelle zusammen. Die Datenbankstruktur wurde nicht
+// fachlich verändert; das große stueberlapp.prisma wurde
+// nur organisatorisch weiter aufgeteilt.
+// =====================================================
+
+// -----------------------------------------------------
+// KITCHEN TICKETS
+// -----------------------------------------------------
+
+model KitchenTicket {
+  id           String      @id @default(cuid())
+  orderId      String?
+  preOrderId   String?
+  eventId      String?
+  status       OrderStatus @default(ACCEPTED)
+  assignedToId String?
+  startedAt    DateTime?
+  finishedAt   DateTime?
+  createdAt    DateTime    @default(now())
+
+  items KitchenTicketItem[]
+}
+
+model KitchenTicketItem {
+  id               String        @id @default(cuid())
+  ticketId         String
+  ticket           KitchenTicket @relation(fields: [ticketId], references: [id])
+  productId        String
+  productVersionId String?
+  quantity         Decimal
+  note             String?
+  status           String        @default("NEW")
+}
+
+// -----------------------------------------------------
+// RECIPES / INGREDIENTS / SPICES
+// -----------------------------------------------------
+
+model Spice {
+  id               String   @id @default(cuid())
+  name             String   @unique
+  intensity        Int?
+  allergenRelevant Boolean  @default(false)
+  articleId        String?
+  createdAt        DateTime @default(now())
+
+  recipeSpices RecipeSpice[]
+}
+
+model Ingredient {
+  id            String   @id @default(cuid())
+  name          String   @unique
+  category      String?
+  unit          String
+  unitId        String?
+  shelfLifeDays Int?
+  minimumStock  Decimal?
+  articleId     String?
+  createdAt     DateTime @default(now())
+
+  recipeItems RecipeIngredient[]
+}
+
+model Recipe {
+  id                String   @id @default(cuid())
+  title             String
+  description       String?
+  category          String?
+  status            String   @default("DRAFT")
+  createdByMemberId String?
+  currentVersionId  String?
+  visibility        String   @default("MEMBERS")
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  versions RecipeVersion[]
+}
+
+model RecipeVersion {
+  id                     String   @id @default(cuid())
+  recipeId               String
+  recipe                 Recipe   @relation(fields: [recipeId], references: [id])
+  versionNumber          Int
+  instructions           String
+  yieldQuantity          Decimal?
+  yieldUnitId            String?
+  preparationLossFactor  Decimal?
+  ingredientSnapshotJson Json
+  spiceSnapshotJson      Json?
+  allergenSnapshotJson   Json?
+  hash                   String
+  previousVersionHash    String?
+  createdAt              DateTime @default(now())
+
+  ingredients RecipeIngredient[]
+  spices      RecipeSpice[]
+  votes       RecipeVote[]
+  comments    RecipeComment[]
+
+  @@unique([recipeId, versionNumber])
+}
+
+model RecipeIngredient {
+  id              String        @id @default(cuid())
+  recipeVersionId String
+  recipeVersion   RecipeVersion @relation(fields: [recipeVersionId], references: [id])
+  ingredientId    String
+  ingredient      Ingredient    @relation(fields: [ingredientId], references: [id])
+  quantity        Decimal
+  unit            String
+  optional        Boolean       @default(false)
+  note            String?
+}
+
+model RecipeSpice {
+  id              String        @id @default(cuid())
+  recipeVersionId String
+  recipeVersion   RecipeVersion @relation(fields: [recipeVersionId], references: [id])
+  spiceId         String
+  spice           Spice         @relation(fields: [spiceId], references: [id])
+  quantity        Decimal?
+  unit            String?
+  optional        Boolean       @default(true)
+  note            String?
+}
+
+model RecipeVote {
+  id              String        @id @default(cuid())
+  recipeVersionId String
+  recipeVersion   RecipeVersion @relation(fields: [recipeVersionId], references: [id])
+  memberId        String
+  rating          Int
+  wouldEatAgain   Boolean?
+  comment         String?
+  createdAt       DateTime      @default(now())
+}
+
+model RecipeComment {
+  id              String        @id @default(cuid())
+  recipeVersionId String
+  recipeVersion   RecipeVersion @relation(fields: [recipeVersionId], references: [id])
+  memberId        String
+  comment         String
+  createdAt       DateTime      @default(now())
+}
+

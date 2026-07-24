@@ -1,0 +1,118 @@
+// =====================================================
+// SYSTEM CORE: RUNTIME
+// =====================================================
+// Backend slot runtime state.
+// Normalbetrieb: active + emergency run permanently; candidate starts only during updates; previous stays stopped but bootable.
+// =====================================================
+
+
+enum SystemRuntimeSlotRole {
+  active
+  candidate
+  fallback
+  emergency
+  previous
+  idle
+  installer
+}
+
+enum SystemRuntimeSlotStatus {
+  stopped
+  starting
+  healthy
+  unhealthy
+  active
+  draining
+  rollback_ready
+  failed
+}
+
+model SystemRuntimeSlot {
+  id                    String                  @id @default(cuid())
+
+  key                   String                  @unique
+  role                  SystemRuntimeSlotRole
+  status                SystemRuntimeSlotStatus @default(stopped)
+
+  versionId             String?
+  version               SystemVersion?          @relation(fields: [versionId], references: [id])
+  versionLabel          String?
+
+  port                  Int?
+  pid                   Int?
+  healthUrl             String?
+  artifactPath          String?
+
+  receivesTraffic       Boolean                 @default(false)
+  bootable              Boolean                 @default(true)
+  protectedEmergency    Boolean                 @default(false)
+
+  startedAt             DateTime?
+  stoppedAt             DateTime?
+  lastHealthAt          DateTime?
+  lastEmergencyAccessAt DateTime?
+
+  healthChecks          SystemHealthCheck[]
+
+  createdAt             DateTime                @default(now())
+  updatedAt             DateTime                @updatedAt
+
+  @@index([role])
+  @@index([status])
+  @@index([receivesTraffic])
+  @@index([protectedEmergency])
+}
+
+// =====================================================
+// LOCAL / CLOSED SYSTEM RUNTIME IDENTITY
+// =====================================================
+// Internal stateKey is used only for technical verification.
+// Control Center should display this as System-Abgleich, not as State-Key.
+// =====================================================
+
+model SystemRuntimeIdentity {
+  id            String   @id @default("singleton")
+  createdAt     DateTime
+  systemVersion String
+  schemaVersion String
+  userCount     Int
+  stateKey      String
+  updatedAt     DateTime @updatedAt
+}
+
+// =====================================================
+// MODULE RUNTIME STATE
+// =====================================================
+// InstalledModule selbst liegt in system/module-registry.
+// Hier wird nur gespeichert, ob ein installiertes Modul in einem Backend-Slot geladen wurde.
+// =====================================================
+
+enum ModuleRuntimeStatus {
+  NOT_LOADED
+  LOADING
+  LOADED
+  ERROR
+  UNLOADED
+}
+
+model ModuleRuntimeState {
+  id       String              @id @default(cuid())
+
+  moduleId String
+  module   InstalledModule     @relation(fields: [moduleId], references: [id], onDelete: Cascade)
+
+  slotName String?
+  status   ModuleRuntimeStatus @default(NOT_LOADED)
+
+  loadedAt     DateTime?
+  unloadedAt   DateTime?
+  errorMessage String?
+  metadataJson Json?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([moduleId, slotName])
+  @@index([slotName])
+  @@index([status])
+}

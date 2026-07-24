@@ -1,0 +1,31 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "outDir": "dist",
+    "baseUrl": ".",
+    "paths": {
+      "@/*": [
+        "src/*"
+      ]
+    },
+    "ignoreDeprecations": "6.0",
+    "rootDir": "src"
+  },
+  "files": [
+    "src/run-server.ts",
+    "src/redundant-server.ts",
+    "src/module-manager-server.ts",
+    "src/package-manager-server.ts",
+    "src/system/server/run-server.ts",
+    "src/system/server/redundant-server.ts",
+    "src/platform/module-manager/server/module-manager-server.ts"
+  ],
+  "include": [
+    "src/**/*.d.ts"
+  ]
+}

@@ -1,0 +1,21 @@
+// =====================================================
+// BONNI CORE V3 / PRISMA ROOT
+// Quelle: Bonni Core Base.
+//
+// Aktive Bonni-Core-Quelle:
+//   prisma/domains/system/**
+//
+// Technische Installations-/Assembly-Ziele:
+//   prisma/domains/assembled/app/**
+//   prisma/domains/assembled/add-on/**
+//   prisma/domains/assembled/plug-in/**
+// =====================================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}

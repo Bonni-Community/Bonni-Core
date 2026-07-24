@@ -1,0 +1,35 @@
+// =====================================================
+// BONNI CORE V3 / session.bonni.prisma
+// Runtime-Sessions und Token-Lifecycle.
+// =====================================================
+
+model RefreshToken {
+  id        String    @id @default(cuid())
+  accountId String
+  account   Account   @relation(fields: [accountId], references: [id])
+  tokenHash String    @unique
+  userAgent String?
+  ipAddress String?
+  expiresAt DateTime
+  revokedAt DateTime?
+  createdAt DateTime  @default(now())
+}
+
+model RevokedToken {
+  id        String   @id @default(cuid())
+  tokenHash String   @unique
+  reason    String?
+  revokedAt DateTime @default(now())
+}
+
+model Session {
+  id         String    @id @default(cuid())
+  accountId  String
+  account    Account   @relation(fields: [accountId], references: [id])
+  tokenHash  String?
+  ipAddress  String?
+  userAgent  String?
+  terminalId String?
+  startedAt  DateTime  @default(now())
+  endedAt    DateTime?
+}

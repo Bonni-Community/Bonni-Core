@@ -1,0 +1,55 @@
+// =====================================================
+// SYSTEM TIMECAPSULE: AUDIT
+// =====================================================
+// Audit categories, audit result records and exported audit bundles.
+// =====================================================
+
+enum AuditCategory {
+  AUTH
+  ACCESS
+  TOKEN
+  SECURITY
+  SYSTEM
+  DATA
+  RECOVERY
+}
+
+enum AuditResult {
+  ALLOWED
+  DENIED
+  SUCCESS
+  FAILED
+}
+
+model AuditExport {
+  id                 String    @id @default(cuid())
+  exportType         String
+  periodStart        DateTime?
+  periodEnd          DateTime?
+  mediaFileId        String?
+  hash               String
+  createdByAccountId String?
+  createdAt          DateTime  @default(now())
+}
+
+model AuditLog {
+  id           String            @id @default(cuid())
+  category     AuditCategory
+  event        String
+  result       AuditResult?
+  accountId    String?
+  provider     AuthProviderType?
+  permission   String?
+  targetType   String?
+  targetId     String?
+  terminalId   String?
+  ipAddress    String?
+  userAgent    String?
+  reason       String?
+  severity     LogLevel          @default(INFO)
+  metadataJson Json?
+  createdAt    DateTime          @default(now())
+
+  @@index([category, event, createdAt])
+  @@index([accountId, createdAt])
+}

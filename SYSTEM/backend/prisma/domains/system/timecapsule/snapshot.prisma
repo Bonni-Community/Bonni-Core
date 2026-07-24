@@ -1,0 +1,17 @@
+// =====================================================
+// SYSTEM TIMECAPSULE: SNAPSHOT
+// =====================================================
+// Recovery snapshots and stored object states.
+// =====================================================
+
+model RecoverySnapshot {
+  id                   String   @id @default(cuid())
+  snapshotType         String
+  entityType           String?
+  entityId             String?
+  snapshotJson         Json
+  snapshotHash         String
+  previousSnapshotHash String?
+  createdAt            DateTime @default(now())
+  createdByAccountId   String?
+}

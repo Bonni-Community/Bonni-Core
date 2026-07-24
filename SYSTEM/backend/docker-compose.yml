@@ -1,0 +1,26 @@
+# Legacy safety guard.
+#
+# The production runtime needs absolute host-path resolution, immutable Active
+# images, the external update runner and its separated trust boundaries. Those
+# guarantees are established by `npm run runtime:start`; a plain legacy
+# `docker compose up` must not silently start the former db-push stack.
+
+services:
+  legacy-compose-disabled:
+    image: alpine:3.20@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc
+    restart: "no"
+    command:
+      - /bin/sh
+      - -ec
+      - |
+        echo 'Dieser alte Compose-Einstieg ist aus Sicherheitsgründen deaktiviert.' >&2
+        echo 'Bitte im Ordner System/backend ausführen: npm run runtime:start' >&2
+        exit 64
+    network_mode: none
+    read_only: true
+    tmpfs:
+      - /tmp:size=1m,mode=0700
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true

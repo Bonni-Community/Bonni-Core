@@ -1,0 +1,42 @@
+// =====================================================
+// SYSTEM TIMECAPSULE: TIMELINE
+// =====================================================
+// Chronological event stream and presence history.
+// =====================================================
+
+model TimeCapsuleEvent {
+  id             String   @id @default(cuid())
+  sequence       Int?
+  eventType      String   @default("SNAPSHOT")
+  module         String?
+  entityType     String
+  entityId       String
+  action         String
+  actorAccountId String?
+  terminalId     String?
+  localNodeId    String?
+  sourceId       String?
+  beforeJson     Json?
+  afterJson      Json?
+  metadataJson   Json?
+  hash           String
+  previousHash   String?
+  createdAt      DateTime @default(now())
+
+  @@index([entityType, entityId])
+  @@index([eventType])
+  @@index([createdAt])
+}
+
+model MemberPresenceLog {
+  id        String   @id @default(cuid())
+  memberId  String
+  status    String
+  source    String?
+  note      String?
+  createdAt DateTime @default(now())
+
+  memberProfile MemberProfile @relation(fields: [memberId], references: [id])
+
+  @@index([memberId])
+}

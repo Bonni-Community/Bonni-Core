@@ -1,0 +1,15 @@
+{
+  "phase": "system-runtime-compatibility",
+  "canonicalApi": "/api/system",
+  "extensionApi": "/api/system/extensions",
+  "aliases": [
+    "/api/system",
+    "/api/system/system",
+    "/api/system/modules"
+  ],
+  "notes": [
+    "legacy system runtime dependencies copied into System/backend/src/system/application",
+    "frontend System API paths moved to /api/system",
+    "old route aliases are mounted in system.routes"
+  ]
+}

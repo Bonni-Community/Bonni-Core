@@ -1,0 +1,188 @@
+import { getSystemStatus } from "../../routes/control-api/system.service.js";
+import {
+  activateModulePackage,
+  deactivateModulePackage,
+  getModuleInstallPlan,
+  installModulePackage,
+  listModulePackages,
+} from "../../../platform/module-manager/install/index.js";
+import { listRegisteredModules } from "../../../platform/module-manager/loader/index.js";
+import { listInstalledModules } from "../../../platform/module-manager/registry/index.js";
+
+async function safeCall<T>(label: string, fn: () => Promise<T> | T) {
+  try {
+    return { ok: true, label, value: await fn() };
+  } catch (error) {
+    return { ok: false, label, error: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+function asArray(value: any): any[] {
+  return Array.isArray(value) ? value : [];
+}
+
+function itemKey(item: any) {
+  return item?.key || item?.id || "";
+}
+
+function itemLabel(item: any) {
+  return item?.label || item?.name || item?.displayName || itemKey(item) || "Module";
+}
+
+function normalizeItem(item: any) {
+  const status = String(item?.status || item?.installStatus || "discovered").toLowerCase();
+  const installed = Boolean(item?.installed || ["installed", "enabled", "disabled", "update_available", "error"].includes(status));
+  const enabled = Boolean(item?.enabled || status === "enabled");
+
+  return {
+    ...item,
+    key: itemKey(item),
+    label: itemLabel(item),
+    name: itemLabel(item),
+    kind: String(item?.kind || "app").toLowerCase(),
+    status,
+    installStatus: status,
+    installed,
+    enabled,
+    manageable: true,
+    route: `/system/modules?selected=${encodeURIComponent(itemKey(item))}`,
+  };
+}
+
+async function runtimeModuleSnapshot() {
+  const packagesResult = await safeCall("module-manager.packages", () => listModulePackages());
+  const runtimeResult = await safeCall("module-manager.runtime", () => listRegisteredModules());
+  const installedResult = await safeCall("module-manager.installed", () => listInstalledModules());
+
+  const packages = asArray((packagesResult as any).value);
+  const runtime = asArray((runtimeResult as any).value);
+  const installed = asArray((installedResult as any).value);
+
+  const byKey = new Map<string, any>();
+  for (const item of [...packages, ...installed, ...runtime]) {
+    const key = itemKey(item);
+    if (!key) continue;
+    byKey.set(key, { ...(byKey.get(key) || {}), ...item });
+  }
+
+  const items = Array.from(byKey.values()).map(normalizeItem).sort((left, right) => (
+    String(left.kind).localeCompare(String(right.kind), "de") ||
+    String(left.label).localeCompare(String(right.label), "de")
+  ));
+
+  const counts = items.reduce((acc, item) => {
+    acc.total += 1;
+    acc.byKind[item.kind] = (acc.byKind[item.kind] || 0) + 1;
+    if (item.installed) acc.installed += 1;
+    if (item.enabled) acc.enabled += 1;
+    return acc;
+  }, { total: 0, installed: 0, enabled: 0, byKind: {} as Record<string, number> });
+
+  return { items, counts, packagesResult, runtimeResult, installedResult };
+}
+
+export async function getSystemRuntimeStatus() {
+  const [packages, runtime, installed] = await Promise.all([
+    safeCall("module-manager.packages", () => listModulePackages()),
+    safeCall("module-manager.runtime", () => listRegisteredModules()),
+    safeCall("module-manager.installed", () => listInstalledModules()),
+  ]);
+
+  return {
+    ok: true,
+    system: getSystemStatus(),
+    runtime: {
+      canonicalApiBase: "/api/system",
+      moduleApiBase: "/api/system/modules",
+      aliases: ["/api/system"],
+    },
+    moduleManager: { packages, runtime, installed },
+  };
+}
+
+export async function getSystemRuntimeModules() {
+  const snapshot = await runtimeModuleSnapshot();
+  return {
+    ok: true,
+    items: snapshot.items,
+    modules: snapshot.items,
+    counts: snapshot.counts,
+    packages: snapshot.packagesResult,
+    runtime: snapshot.runtimeResult,
+    installed: snapshot.installedResult,
+  };
+}
+
+export async function getSystemCompatibilityStatus() {
+  return {
+    ok: true,
+    canonical: {
+      system: "/api/system",
+      modules: "/api/system/modules",
+      runtimeModules: "/api/system/runtime/modules",
+    },
+    aliases: [],
+  };
+}
+
+export async function getSystemRuntimeModuleDetails(key: string) {
+  const snapshot = await runtimeModuleSnapshot();
+  const item = snapshot.items.find((candidate) => candidate.key === key);
+
+  if (!item) return { ok: false, error: "MODULE_NOT_FOUND", key };
+
+  const [installPlan, lifecycle] = await Promise.all([
+    safeCall("module-manager.install-plan", () => getModuleInstallPlan(key)),
+    safeCall("module-manager.lifecycle", () => getSystemRuntimeModuleLifecycleStatus(key)),
+  ]);
+
+  return { ok: true, item, installPlan, lifecycle };
+}
+
+export async function getSystemRuntimeModuleInstallPlan(key: string) {
+  return getModuleInstallPlan(key);
+}
+
+export async function applySystemRuntimeModuleInstallPlan(key: string) {
+  return installModulePackage(key);
+}
+
+export async function activateSystemRuntimeModule(key: string) {
+  return activateModulePackage(key);
+}
+
+export async function deactivateSystemRuntimeModule(key: string) {
+  return deactivateModulePackage(key);
+}
+
+export async function getSystemRuntimeModuleLifecycleStatus(key: string) {
+  return {
+    ok: true,
+    key,
+    lifecycle: {
+      install: "available",
+      enable: "available",
+      disable: "available",
+      uninstall: "available",
+      delete: "available",
+    },
+  };
+}
+
+export async function runSystemRuntimeModuleLifecycleAction(
+  key: string,
+  action: string,
+  metadata?: Record<string, unknown>,
+) {
+  if (action === "install") return installModulePackage(key);
+  if (action === "enable" || action === "activate") return activateModulePackage(key);
+  if (action === "disable" || action === "deactivate") return deactivateModulePackage(key);
+
+  return {
+    ok: false,
+    key,
+    action,
+    metadata,
+    error: "UNSUPPORTED_MODULE_ACTION",
+  };
+}

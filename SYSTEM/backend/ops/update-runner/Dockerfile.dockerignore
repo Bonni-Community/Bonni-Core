@@ -1,0 +1,15 @@
+# Deny the repository-root build context by default. The runner image contains
+# only its fixed orchestration implementation; runtime data, keys, environment
+# files, application code and dependency trees never enter the build context.
+**
+!System/
+!System/backend/
+!System/backend/src/
+!System/backend/src/system/
+!System/backend/src/system/update-runner/
+!System/backend/src/system/update-runner/**
+!System/backend/ops/
+!System/backend/ops/update-runner/
+!System/backend/ops/update-runner/Dockerfile
+!System/backend/ops/update-runner/run.mjs
+!System/backend/ops/update-runner/Dockerfile.dockerignore

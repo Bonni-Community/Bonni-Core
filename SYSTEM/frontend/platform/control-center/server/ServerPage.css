@@ -1,0 +1,2702 @@
+.security-page {
+  display: grid;
+  gap: 24px;
+  width: min(1180px, calc(100vw - 72px));
+  margin: 0 auto;
+  padding: 44px 0 70px;
+}
+
+.security-page__header,
+.security-card__header,
+.security-button-row,
+.security-field-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.security-page__header {
+  justify-content: space-between;
+}
+
+.security-page__eyebrow,
+.security-card__eyebrow {
+  display: inline-flex;
+  color: #fb6b35;
+  font-size: 0.78rem;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.security-page h1,
+.security-card h2 {
+  margin: 0;
+  color: #1a202b;
+  font-weight: 900;
+}
+
+.security-page p {
+  margin: 8px 0 0;
+  color: #637083;
+}
+
+.security-page__actions,
+.security-button-row {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.security-page button {
+  border: 1px solid rgba(24, 29, 39, 0.13);
+  border-radius: 10px;
+  padding: 10px 14px;
+  color: #1d2430;
+  background: #ffffff;
+  font: inherit;
+  font-weight: 850;
+  cursor: pointer;
+}
+
+.security-page button:hover:not(:disabled),
+.security-page button:focus-visible:not(:disabled) {
+  border-color: rgba(255, 107, 47, 0.42);
+  color: #111827;
+  outline: none;
+  box-shadow: 0 10px 24px rgba(31, 37, 49, 0.1);
+}
+
+.security-page button:disabled {
+  cursor: not-allowed;
+  opacity: 0.52;
+}
+
+.security-primary {
+  border-color: transparent !important;
+  color: #fff !important;
+  background: linear-gradient(135deg, #fb6b35, #ef4444) !important;
+}
+
+.security-danger {
+  border-color: rgba(190, 18, 60, 0.25) !important;
+  color: #be123c !important;
+  background: rgba(254, 242, 242, 0.9) !important;
+}
+
+.security-card {
+  border: 1px solid rgba(22, 28, 39, 0.09);
+  border-radius: 22px;
+  padding: 24px;
+  background: rgba(255, 255, 255, 0.82);
+  box-shadow: 0 28px 70px rgba(31, 38, 52, 0.1);
+}
+
+.security-card--wide {
+  min-height: 420px;
+}
+
+.security-card__header {
+  justify-content: space-between;
+  margin-bottom: 22px;
+}
+
+.security-pill {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid rgba(31, 41, 55, 0.1);
+  border-radius: 999px;
+  padding: 7px 11px;
+  background: rgba(31, 41, 55, 0.06);
+  color: #3f4a5b;
+  font-size: 0.82rem;
+  font-weight: 900;
+}
+
+.security-pill--ok {
+  border-color: rgba(22, 163, 74, 0.18);
+  background: rgba(220, 252, 231, 0.82);
+  color: #15803d;
+}
+
+.security-pill--warn {
+  border-color: rgba(245, 158, 11, 0.2);
+  background: rgba(254, 243, 199, 0.78);
+  color: #b45309;
+}
+
+.security-emergency-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.25fr) minmax(320px, 0.75fr);
+  gap: 22px;
+}
+
+.security-emergency-settings,
+.security-emergency-status {
+  display: grid;
+  align-content: start;
+  gap: 16px;
+}
+
+.security-toggle {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  border: 1px solid rgba(29, 36, 48, 0.09);
+  border-radius: 14px;
+  padding: 14px 15px;
+  background: rgba(248, 250, 252, 0.85);
+  color: #222938;
+  font-weight: 850;
+}
+
+.security-toggle input {
+  width: 18px;
+  height: 18px;
+  accent-color: #fb6b35;
+}
+
+.security-field-row {
+  align-items: stretch;
+}
+
+.security-field,
+.security-field-row label {
+  display: grid;
+  flex: 1;
+  gap: 7px;
+  color: #293241;
+  font-size: 0.92rem;
+  font-weight: 850;
+}
+
+.security-field input,
+.security-field-row input {
+  border: 1px solid rgba(31, 41, 55, 0.14);
+  border-radius: 12px;
+  padding: 11px 12px;
+  background: #ffffff;
+  color: #111827;
+  font: inherit;
+}
+
+.security-field small,
+.security-field-row small {
+  color: #778294;
+  font-weight: 650;
+}
+
+
+.security-switch-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  border: 1px solid rgba(29, 36, 48, 0.09);
+  border-radius: 16px;
+  padding: 15px 16px;
+  background: rgba(248, 250, 252, 0.88);
+  color: #222938;
+}
+
+.security-switch-row__text {
+  display: grid;
+  gap: 4px;
+}
+
+.security-switch-row__text strong {
+  font-weight: 900;
+}
+
+.security-switch-row__text small {
+  color: #778294;
+  font-weight: 650;
+}
+
+.security-switch {
+  position: relative;
+  display: inline-flex;
+  width: 54px;
+  height: 30px;
+  flex: 0 0 auto;
+}
+
+.security-switch input {
+  position: absolute;
+  inset: 0;
+  margin: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.security-switch__slider {
+  position: absolute;
+  inset: 0;
+  border-radius: 999px;
+  background: rgba(100, 116, 139, 0.28);
+  transition: background 160ms ease, box-shadow 160ms ease;
+}
+
+.security-switch__slider::before {
+  content: "";
+  position: absolute;
+  top: 4px;
+  left: 4px;
+  width: 22px;
+  height: 22px;
+  border-radius: 999px;
+  background: #fff;
+  box-shadow: 0 5px 12px rgba(15, 23, 42, 0.22);
+  transition: transform 160ms ease;
+}
+
+.security-switch input:checked + .security-switch__slider {
+  background: linear-gradient(135deg, #fb6b35, #ef4444);
+  box-shadow: 0 10px 24px rgba(239, 68, 68, 0.22);
+}
+
+.security-switch input:checked + .security-switch__slider::before {
+  transform: translateX(24px);
+}
+
+.security-start-mode {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.security-start-mode__option {
+  display: grid;
+  gap: 5px;
+  justify-items: start;
+  text-align: left;
+  border-radius: 16px !important;
+  padding: 15px !important;
+  background: rgba(255, 255, 255, 0.82) !important;
+}
+
+.security-start-mode__option strong {
+  font-weight: 950;
+}
+
+.security-start-mode__option small {
+  color: #778294;
+  font-size: 0.78rem;
+  font-weight: 650;
+  line-height: 1.35;
+}
+
+.security-start-mode__option--active {
+  border-color: rgba(251, 107, 53, 0.55) !important;
+  background: rgba(255, 247, 237, 0.96) !important;
+  box-shadow: inset 0 0 0 1px rgba(251, 107, 53, 0.2), 0 16px 32px rgba(251, 107, 53, 0.11) !important;
+}
+
+.security-emergency-status dl {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+}
+
+.security-emergency-status dl div {
+  display: grid;
+  grid-template-columns: 130px minmax(0, 1fr);
+  gap: 12px;
+  border: 1px solid rgba(31, 41, 55, 0.08);
+  border-radius: 12px;
+  padding: 10px 12px;
+  background: rgba(248, 250, 252, 0.78);
+}
+
+.security-emergency-status dt {
+  color: #6b7280;
+  font-weight: 800;
+}
+
+.security-emergency-status dd {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+  color: #111827;
+  font-weight: 850;
+}
+
+.security-button-row--stacked {
+  justify-content: flex-start;
+}
+
+.security-note {
+  border-top: 1px solid rgba(31, 41, 55, 0.08);
+  padding-top: 16px;
+  font-size: 0.95rem;
+}
+
+.security-message {
+  border-radius: 14px;
+  padding: 13px 16px;
+  font-weight: 850;
+}
+
+.security-message--ok {
+  border: 1px solid rgba(22, 163, 74, 0.18);
+  background: rgba(220, 252, 231, 0.9);
+  color: #15803d;
+}
+
+.security-message--error {
+  border: 1px solid rgba(220, 38, 38, 0.2);
+  background: rgba(254, 226, 226, 0.9);
+  color: #b91c1c;
+}
+
+@media (max-width: 860px) {
+  .security-page {
+    width: min(100%, calc(100vw - 28px));
+    padding-top: 26px;
+  }
+
+  .security-page__header,
+  .security-emergency-grid,
+  .security-field-row,
+  .security-start-mode {
+    display: grid;
+    grid-template-columns: 1fr;
+  }
+}
+
+.security-backend-switcher {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+  margin-bottom: 22px;
+}
+
+.security-backend-target {
+  display: grid;
+  gap: 16px;
+  border: 1px solid rgba(31, 41, 55, 0.1);
+  border-radius: 18px;
+  padding: 18px;
+  background: rgba(248, 250, 252, 0.82);
+}
+
+.security-backend-target--selected {
+  border-color: rgba(251, 107, 53, 0.5);
+  background: rgba(255, 247, 237, 0.95);
+  box-shadow: inset 0 0 0 1px rgba(251, 107, 53, 0.18), 0 18px 36px rgba(251, 107, 53, 0.08);
+}
+
+.security-backend-target__top {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.security-backend-target__top span {
+  color: #fb6b35;
+  font-size: 0.72rem;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.security-backend-target__top h3 {
+  margin: 4px 0 0;
+  color: #161d2b;
+  font-size: 1.15rem;
+  font-weight: 950;
+}
+
+.security-backend-target__details {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+}
+
+.security-backend-target__details div {
+  display: grid;
+  grid-template-columns: 90px minmax(0, 1fr);
+  gap: 12px;
+  border: 1px solid rgba(31, 41, 55, 0.08);
+  border-radius: 12px;
+  padding: 9px 11px;
+  background: rgba(255, 255, 255, 0.72);
+}
+
+.security-backend-target__details dt {
+  color: #6b7280;
+  font-weight: 800;
+}
+
+.security-backend-target__details dd {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+  color: #111827;
+  font-weight: 850;
+}
+
+@media (max-width: 860px) {
+  .security-backend-switcher {
+    grid-template-columns: 1fr;
+  }
+}
+
+
+/* Patch 20: Redundanz-Ansicht nach Skizze */
+.security-redundancy-board {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(280px, 0.34fr);
+  gap: 22px;
+  align-items: stretch;
+  margin-bottom: 18px;
+}
+
+.security-backend-map {
+  display: grid;
+  grid-template-columns: minmax(210px, 1fr) auto minmax(210px, 1fr);
+  gap: 16px;
+  align-items: stretch;
+}
+
+.security-backend-card {
+  position: relative;
+  display: grid;
+  justify-items: start;
+  align-content: start;
+  gap: 8px;
+  min-height: 210px;
+  border: 1px solid rgba(31, 41, 55, 0.12) !important;
+  border-radius: 20px !important;
+  padding: 18px !important;
+  text-align: left;
+  background: rgba(248, 250, 252, 0.9) !important;
+  box-shadow: none !important;
+}
+
+.security-backend-card:not(:disabled):hover,
+.security-backend-card:not(:disabled):focus-visible {
+  transform: translateY(-1px);
+}
+
+.security-backend-card--selected {
+  border-color: rgba(251, 107, 53, 0.55) !important;
+  background: rgba(255, 247, 237, 0.96) !important;
+  box-shadow: inset 0 0 0 1px rgba(251, 107, 53, 0.22), 0 20px 44px rgba(251, 107, 53, 0.11) !important;
+}
+
+.security-backend-card__selection {
+  width: 44px;
+  height: 14px;
+  border: 1px solid rgba(31, 41, 55, 0.14);
+  border-radius: 999px;
+  background: linear-gradient(90deg, rgba(251, 107, 53, 0.28) 0 42%, transparent 42% 100%);
+}
+
+.security-backend-card--selected .security-backend-card__selection {
+  background: linear-gradient(90deg, #fb6b35 0 58%, transparent 58% 100%);
+}
+
+.security-backend-card__label {
+  color: #fb6b35;
+  font-size: 0.75rem;
+  font-weight: 950;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.security-backend-card strong {
+  color: #151b27;
+  font-size: 1.28rem;
+  font-weight: 950;
+}
+
+.security-backend-card__meta {
+  color: #1f2937;
+  font-size: 1.02rem;
+  font-weight: 850;
+}
+
+.security-backend-card__origin {
+  max-width: 100%;
+  margin-top: 4px;
+  overflow-wrap: anywhere;
+  color: #6b7280;
+  font-size: 0.85rem;
+  font-weight: 750;
+}
+
+.security-backend-map__bridge {
+  display: grid;
+  justify-items: center;
+  align-content: center;
+  gap: 8px;
+  min-width: 84px;
+  color: #6b7280;
+  font-size: 0.78rem;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.security-backend-map__bridge span {
+  width: 2px;
+  height: 42px;
+  border-radius: 999px;
+  background: rgba(31, 41, 55, 0.14);
+}
+
+.security-redundancy-status {
+  display: grid;
+  align-content: start;
+  gap: 12px;
+  border-left: 1px solid rgba(31, 41, 55, 0.1);
+  padding-left: 22px;
+}
+
+.security-redundancy-status dl {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+}
+
+.security-redundancy-status dl div {
+  display: grid;
+  grid-template-columns: 112px minmax(0, 1fr);
+  gap: 10px;
+  border: 1px solid rgba(31, 41, 55, 0.08);
+  border-radius: 12px;
+  padding: 10px 12px;
+  background: rgba(248, 250, 252, 0.78);
+}
+
+.security-redundancy-status dt {
+  color: #6b7280;
+  font-weight: 850;
+}
+
+.security-redundancy-status dd {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+  color: #111827;
+  font-weight: 900;
+}
+
+.security-redundancy-settings {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+  margin: 18px 0;
+}
+
+.security-redundancy-form {
+  display: grid;
+  grid-template-columns: 0.8fr 0.65fr 1fr;
+  gap: 14px;
+  margin-bottom: 18px;
+}
+
+.security-redundancy-form label {
+  display: grid;
+  gap: 7px;
+  color: #293241;
+  font-size: 0.92rem;
+  font-weight: 850;
+}
+
+.security-redundancy-form input {
+  border: 1px solid rgba(31, 41, 55, 0.14);
+  border-radius: 12px;
+  padding: 11px 12px;
+  background: #ffffff;
+  color: #111827;
+  font: inherit;
+}
+
+.security-redundancy-form small {
+  color: #778294;
+  font-weight: 650;
+}
+
+.security-redundancy-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+  border-top: 1px solid rgba(31, 41, 55, 0.08);
+  padding-top: 18px;
+}
+
+.security-redundancy-actions__spacer {
+  flex: 1 1 30px;
+}
+
+@media (max-width: 980px) {
+  .security-redundancy-board,
+  .security-redundancy-settings,
+  .security-redundancy-form {
+    grid-template-columns: 1fr;
+  }
+
+  .security-backend-map {
+    grid-template-columns: 1fr;
+  }
+
+  .security-backend-map__bridge {
+    min-height: 48px;
+  }
+
+  .security-backend-map__bridge span {
+    width: 42px;
+    height: 2px;
+  }
+
+  .security-redundancy-status {
+    border-left: 0;
+    border-top: 1px solid rgba(31, 41, 55, 0.1);
+    padding-left: 0;
+    padding-top: 18px;
+  }
+}
+
+
+/* Patch 21: zwei gleichwertige Backend-Karten mit aktiver Statusleiste */
+.security-backend-map {
+  grid-template-columns: repeat(2, minmax(240px, 1fr));
+  gap: 18px;
+}
+
+.security-backend-card {
+  min-height: 230px;
+  padding: 22px !important;
+  overflow: hidden;
+}
+
+.security-backend-card__selection,
+.security-backend-map__bridge {
+  display: none !important;
+}
+
+.security-backend-card__badge {
+  position: absolute;
+  top: 14px;
+  right: 14px;
+  border: 1px solid rgba(22, 163, 74, 0.2);
+  border-radius: 999px;
+  padding: 6px 10px;
+  background: rgba(220, 252, 231, 0.92);
+  color: #15803d;
+  font-size: 0.72rem;
+  font-weight: 950;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.security-backend-card__state {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border-top: 1px solid rgba(31, 41, 55, 0.09);
+  padding: 12px 18px;
+  background: rgba(248, 250, 252, 0.92);
+  color: #475569;
+  font-size: 0.86rem;
+  font-weight: 950;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.security-backend-card__state > span {
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  background: currentColor;
+  box-shadow: 0 0 0 4px rgba(100, 116, 139, 0.12);
+}
+
+.security-backend-card__state--active {
+  background: rgba(220, 252, 231, 0.92);
+  color: #15803d;
+}
+
+.security-backend-card__state--ready {
+  background: rgba(254, 243, 199, 0.9);
+  color: #b45309;
+}
+
+.security-backend-card__state--idle {
+  background: rgba(241, 245, 249, 0.94);
+  color: #64748b;
+}
+
+.security-backend-card--selected {
+  border-width: 2px !important;
+}
+
+.security-backend-card--selected .security-backend-card__state {
+  border-top-color: rgba(22, 163, 74, 0.16);
+}
+
+@media (max-width: 980px) {
+  .security-backend-map {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* Patch 22: Redundanz in Umschalten und Konfiguration trennen */
+.security-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  border-bottom: 1px solid rgba(31, 41, 55, 0.1);
+  margin: -4px 0 22px;
+  padding-bottom: 12px;
+}
+
+.security-tabs__tab {
+  border-radius: 999px !important;
+  padding: 10px 16px !important;
+  background: rgba(248, 250, 252, 0.9) !important;
+  color: #475569 !important;
+}
+
+.security-tabs__tab--active {
+  border-color: rgba(251, 107, 53, 0.48) !important;
+  background: rgba(255, 247, 237, 0.96) !important;
+  color: #fb6b35 !important;
+  box-shadow: inset 0 0 0 1px rgba(251, 107, 53, 0.16), 0 12px 28px rgba(251, 107, 53, 0.1) !important;
+}
+
+.security-tab-panel {
+  display: grid;
+  gap: 18px;
+}
+
+.security-config-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr);
+  gap: 18px;
+  align-items: start;
+}
+
+.security-config-panel {
+  display: grid;
+  gap: 14px;
+  border: 1px solid rgba(31, 41, 55, 0.1);
+  border-radius: 18px;
+  padding: 18px;
+  background: rgba(248, 250, 252, 0.72);
+}
+
+.security-redundancy-form--config {
+  grid-template-columns: 1fr;
+  margin: 0;
+}
+
+@media (max-width: 980px) {
+  .security-config-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* Patch 23: Sicherheit nutzt System-Tab-Darstellung und schlanke Backend-Karten */
+.security-page__actions,
+.security-card__header .security-pill {
+  display: none !important;
+}
+
+.security-card__header--compact {
+  margin-bottom: 14px;
+}
+
+.security-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  border-bottom: 0;
+  margin: 4px 0 20px;
+  padding-bottom: 0;
+}
+
+.security-tabs__tab {
+  border: 1px solid rgba(22, 28, 39, 0.11) !important;
+  border-radius: 11px !important;
+  padding: 9px 13px !important;
+  color: #3d4655 !important;
+  background: #ffffff !important;
+  box-shadow: none !important;
+  font-size: 0.92rem !important;
+  font-weight: 850 !important;
+}
+
+.security-tabs__tab:hover,
+.security-tabs__tab:focus-visible {
+  border-color: rgba(255, 107, 47, 0.42) !important;
+  outline: none !important;
+}
+
+.security-tabs__tab--active {
+  color: #c2410c !important;
+  border-color: rgba(255, 107, 47, 0.48) !important;
+  background: rgba(255, 107, 47, 0.1) !important;
+}
+
+.security-redundancy-board--balanced {
+  grid-template-columns: minmax(0, 1fr) minmax(380px, 0.86fr);
+  gap: 18px;
+  align-items: stretch;
+}
+
+.security-backend-map {
+  grid-template-columns: repeat(2, minmax(210px, 1fr));
+  gap: 14px;
+}
+
+.security-backend-card {
+  display: grid;
+  gap: 10px;
+  min-height: unset;
+  padding: 0 !important;
+  background: transparent !important;
+  border: 0 !important;
+  box-shadow: none !important;
+}
+
+.security-backend-card__select {
+  position: relative;
+  display: grid !important;
+  justify-items: start;
+  align-content: start;
+  gap: 10px;
+  min-height: 230px;
+  width: 100%;
+  border: 1px solid rgba(31, 41, 55, 0.12) !important;
+  border-radius: 18px !important;
+  padding: 18px !important;
+  text-align: left;
+  background: rgba(248, 250, 252, 0.9) !important;
+  box-shadow: none !important;
+}
+
+.security-backend-card--selected .security-backend-card__select {
+  border-color: rgba(251, 107, 53, 0.55) !important;
+  background: rgba(255, 247, 237, 0.96) !important;
+  box-shadow: inset 0 0 0 1px rgba(251, 107, 53, 0.2) !important;
+}
+
+.security-backend-card__badge {
+  position: absolute;
+  top: 14px;
+  right: 14px;
+  border-radius: 999px;
+  padding: 6px 10px;
+  font-size: 0.72rem;
+  font-weight: 950;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.security-backend-card__badge--active {
+  border: 1px solid rgba(22, 163, 74, 0.2);
+  background: rgba(220, 252, 231, 0.92);
+  color: #15803d;
+}
+
+.security-backend-card__badge--ready {
+  border: 1px solid rgba(245, 158, 11, 0.22);
+  background: rgba(254, 243, 199, 0.9);
+  color: #b45309;
+}
+
+.security-backend-card__badge--working {
+  border: 1px solid rgba(59, 130, 246, 0.22);
+  background: rgba(219, 234, 254, 0.92);
+  color: #1d4ed8;
+}
+
+.security-backend-card__badge--idle,
+.security-backend-card__badge--neutral {
+  border: 1px solid rgba(100, 116, 139, 0.16);
+  background: rgba(241, 245, 249, 0.95);
+  color: #64748b;
+}
+
+.security-backend-card__details {
+  display: grid;
+  gap: 8px;
+  width: 100%;
+  margin: 6px 0 0;
+}
+
+.security-backend-card__details div {
+  display: grid;
+  grid-template-columns: 80px minmax(0, 1fr);
+  gap: 10px;
+  border-top: 1px solid rgba(31, 41, 55, 0.08);
+  padding-top: 8px;
+}
+
+.security-backend-card__details dt {
+  color: #6b7280;
+  font-size: 0.82rem;
+  font-weight: 850;
+}
+
+.security-backend-card__details dd {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+  color: #111827;
+  font-weight: 900;
+}
+
+.security-backend-card__actions {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  border: 1px solid rgba(31, 41, 55, 0.08);
+  border-radius: 16px;
+  padding: 10px;
+  background: rgba(255, 255, 255, 0.74);
+}
+
+.security-backend-action {
+  min-height: 42px;
+  border-radius: 12px !important;
+  padding: 9px 8px !important;
+  font-size: 0.83rem !important;
+  font-weight: 900 !important;
+}
+
+.security-backend-action--boot {
+  border-color: rgba(22, 163, 74, 0.22) !important;
+  background: rgba(240, 253, 244, 0.9) !important;
+  color: #15803d !important;
+}
+
+.security-backend-action--restart {
+  border-color: rgba(251, 107, 53, 0.24) !important;
+  background: rgba(255, 247, 237, 0.92) !important;
+  color: #c2410c !important;
+}
+
+.security-backend-action--shutdown {
+  border-color: rgba(220, 38, 38, 0.22) !important;
+  background: rgba(254, 242, 242, 0.92) !important;
+  color: #dc2626 !important;
+}
+
+.security-backend-action:disabled {
+  filter: grayscale(0.35);
+  opacity: 0.45;
+}
+
+.security-redundancy-status {
+  border-left: 0;
+  border: 1px solid rgba(31, 41, 55, 0.1);
+  border-radius: 18px;
+  padding: 20px;
+  background: rgba(248, 250, 252, 0.82);
+}
+
+.security-redundancy-status h3 {
+  margin: 0 0 8px;
+  color: #151b27;
+  font-size: 1.15rem;
+  font-weight: 950;
+}
+
+.security-redundancy-status dl div {
+  grid-template-columns: 130px minmax(0, 1fr);
+  border: 0;
+  border-bottom: 1px solid rgba(31, 41, 55, 0.08);
+  border-radius: 0;
+  padding: 12px 0;
+  background: transparent;
+}
+
+.security-redundancy-status dl div:last-child {
+  border-bottom: 0;
+}
+
+.security-redundancy-actions {
+  display: none !important;
+}
+
+.security-note {
+  margin: 0;
+  border-top: 0;
+  border: 1px solid rgba(31, 41, 55, 0.08);
+  border-radius: 14px;
+  padding: 12px 14px;
+  background: rgba(248, 250, 252, 0.72);
+  color: #697386;
+}
+
+@media (max-width: 980px) {
+  .security-redundancy-board--balanced,
+  .security-backend-map,
+  .security-backend-card__actions {
+    grid-template-columns: 1fr;
+  }
+}
+
+
+/* Patch 24: abgehobene Tabs, neutrale kleine Aktionen und Konfigurations-Karten */
+.security-card--wide {
+  padding-top: 20px;
+}
+
+.security-tabs {
+  position: relative;
+  display: inline-flex;
+  width: fit-content;
+  max-width: 100%;
+  gap: 7px;
+  margin: 0 0 22px;
+  padding: 7px;
+  border: 1px solid rgba(31, 41, 55, 0.09);
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.9);
+  box-shadow: 0 14px 34px rgba(31, 41, 55, 0.08);
+}
+
+.security-tabs__tab {
+  border: 0 !important;
+  border-radius: 13px !important;
+  padding: 9px 15px !important;
+  background: transparent !important;
+  color: #2f3745 !important;
+  box-shadow: none !important;
+  font-size: 0.9rem !important;
+  font-weight: 900 !important;
+}
+
+.security-tabs__tab--active {
+  background: rgba(255, 107, 47, 0.13) !important;
+  color: #b43408 !important;
+  box-shadow: inset 0 0 0 1px rgba(251, 107, 53, 0.12) !important;
+}
+
+.security-redundancy-board--balanced {
+  grid-template-columns: minmax(0, 0.92fr) minmax(430px, 1.08fr);
+  gap: 18px;
+}
+
+.security-backend-map {
+  grid-template-columns: repeat(2, minmax(180px, 1fr));
+  gap: 12px;
+}
+
+.security-backend-card__select {
+  min-height: 196px;
+  padding: 16px !important;
+}
+
+.security-backend-card strong,
+.security-config-backend-card strong {
+  font-size: 1.08rem;
+}
+
+.security-backend-card__actions {
+  display: flex;
+  gap: 6px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+
+.security-backend-action {
+  flex: 1 1 0;
+  min-height: 28px;
+  border-color: rgba(31, 41, 55, 0.12) !important;
+  border-radius: 9px !important;
+  padding: 6px 7px !important;
+  background: rgba(255, 255, 255, 0.82) !important;
+  color: #475569 !important;
+  font-size: 0.72rem !important;
+  font-weight: 850 !important;
+}
+
+.security-backend-action:hover:not(:disabled),
+.security-backend-action:focus-visible:not(:disabled) {
+  color: #111827 !important;
+  box-shadow: 0 8px 16px rgba(31, 41, 55, 0.08) !important;
+}
+
+.security-redundancy-status {
+  min-height: 100%;
+}
+
+.security-config-backend-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(220px, 1fr));
+  gap: 14px;
+}
+
+.security-config-backend-card {
+  position: relative;
+  display: grid;
+  justify-items: start;
+  gap: 10px;
+  min-height: 185px;
+  border: 1px solid rgba(31, 41, 55, 0.12) !important;
+  border-radius: 18px !important;
+  padding: 16px !important;
+  text-align: left;
+  background: rgba(248, 250, 252, 0.86) !important;
+  box-shadow: none !important;
+}
+
+.security-config-backend-card--selected {
+  border-color: rgba(251, 107, 53, 0.55) !important;
+  background: rgba(255, 247, 237, 0.96) !important;
+  box-shadow: inset 0 0 0 1px rgba(251, 107, 53, 0.18) !important;
+}
+
+.security-config-detail-panel {
+  display: grid;
+  gap: 14px;
+  border: 1px solid rgba(31, 41, 55, 0.1);
+  border-radius: 18px;
+  padding: 18px;
+  background: rgba(255, 255, 255, 0.78);
+}
+
+.security-config-grid--detail {
+  grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr);
+}
+
+.security-redundancy-form--three {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.security-redundancy-form input[readonly] {
+  background: rgba(241, 245, 249, 0.82);
+  color: #475569;
+}
+
+.security-redundancy-actions--visible {
+  display: flex !important;
+}
+
+@media (max-width: 980px) {
+  .security-tabs {
+    width: 100%;
+  }
+
+  .security-redundancy-board--balanced,
+  .security-config-backend-grid,
+  .security-config-grid--detail,
+  .security-redundancy-form--three {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* Patch 25: System-Vorlage für Redundanz, klare Tab-Leiste und Konfigurationsbereich */
+.security-page {
+  width: min(1120px, calc(100vw - 72px));
+}
+
+.security-card--wide {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.security-card__header--compact {
+  margin-bottom: 12px;
+}
+
+.security-card__header--compact h2 {
+  font-size: 1.55rem;
+}
+
+.security-tabs {
+  display: inline-flex;
+  width: auto;
+  max-width: 100%;
+  gap: 8px;
+  margin: 0 0 24px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.security-tabs__tab {
+  border: 1px solid rgba(31, 41, 55, 0.11) !important;
+  border-radius: 13px !important;
+  padding: 11px 18px !important;
+  background: rgba(255, 255, 255, 0.72) !important;
+  color: #2f3745 !important;
+  box-shadow: 0 8px 22px rgba(31, 41, 55, 0.05) !important;
+  font-size: 0.96rem !important;
+  font-weight: 900 !important;
+}
+
+.security-tabs__tab--active {
+  border-color: rgba(251, 107, 53, 0.46) !important;
+  background: rgba(255, 107, 47, 0.12) !important;
+  color: #b43408 !important;
+  box-shadow: inset 0 0 0 1px rgba(251, 107, 53, 0.1), 0 10px 24px rgba(251, 107, 53, 0.08) !important;
+}
+
+.security-tab-panel {
+  border: 1px solid rgba(31, 41, 55, 0.08);
+  border-radius: 22px;
+  padding: 22px;
+  background: rgba(255, 255, 255, 0.76);
+  box-shadow: 0 24px 60px rgba(31, 38, 52, 0.08);
+}
+
+.security-redundancy-board--balanced {
+  grid-template-columns: minmax(0, 0.98fr) minmax(390px, 1.12fr);
+  gap: 20px;
+}
+
+.security-backend-map {
+  grid-template-columns: repeat(2, minmax(170px, 1fr));
+  gap: 12px;
+}
+
+.security-backend-card__select,
+.security-config-backend-card {
+  min-height: 178px;
+  border-radius: 18px !important;
+  padding: 15px !important;
+}
+
+.security-backend-card strong,
+.security-config-backend-card strong {
+  font-size: 1.02rem;
+}
+
+.security-backend-card__label {
+  font-size: 0.68rem;
+}
+
+.security-backend-card__badge {
+  top: 12px;
+  right: 12px;
+  padding: 5px 8px;
+  font-size: 0.66rem;
+}
+
+.security-backend-card__details {
+  gap: 7px;
+  margin-top: 4px;
+}
+
+.security-backend-card__details div {
+  grid-template-columns: 72px minmax(0, 1fr);
+  gap: 8px;
+  padding-top: 7px;
+}
+
+.security-backend-card__details dt {
+  font-size: 0.76rem;
+}
+
+.security-backend-card__details dd {
+  font-size: 0.86rem;
+}
+
+.security-backend-card__actions {
+  display: flex;
+  justify-content: flex-start;
+  gap: 6px;
+}
+
+.security-backend-action {
+  flex: 0 1 auto;
+  min-height: 25px;
+  border: 1px solid rgba(31, 41, 55, 0.12) !important;
+  border-radius: 8px !important;
+  padding: 5px 8px !important;
+  background: rgba(255, 255, 255, 0.68) !important;
+  color: #566173 !important;
+  font-size: 0.68rem !important;
+  font-weight: 850 !important;
+}
+
+.security-backend-action:hover:not(:disabled),
+.security-backend-action:focus-visible:not(:disabled) {
+  color: #111827 !important;
+  border-color: rgba(31, 41, 55, 0.2) !important;
+  box-shadow: 0 6px 14px rgba(31, 41, 55, 0.07) !important;
+}
+
+.security-redundancy-status {
+  padding: 22px 24px;
+  background: rgba(255, 255, 255, 0.84);
+}
+
+.security-config-overview-grid {
+  display: grid;
+  grid-template-columns: minmax(180px, 0.82fr) minmax(180px, 0.82fr) minmax(300px, 1.36fr);
+  gap: 14px;
+  align-items: stretch;
+}
+
+.security-config-status-card {
+  display: grid;
+  align-content: start;
+  gap: 10px;
+  border: 1px solid rgba(31, 41, 55, 0.1);
+  border-radius: 18px;
+  padding: 16px;
+  background: rgba(255, 255, 255, 0.84);
+}
+
+.security-config-status-card h3 {
+  margin: 0 0 4px;
+  color: #151b27;
+  font-size: 1.08rem;
+  font-weight: 950;
+}
+
+.security-config-status-card dl {
+  display: grid;
+  gap: 0;
+  margin: 0;
+}
+
+.security-config-status-card dl div {
+  display: grid;
+  grid-template-columns: 110px minmax(0, 1fr);
+  gap: 10px;
+  border-bottom: 1px solid rgba(31, 41, 55, 0.08);
+  padding: 9px 0;
+}
+
+.security-config-status-card dl div:last-child {
+  border-bottom: 0;
+}
+
+.security-config-status-card dt {
+  color: #6b7280;
+  font-size: 0.82rem;
+  font-weight: 850;
+}
+
+.security-config-status-card dd {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+  color: #111827;
+  font-size: 0.86rem;
+  font-weight: 900;
+}
+
+.security-config-editor {
+  display: grid;
+  gap: 16px;
+  border: 1px solid rgba(31, 41, 55, 0.1);
+  border-radius: 20px;
+  padding: 20px;
+  background: rgba(255, 255, 255, 0.78);
+}
+
+.security-config-editor__header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.security-config-editor__header h3 {
+  margin: 4px 0 0;
+  color: #151b27;
+  font-size: 1.2rem;
+  font-weight: 950;
+}
+
+.security-config-inline-switches {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.security-config-detail-panel,
+.security-config-grid--detail,
+.security-config-panel {
+  border: 0;
+  padding: 0;
+  background: transparent;
+}
+
+.security-redundancy-form--three {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.security-redundancy-actions--visible {
+  justify-content: flex-start;
+  border-top: 1px solid rgba(31, 41, 55, 0.08);
+  padding-top: 16px;
+}
+
+@media (max-width: 980px) {
+  .security-tab-panel,
+  .security-card--wide {
+    padding-left: 0;
+    padding-right: 0;
+  }
+
+  .security-tabs {
+    width: 100%;
+  }
+
+  .security-redundancy-board--balanced,
+  .security-backend-map,
+  .security-config-overview-grid,
+  .security-config-inline-switches,
+  .security-redundancy-form--three {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* Patch 26: Datenbank-Umschaltung und Datenbank-Konfiguration */
+.security-switch-stack {
+  display: grid;
+  gap: 22px;
+}
+
+.security-database-map {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(170px, 1fr));
+  gap: 12px;
+}
+
+.security-database-card {
+  display: grid;
+  gap: 10px;
+}
+
+.security-database-card__select {
+  position: relative;
+  display: grid !important;
+  justify-items: start;
+  align-content: start;
+  gap: 10px;
+  min-height: 178px;
+  width: 100%;
+  border: 1px solid rgba(31, 41, 55, 0.12) !important;
+  border-radius: 18px !important;
+  padding: 15px !important;
+  text-align: left;
+  background: rgba(248, 250, 252, 0.9) !important;
+  box-shadow: none !important;
+}
+
+.security-database-card--selected .security-database-card__select {
+  border-color: rgba(251, 107, 53, 0.55) !important;
+  background: rgba(255, 247, 237, 0.96) !important;
+  box-shadow: inset 0 0 0 1px rgba(251, 107, 53, 0.2) !important;
+}
+
+.security-database-card strong {
+  color: #151b27;
+  font-size: 1.02rem;
+  font-weight: 950;
+}
+
+.security-database-form {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.security-redundancy-form select {
+  border: 1px solid rgba(31, 41, 55, 0.14);
+  border-radius: 12px;
+  padding: 11px 12px;
+  background: #ffffff;
+  color: #111827;
+  font: inherit;
+}
+
+.security-switch-row--inline {
+  display: flex !important;
+  min-height: 44px;
+  align-self: end;
+  margin: 0;
+}
+
+.security-redundancy-actions--visible .security-redundancy-actions__spacer {
+  flex: 1 1 auto;
+}
+
+@media (max-width: 980px) {
+  .security-database-map,
+  .security-database-form {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* Patch 27: Datenbank-Karten zeigen Zustand statt Aktionsknöpfe */
+.security-database-health {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  min-height: 28px;
+  padding: 0 2px;
+}
+
+.security-database-health__ping {
+  appearance: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  border: 0;
+  padding: 3px 0;
+  background: transparent;
+  color: #64748b;
+  font: inherit;
+  font-size: 0.78rem;
+  font-weight: 850;
+  cursor: pointer;
+}
+
+.security-database-health__ping:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+
+.security-database-health__ping:hover:not(:disabled),
+.security-database-health__ping:focus-visible:not(:disabled) {
+  color: #111827;
+  outline: none;
+}
+
+.security-database-health__dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  background: #cbd5e1;
+  box-shadow: 0 0 0 4px rgba(203, 213, 225, 0.22);
+}
+
+.security-database-health--active .security-database-health__ping {
+  color: #15803d;
+}
+
+.security-database-health--active .security-database-health__dot {
+  background: #16a34a;
+  box-shadow: 0 0 0 4px rgba(22, 163, 74, 0.16);
+}
+
+.security-database-health--offline .security-database-health__ping {
+  color: #94a3b8;
+}
+
+.security-database-health--offline .security-database-health__dot {
+  background: #cbd5e1;
+  box-shadow: 0 0 0 4px rgba(148, 163, 184, 0.12);
+}
+
+.security-database-health--checking .security-database-health__ping {
+  color: #b45309;
+}
+
+.security-database-health--checking .security-database-health__dot {
+  background: #f59e0b;
+  box-shadow: 0 0 0 4px rgba(245, 158, 11, 0.16);
+}
+
+.security-database-health--unavailable .security-database-health__ping {
+  color: #b91c1c;
+}
+
+.security-database-health--unavailable .security-database-health__dot {
+  background: #dc2626;
+  box-shadow: 0 0 0 4px rgba(220, 38, 38, 0.14);
+}
+
+.security-password-control {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+}
+
+.security-password-control input {
+  min-width: 0;
+}
+
+.security-password-control button {
+  min-width: 88px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  font-size: 0.8rem;
+}
+
+.security-connection-url {
+  display: grid;
+  gap: 12px;
+  border: 1px solid rgba(31, 41, 55, 0.1);
+  border-radius: 16px;
+  padding: 16px;
+  background: rgba(248, 250, 252, 0.88);
+}
+
+.security-connection-url__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.security-connection-url__header > div {
+  display: grid;
+  gap: 3px;
+}
+
+.security-connection-url__header span {
+  color: #1f2937;
+  font-weight: 900;
+}
+
+.security-connection-url small {
+  color: #778294;
+  font-weight: 650;
+}
+
+.security-connection-url code {
+  display: block;
+  overflow-x: auto;
+  border: 1px solid rgba(31, 41, 55, 0.1);
+  border-radius: 12px;
+  padding: 13px 14px;
+  background: #ffffff;
+  color: #0f172a;
+  font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
+  font-size: 0.86rem;
+  line-height: 1.5;
+  white-space: nowrap;
+}
+
+@media (max-width: 680px) {
+  .security-connection-url__header {
+    align-items: stretch;
+    flex-direction: column;
+  }
+}
+
+/* Patch 41: drei unabhängige Schreibwege ohne Überlagerung. */
+.security-page .security-tab-panel,
+.security-page .security-redundancy-board--balanced,
+.security-page .security-switch-stack,
+.security-page .security-backend-map,
+.security-page .security-database-map,
+.security-page .security-redundancy-status {
+  min-width: 0;
+  box-sizing: border-box;
+}
+
+.security-page .security-tab-panel {
+  position: relative;
+  isolation: isolate;
+  overflow: visible;
+}
+
+.security-page .security-redundancy-board--balanced {
+  width: 100%;
+  grid-template-columns: minmax(0, 1.4fr) minmax(300px, 0.85fr);
+  gap: 22px;
+  align-items: start;
+}
+
+.security-page .security-switch-stack,
+.security-page .security-redundancy-status {
+  position: relative;
+  inset: auto;
+  width: auto;
+  max-width: 100%;
+  z-index: auto;
+}
+
+.security-page .security-backend-map {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.security-page .security-database-map {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  align-items: stretch;
+}
+
+.security-page .security-backend-card,
+.security-page .security-database-card {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.security-page .security-database-card__select {
+  position: relative;
+  z-index: 1;
+  min-width: 0;
+  min-height: 190px;
+  overflow: hidden;
+  pointer-events: auto;
+  touch-action: manipulation;
+}
+
+.security-page .security-database-card__select > * {
+  pointer-events: none;
+}
+
+.security-page .security-database-card__select .security-backend-card__badge {
+  max-width: calc(100% - 24px);
+  white-space: normal;
+  text-align: right;
+  line-height: 1.2;
+}
+
+.security-page .security-database-routing__target--json {
+  border-color: rgba(59, 130, 246, 0.16);
+  background: rgba(239, 246, 255, 0.72);
+}
+
+.security-json-emergency-replay {
+  display: grid;
+  gap: 12px;
+  border: 1px solid rgba(59, 130, 246, 0.2);
+  border-radius: 14px;
+  padding: 13px;
+  background: rgba(239, 246, 255, 0.78);
+}
+
+.security-json-emergency-replay > div:first-child {
+  display: grid;
+  gap: 4px;
+}
+
+.security-json-emergency-replay strong {
+  color: #1e3a8a;
+  font-size: 0.88rem;
+  font-weight: 900;
+}
+
+.security-json-emergency-replay small {
+  color: #52647d;
+  font-weight: 650;
+  line-height: 1.4;
+}
+
+.security-json-emergency-replay__actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+@media (max-width: 1100px) {
+  .security-page .security-redundancy-board--balanced {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .security-page .security-redundancy-status {
+    border-left: 0;
+    border-top: 1px solid rgba(31, 41, 55, 0.1);
+  }
+}
+
+@media (max-width: 760px) {
+  .security-page .security-backend-map,
+  .security-page .security-database-map,
+  .security-json-emergency-replay__actions {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* Backend-Konfiguration: beim Wechsel der ausgewählten Kachel stabil bleiben. */
+html {
+  scrollbar-gutter: stable;
+}
+
+.security-page .security-config-overview-grid {
+  min-height: 390px;
+  align-items: stretch;
+  overflow-anchor: none;
+}
+
+.security-page .security-config-overview-grid > .security-config-backend-card,
+.security-page .security-config-overview-grid > .security-config-status-card {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  height: 390px;
+  min-height: 390px;
+}
+
+.security-page .security-config-backend-card {
+  grid-template-rows: max-content max-content minmax(0, 1fr);
+  align-content: stretch;
+}
+
+.security-page .security-config-backend-card .security-backend-card__details {
+  align-self: end;
+}
+
+.security-page .security-config-status-card {
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
+
+.security-page .security-config-status-card dl div {
+  gap: 8px;
+  padding: 6px 0;
+  line-height: 1.25;
+}
+
+.security-page .security-config-editor {
+  overflow-anchor: none;
+}
+
+@media (max-width: 980px) {
+  .security-page .security-config-overview-grid {
+    min-height: 0;
+  }
+
+  .security-page .security-config-overview-grid > .security-config-backend-card,
+  .security-page .security-config-overview-grid > .security-config-status-card {
+    height: auto;
+    min-height: 210px;
+  }
+
+  .security-page .security-config-status-card {
+    overflow-y: visible;
+  }
+}
+
+/* Backend-Kacheln wählen den sichtbaren Status; Umschalten bleibt eine eigene Aktion. */
+.security-page .security-redundancy-board--balanced {
+  grid-template-columns: minmax(0, 1.08fr) minmax(410px, 0.92fr);
+  gap: 24px;
+}
+
+.security-page .security-backend-card__select {
+  position: relative;
+  z-index: 1;
+  width: 100%;
+  min-width: 0;
+  cursor: pointer;
+  pointer-events: auto;
+  touch-action: manipulation;
+  transition: border-color 150ms ease, background 150ms ease, transform 150ms ease, box-shadow 150ms ease;
+}
+
+.security-page .security-backend-card__select > * {
+  pointer-events: none;
+}
+
+.security-page .security-backend-card__select:hover:not(:disabled),
+.security-page .security-backend-card__select:focus-visible:not(:disabled) {
+  border-color: rgba(251, 107, 53, 0.55) !important;
+  background: rgba(255, 247, 237, 0.72) !important;
+  box-shadow: inset 0 0 0 1px rgba(251, 107, 53, 0.14) !important;
+  transform: translateY(-1px);
+  outline: none;
+}
+
+.security-backend-status__header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.security-backend-status__header > div {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.security-backend-status__header small {
+  color: #7b8797;
+  font-size: 0.7rem;
+  font-weight: 900;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+}
+
+.security-backend-status__header h3 {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.security-page .security-redundancy-status dl {
+  margin-bottom: 8px;
+}
+
+.security-page .security-redundancy-status dl div {
+  grid-template-columns: minmax(145px, 0.82fr) minmax(0, 1.18fr);
+  gap: 18px;
+}
+
+.security-backend-status__actions {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.security-backend-status__actions .security-action-button {
+  min-height: 40px;
+}
+
+.security-backend-status__actions--single {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.security-page .security-backend-action:not(:disabled) {
+  cursor: pointer;
+  opacity: 1;
+}
+
+.security-page .security-backend-action--boot:not(:disabled) {
+  border-color: rgba(22, 163, 74, 0.3) !important;
+  background: rgba(240, 253, 244, 0.96) !important;
+  color: #15803d !important;
+}
+
+.security-page .security-backend-action--restart:not(:disabled) {
+  border-color: rgba(251, 107, 53, 0.3) !important;
+  background: rgba(255, 247, 237, 0.96) !important;
+  color: #c2410c !important;
+}
+
+.security-page .security-backend-action--shutdown:not(:disabled) {
+  border-color: rgba(220, 38, 38, 0.28) !important;
+  background: rgba(254, 242, 242, 0.96) !important;
+  color: #dc2626 !important;
+}
+
+.security-page .security-action-button--primary {
+  border-color: rgba(251, 107, 53, 0.48);
+  background: linear-gradient(135deg, #fb6b35, #ef5b38);
+  color: #fff;
+}
+
+.security-page .security-action-button--primary:hover:not(:disabled),
+.security-page .security-action-button--primary:focus-visible:not(:disabled) {
+  border-color: #e9512f;
+  background: #e9512f;
+  color: #fff;
+}
+
+@media (max-width: 1100px) {
+  .security-page .security-redundancy-board--balanced {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 560px) {
+  .security-backend-status__header,
+  .security-backend-status__actions {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .security-backend-status__header {
+    display: grid;
+  }
+
+  .security-page .security-redundancy-status dl div {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 4px;
+  }
+}
+
+/* JSON-Notlauf als eigene dritte Zeile unter den beiden Datenbanken. */
+.security-page .security-database-map {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.security-page .security-database-map > .security-database-card:last-child {
+  grid-column: 1 / -1;
+}
+
+.security-page .security-database-map > .security-database-card:last-child .security-database-card__select {
+  min-height: 150px;
+}
+
+.security-page .security-database-map > .security-database-card:last-child .security-backend-card__details {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
+}
+
+@media (max-width: 760px) {
+  .security-page .security-database-map {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .security-page .security-database-map > .security-database-card:last-child {
+    grid-column: auto;
+  }
+
+  .security-page .security-database-map > .security-database-card:last-child .security-backend-card__details {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* Patch 28: Sicherheit wird Server; Kopftext raus; JSON/Backup Tab aus System übernommen */
+.security-page {
+  padding-top: 22px;
+}
+
+.security-page__header,
+.security-card__header--compact {
+  display: none !important;
+}
+
+.security-card--wide {
+  margin-top: 0;
+}
+
+.security-tabs {
+  margin-top: 0;
+  margin-bottom: 18px;
+}
+
+.security-json-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(320px, 0.82fr);
+  gap: 16px;
+  align-items: start;
+}
+
+.security-config-inline-switches--single {
+  grid-template-columns: 1fr;
+}
+
+.security-system-field {
+  display: grid;
+  gap: 7px;
+  color: #293241;
+  font-size: 0.92rem;
+  font-weight: 850;
+}
+
+.security-system-field input {
+  border: 1px solid rgba(31, 41, 55, 0.14);
+  border-radius: 12px;
+  padding: 11px 12px;
+  background: #ffffff;
+  color: #111827;
+  font: inherit;
+}
+
+.security-system-field small {
+  color: #778294;
+  font-weight: 650;
+}
+
+.security-database-form--single {
+  grid-template-columns: 1fr;
+}
+
+.security-system-hint-box {
+  border: 1px solid rgba(31, 41, 55, 0.08);
+  border-radius: 14px;
+  padding: 12px 14px;
+  background: rgba(248, 250, 252, 0.78);
+  color: #475569;
+  font-weight: 750;
+  overflow-wrap: anywhere;
+}
+
+.security-json-preview {
+  max-height: 420px;
+  overflow: auto;
+  border: 1px solid rgba(31, 41, 55, 0.1);
+  border-radius: 16px;
+  padding: 14px;
+  background: rgba(15, 23, 42, 0.035);
+  color: #1f2937;
+  font-size: 0.82rem;
+  line-height: 1.45;
+  white-space: pre-wrap;
+}
+
+@media (max-width: 980px) {
+  .security-json-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* Patch 29: JSON / Backup nutzt statt current.json den System-Abgleich */
+.security-json-grid--system-sync {
+  grid-template-columns: minmax(0, 0.92fr) minmax(360px, 1.08fr);
+}
+
+.security-system-sync-card {
+  border: 1px solid rgba(31, 41, 55, 0.1);
+  border-radius: 18px;
+  padding: 18px;
+  background: rgba(255, 255, 255, 0.92);
+  box-shadow: 0 16px 34px rgba(15, 23, 42, 0.055);
+  min-height: 100%;
+}
+
+.security-system-sync-card__lead {
+  margin: 10px 0 16px;
+  color: #64748b;
+  font-size: 0.92rem;
+  line-height: 1.45;
+  font-weight: 650;
+}
+
+.security-sync-kv-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.security-sync-kv-grid > div {
+  border: 1px solid rgba(31, 41, 55, 0.08);
+  border-radius: 14px;
+  padding: 12px 13px;
+  background: rgba(248, 250, 252, 0.72);
+  display: grid;
+  gap: 5px;
+}
+
+.security-sync-kv-grid span {
+  color: #7b8798;
+  font-size: 0.74rem;
+  font-weight: 850;
+  letter-spacing: 0.055em;
+  text-transform: uppercase;
+}
+
+.security-sync-kv-grid strong {
+  color: #172033;
+  font-size: 0.96rem;
+  font-weight: 900;
+  overflow-wrap: anywhere;
+}
+
+.security-sync-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 18px;
+  padding-top: 14px;
+  border-top: 1px solid rgba(31, 41, 55, 0.08);
+}
+
+.security-sync-actions button {
+  border: 1px solid rgba(31, 41, 55, 0.14);
+  border-radius: 12px;
+  padding: 10px 13px;
+  background: #ffffff;
+  color: #374151;
+  font-weight: 850;
+  cursor: pointer;
+}
+
+.security-sync-actions button:hover:not(:disabled),
+.security-sync-actions button:focus-visible:not(:disabled) {
+  border-color: rgba(220, 74, 43, 0.45);
+  color: #dc4a2b;
+}
+
+.security-sync-actions button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.security-sync-actions .security-primary {
+  background: #dc4a2b;
+  border-color: #dc4a2b;
+  color: #ffffff;
+}
+
+.security-sync-actions .security-primary:hover:not(:disabled),
+.security-sync-actions .security-primary:focus-visible:not(:disabled) {
+  background: #c53e24;
+  color: #ffffff;
+}
+
+.security-sync-error {
+  margin: 10px 0 0;
+  border: 1px solid rgba(220, 38, 38, 0.18);
+  border-radius: 14px;
+  padding: 10px 12px;
+  background: rgba(254, 242, 242, 0.92);
+  color: #b91c1c;
+  font-weight: 780;
+}
+
+@media (max-width: 980px) {
+  .security-json-grid--system-sync,
+  .security-sync-kv-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .security-sync-actions {
+    justify-content: stretch;
+  }
+
+  .security-sync-actions button {
+    flex: 1 1 auto;
+  }
+}
+
+/* Patch 31: Server nutzt denselben äußeren Content-Rahmen wie Provider/Backup. */
+.control-center-page.security-page {
+  width: auto;
+  max-width: 1100px;
+  margin: 0;
+  padding: 24px;
+}
+
+.control-center-page.security-page .control-center-page-header {
+  align-items: flex-start;
+  margin-bottom: 0;
+}
+
+.control-center-page.security-page .control-center-page-header p {
+  margin: 6px 0 0;
+}
+
+.control-center-page.security-page .security-card--wide {
+  min-height: 0;
+}
+
+
+/* Patch 32: Server so breit wie Benutzer, mit ruhigen Speichern-/Neu-laden-Buttons. */
+.control-center-page.security-page {
+  width: 100%;
+  max-width: 1450px;
+  box-sizing: border-box;
+}
+
+.control-center-page.security-page .cc-menu-page-header {
+  margin-bottom: 18px;
+}
+
+.security-page .security-action-button {
+  border: 1px solid rgba(31, 41, 55, 0.14) !important;
+  border-radius: 12px !important;
+  padding: 10px 13px !important;
+  background: #ffffff !important;
+  color: #374151 !important;
+  font-weight: 850 !important;
+  box-shadow: none !important;
+  transform: none !important;
+  transition: border-color 150ms ease, background 150ms ease, color 150ms ease !important;
+}
+
+.security-page .security-action-button--primary {
+  border-color: #dc4a2b !important;
+  background: #dc4a2b !important;
+  color: #ffffff !important;
+}
+
+.security-page .security-action-button:hover:not(:disabled),
+.security-page .security-action-button:focus-visible:not(:disabled) {
+  border-color: rgba(220, 74, 43, 0.45) !important;
+  background: #ffffff !important;
+  color: #dc4a2b !important;
+  box-shadow: none !important;
+  transform: none !important;
+  outline: none !important;
+}
+
+.security-page .security-action-button--primary:hover:not(:disabled),
+.security-page .security-action-button--primary:focus-visible:not(:disabled) {
+  border-color: #c53e24 !important;
+  background: #c53e24 !important;
+  color: #ffffff !important;
+  box-shadow: none !important;
+  transform: none !important;
+}
+
+.security-page .security-action-button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+  box-shadow: none !important;
+  transform: none !important;
+}
+
+/* Patch 39: Server folgt dem freien Provider-Menülayout. */
+.security-page.cc-menu-layout-page {
+  width: 100%;
+  max-width: 1450px;
+  margin: 0;
+  padding: 0;
+  gap: 16px;
+  box-sizing: border-box;
+}
+
+.security-page.cc-menu-layout-page .cc-menu-page-header {
+  margin-top: -28px;
+  margin-bottom: 0;
+}
+
+.security-page.cc-menu-layout-page .cc-menu-page-header h1 {
+  margin: 0;
+  color: var(--cc-text);
+  font-size: clamp(1.7rem, 2.8vw, 2.3rem);
+  letter-spacing: -0.03em;
+}
+
+.security-page.cc-menu-layout-page .cc-menu-page-header p {
+  margin: 6px 0 0;
+  color: var(--cc-muted);
+  font-size: 0.94rem;
+  line-height: 1.42;
+}
+
+.security-page.cc-menu-layout-page .cc-system-tabbar {
+  margin-top: 32px;
+  margin-bottom: -8px;
+}
+
+.security-page .cc-menu-page-content.security-card {
+  display: grid;
+  gap: 18px;
+  width: 100%;
+  min-height: 0;
+  box-sizing: border-box;
+  border: 1px solid var(--cc-card-border);
+  border-radius: 16px;
+  padding: 24px;
+  background: rgba(255, 255, 255, 0.92);
+  box-shadow: 0 14px 36px rgba(16, 24, 40, 0.06);
+  color: var(--cc-text);
+}
+
+.security-page .cc-system-tab:hover:not(:disabled),
+.security-page .cc-system-tab:focus-visible:not(:disabled) {
+  box-shadow: none;
+}
+
+/* Datenbank-Schreibziele und bewusst manueller Vollabgleich. */
+.security-database-routing {
+  display: grid;
+  gap: 12px;
+  border-top: 1px solid rgba(31, 41, 55, 0.1);
+  margin-top: 8px;
+  padding-top: 18px;
+}
+
+.security-database-routing__header,
+.security-database-routing__target {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.security-database-routing__header h4 {
+  margin: 0 0 3px;
+  color: #151b27;
+  font-size: 1rem;
+  font-weight: 950;
+}
+
+.security-database-routing__header small,
+.security-database-routing__target small,
+.security-database-full-sync__body > small {
+  color: #778294;
+  font-weight: 650;
+}
+
+.security-database-routing__target {
+  border: 1px solid rgba(31, 41, 55, 0.09);
+  border-radius: 14px;
+  padding: 12px 13px;
+  background: rgba(248, 250, 252, 0.82);
+}
+
+.security-database-routing__target > span:first-child {
+  display: grid;
+  gap: 3px;
+}
+
+.security-database-routing__target strong {
+  color: #1f2937;
+  font-size: 0.88rem;
+  font-weight: 900;
+}
+
+.security-database-routing__note {
+  margin: 0 !important;
+  border-left: 3px solid rgba(251, 107, 53, 0.5);
+  padding: 9px 11px;
+  background: rgba(255, 247, 237, 0.72);
+  color: #6b4d3b !important;
+  font-size: 0.78rem;
+  font-weight: 700;
+  line-height: 1.45;
+}
+
+.security-database-full-sync {
+  border: 1px solid rgba(190, 18, 60, 0.16);
+  border-radius: 14px;
+  background: rgba(255, 251, 251, 0.88);
+  overflow: hidden;
+}
+
+.security-database-full-sync summary {
+  padding: 12px 13px;
+  color: #9f1239;
+  font-size: 0.86rem;
+  font-weight: 900;
+  cursor: pointer;
+}
+
+.security-database-full-sync__body {
+  display: grid;
+  gap: 11px;
+  border-top: 1px solid rgba(190, 18, 60, 0.12);
+  padding: 13px;
+}
+
+.security-database-full-sync__body label {
+  display: grid;
+  gap: 6px;
+  color: #374151;
+  font-size: 0.8rem;
+  font-weight: 850;
+}
+
+.security-database-full-sync__body select,
+.security-database-full-sync__body input {
+  width: 100%;
+  box-sizing: border-box;
+  border: 1px solid rgba(31, 41, 55, 0.15);
+  border-radius: 10px;
+  padding: 9px 10px;
+  background: #fff;
+  color: #111827;
+  font: inherit;
+}
+
+.security-database-full-sync__body code {
+  display: block;
+  border-radius: 8px;
+  padding: 7px 9px;
+  overflow-wrap: anywhere;
+  background: rgba(127, 29, 29, 0.06);
+  color: #9f1239;
+  font-size: 0.73rem;
+}
+
+.security-database-full-sync__warning {
+  border: 1px solid rgba(220, 38, 38, 0.16);
+  border-radius: 10px;
+  padding: 9px 10px;
+  background: rgba(254, 242, 242, 0.9);
+  color: #b91c1c;
+  font-size: 0.78rem;
+  font-weight: 750;
+  line-height: 1.4;
+}
+
+.security-page .security-action-button--danger {
+  border-color: rgba(190, 18, 60, 0.34) !important;
+  background: #fff1f2 !important;
+  color: #be123c !important;
+}
+
+.security-page .security-action-button--danger:hover:not(:disabled),
+.security-page .security-action-button--danger:focus-visible:not(:disabled) {
+  border-color: #be123c !important;
+  background: #be123c !important;
+  color: #fff !important;
+}
+
+@media (max-width: 680px) {
+  .security-database-routing__header,
+  .security-database-routing__target {
+    align-items: flex-start;
+  }
+}
+
+/* Layout- und Klickkorrektur für Schreibziele. */
+.security-page.cc-menu-layout-page .cc-menu-page-header {
+  margin-top: 0;
+}
+
+.security-page.cc-menu-layout-page {
+  padding-top: 32px;
+}
+
+.security-page.cc-menu-layout-page .cc-system-tabbar {
+  position: relative;
+  z-index: 1;
+  margin-top: 8px;
+  margin-bottom: 0;
+}
+
+.security-redundancy-board--balanced {
+  grid-template-columns: minmax(520px, 1.25fr) minmax(360px, 0.75fr);
+  align-items: start;
+}
+
+.security-switch-stack {
+  min-width: 0;
+  align-content: start;
+  grid-auto-rows: max-content;
+}
+
+.security-redundancy-status {
+  min-width: 0;
+  min-height: 0;
+}
+
+.security-database-routing__target {
+  position: relative;
+  user-select: none;
+}
+
+.security-switch input {
+  z-index: 2;
+}
+
+.security-switch__slider {
+  pointer-events: none;
+}
+
+.security-page button.security-switch {
+  position: relative;
+  display: inline-flex;
+  width: 54px;
+  height: 30px;
+  flex: 0 0 54px;
+  border: 0 !important;
+  border-radius: 999px !important;
+  padding: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  cursor: pointer;
+}
+
+.security-page button.security-switch[aria-checked="true"] .security-switch__slider {
+  background: linear-gradient(135deg, #fb6b35, #ef4444);
+  box-shadow: 0 10px 24px rgba(239, 68, 68, 0.22);
+}
+
+.security-page button.security-switch[aria-checked="true"] .security-switch__slider::before {
+  transform: translateX(24px);
+}
+
+.security-page button.security-switch:hover:not(:disabled),
+.security-page button.security-switch:focus-visible:not(:disabled) {
+  border: 0 !important;
+  color: inherit !important;
+  background: transparent !important;
+  box-shadow: 0 0 0 4px rgba(251, 107, 53, 0.16) !important;
+  outline: none;
+}
+
+.security-page button.security-switch:disabled {
+  cursor: wait;
+  opacity: 0.58;
+}
+
+.security-database-card__select {
+  cursor: pointer;
+  transition: border-color 150ms ease, background 150ms ease, transform 150ms ease;
+}
+
+.security-database-card__select:hover:not(:disabled),
+.security-database-card__select:focus-visible:not(:disabled) {
+  border-color: rgba(251, 107, 53, 0.55) !important;
+  background: rgba(255, 247, 237, 0.72) !important;
+  box-shadow: inset 0 0 0 1px rgba(251, 107, 53, 0.14) !important;
+  transform: translateY(-1px);
+  outline: none;
+}
+
+.security-database-card__select:disabled {
+  cursor: wait;
+}
+
+@media (max-width: 1100px) {
+  .security-redundancy-board--balanced {
+    grid-template-columns: 1fr;
+  }
+
+  .security-redundancy-status {
+    border-top: 1px solid rgba(31, 41, 55, 0.1);
+  }
+}
+
+@media (max-width: 680px) {
+  .security-page.cc-menu-layout-page .cc-system-tabbar {
+    margin-top: 4px;
+  }
+
+  .security-page.cc-menu-layout-page {
+    padding-top: 18px;
+  }
+
+  .security-page .cc-menu-page-content.security-card,
+  .security-tab-panel,
+  .security-redundancy-status {
+    padding: 16px;
+  }
+
+  .security-database-routing__target {
+    gap: 12px;
+  }
+}
+
+/* Abschließende Priorität: ältere Patch-Regeln dürfen die Karten nicht überlagern. */
+.security-page .security-redundancy-board--balanced {
+  width: 100%;
+  grid-template-columns: minmax(0, 1.08fr) minmax(410px, 0.92fr);
+  gap: 24px;
+  align-items: start;
+}
+
+.security-page .security-backend-map {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.security-page .security-database-map {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.security-page .security-switch-stack,
+.security-page .security-redundancy-status,
+.security-page .security-backend-card,
+.security-page .security-database-card {
+  position: relative;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.security-page .security-database-card__select {
+  z-index: 1;
+  width: 100%;
+  min-width: 0;
+  pointer-events: auto;
+  touch-action: manipulation;
+}
+
+@media (max-width: 1100px) {
+  .security-page .security-redundancy-board--balanced {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 760px) {
+  .security-page .security-backend-map,
+  .security-page .security-database-map,
+  .security-json-emergency-replay__actions {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

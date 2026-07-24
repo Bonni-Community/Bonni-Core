@@ -1,0 +1,15 @@
+.cc-update-settings-page { display: grid; gap: 20px; }
+.cc-update-settings-page .cc-menu-page-header button { border: 1px solid rgba(25,34,45,.14); border-radius: 9px; padding: 9px 12px; background: #fff; font: inherit; cursor: pointer; }
+.cc-update-settings-card { overflow: hidden; border: 1px solid rgba(25,34,45,.1); border-radius: 15px; background: #fff; }
+.cc-update-settings-card > label { display: flex; align-items: center; justify-content: space-between; gap: 24px; padding: 17px 19px; border-bottom: 1px solid rgba(25,34,45,.08); }
+.cc-update-settings-card label > div { display: grid; gap: 4px; }
+.cc-update-settings-card small { color: #727d87; line-height: 1.4; }
+.cc-update-settings-card input[type="checkbox"] { width: 20px; height: 20px; accent-color: #ef6a35; }
+.cc-update-settings-card select { min-width: 150px; border: 1px solid rgba(25,34,45,.16); border-radius: 9px; padding: 9px 11px; background: #fff; font: inherit; }
+.cc-update-settings-card footer { display: flex; align-items: center; justify-content: space-between; gap: 18px; padding: 16px 19px; }
+.cc-update-settings-card footer span { color: #737e88; font-size: .82rem; }
+.cc-update-settings-card footer button { border: 0; border-radius: 9px; padding: 10px 15px; color: #fff; background: #ef6a35; font: inherit; font-weight: 850; cursor: pointer; }
+.cc-update-settings-message { border-radius: 10px; padding: 11px 13px; }
+.cc-update-settings-message.is-error { color: #8b2932; background: #ffeaec; }
+.cc-update-settings-message.is-success { color: #31764d; background: #e7f6ed; }
+@media (max-width: 650px) { .cc-update-settings-card > label { align-items: flex-start; } .cc-update-settings-select { flex-direction: column; } }

@@ -1,0 +1,153 @@
+import { useEffect, useState } from "react";
+
+import { fetchSystemMonitoringStatus } from "../../../system/api/systemMonitoringApi.js";
+import "./SystemPage.css";
+
+const STATE_LABELS = {
+  healthy: "Funktioniert",
+  degraded: "Eingeschränkt",
+  unhealthy: "Störung",
+  unknown: "Unbekannt",
+};
+
+function formatBytes(value) {
+  const bytes = Number(value || 0);
+  if (!bytes) return "—";
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let size = bytes;
+  let index = 0;
+  while (size >= 1024 && index < units.length - 1) {
+    size /= 1024;
+    index += 1;
+  }
+  return `${size.toFixed(size >= 10 || index === 0 ? 0 : 1)} ${units[index]}`;
+}
+
+function formatUptime(value) {
+  const seconds = Math.max(0, Number(value || 0));
+  const days = Math.floor(seconds / 86400);
+  const hours = Math.floor((seconds % 86400) / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  if (days) return `${days} T ${hours} Std`;
+  if (hours) return `${hours} Std ${minutes} Min`;
+  return `${minutes} Min`;
+}
+
+export default function SystemPage({ token, onNavigate }) {
+  const [status, setStatus] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+
+  async function loadStatus({ quiet = false } = {}) {
+    if (!token) return;
+    if (!quiet) setLoading(true);
+    try {
+      setStatus(await fetchSystemMonitoringStatus(token));
+      setError("");
+    } catch (loadError) {
+      setError(loadError?.message || "Systemstatus konnte nicht geladen werden.");
+    } finally {
+      if (!quiet) setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    let intervalId;
+    loadStatus();
+    intervalId = window.setInterval(() => loadStatus({ quiet: true }), 10_000);
+    return () => window.clearInterval(intervalId);
+  }, [token]);
+
+  const state = status?.state || "unknown";
+
+  return (
+    <section className="cc-menu-layout-page cc-system-monitoring-page">
+      <header className="cc-user-page__header cc-menu-page-header cc-monitoring-header">
+        <div>
+          <p className="cc-monitoring-eyebrow">Bonni Core</p>
+          <h1>Systemüberwachung</h1>
+          <p>Systemstatus, Ressourcen sowie aktuelle Warnungen und Störungen.</p>
+        </div>
+        <button type="button" onClick={() => loadStatus()} disabled={loading}>
+          {loading ? "Prüfe …" : "Jetzt prüfen"}
+        </button>
+      </header>
+
+      {error ? <div className="cc-monitoring-alert is-critical">{error}</div> : null}
+
+      <section className={`cc-monitoring-overall is-${state}`}>
+        <div>
+          <span className="cc-monitoring-state-dot" aria-hidden="true" />
+          <div>
+            <small>Systemstatus</small>
+            <strong>{STATE_LABELS[state]}</strong>
+          </div>
+        </div>
+        <dl>
+          <div><dt>Version</dt><dd>{status?.version || "—"}</dd></div>
+          <div><dt>Betriebszeit</dt><dd>{formatUptime(status?.uptimeSeconds)}</dd></div>
+          <div><dt>System</dt><dd>{status?.hostname || "—"}</dd></div>
+        </dl>
+      </section>
+
+      <section className="cc-monitoring-section">
+        <div className="cc-monitoring-section__heading">
+          <div><span>Live</span><h2>Systemstatus</h2></div>
+          <small>{status?.checkedAt ? `Geprüft ${new Date(status.checkedAt).toLocaleTimeString("de-DE")}` : "Wird geladen"}</small>
+        </div>
+        <div className="cc-monitoring-component-grid">
+          {(status?.components || []).map((component) => (
+            <article key={component.key} className={`cc-monitoring-card is-${component.state}`}>
+              <div><span className="cc-monitoring-state-dot" aria-hidden="true" /><b>{STATE_LABELS[component.state]}</b></div>
+              <h3>{component.label}</h3>
+              <p>{component.message}</p>
+              {component.target !== "system" ? (
+                <button type="button" onClick={() => onNavigate?.(component.target)}>
+                  {component.target === "store" ? "Im Store öffnen" : "Server öffnen"}
+                </button>
+              ) : <small>Systemüberwachung</small>}
+            </article>
+          ))}
+        </div>
+      </section>
+
+      <section className="cc-monitoring-section">
+        <div className="cc-monitoring-section__heading"><div><span>Auslastung</span><h2>Ressourcen</h2></div></div>
+        <div className="cc-monitoring-resource-grid">
+          {(status?.resources || []).map((resource) => (
+            <article key={resource.key} className={`cc-monitoring-resource is-${resource.state}`}>
+              <div><h3>{resource.label}</h3><strong>{Math.round(Number(resource.percent || 0))} %</strong></div>
+              <div className="cc-monitoring-meter"><span style={{ width: `${Math.max(0, Math.min(100, Number(resource.percent || 0)))}%` }} /></div>
+              <small>
+                {resource.totalBytes
+                  ? `${formatBytes(resource.usedBytes)} von ${formatBytes(resource.totalBytes)}`
+                  : resource.detail || resource.path || "Live-Messung"}
+              </small>
+            </article>
+          ))}
+        </div>
+      </section>
+
+      <section className="cc-monitoring-section">
+        <div className="cc-monitoring-section__heading">
+          <div><span>Nur aktuell</span><h2>Warnungen und Störungen</h2></div>
+          <b>{status?.warnings?.length || 0}</b>
+        </div>
+        {status?.warnings?.length ? (
+          <div className="cc-monitoring-warning-list">
+            {status.warnings.map((warning) => (
+              <article key={warning.key} className={`cc-monitoring-alert is-${warning.severity}`}>
+                <div><strong>{warning.title}</strong><p>{warning.message}</p></div>
+                {warning.target !== "system" ? (
+                  <button type="button" onClick={() => onNavigate?.(warning.target)}>{warning.target === "store" ? "Im Store prüfen" : "Unter Server prüfen"}</button>
+                ) : <span>System prüfen</span>}
+              </article>
+            ))}
+          </div>
+        ) : (
+          <div className="cc-monitoring-empty"><span>✓</span><div><strong>Keine aktuellen Störungen</strong><p>Bonni Core meldet momentan keine Warnung.</p></div></div>
+        )}
+      </section>
+    </section>
+  );
+}

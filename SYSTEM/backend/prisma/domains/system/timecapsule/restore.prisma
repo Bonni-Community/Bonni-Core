@@ -1,0 +1,6 @@
+// =====================================================
+// SYSTEM TIMECAPSULE: RESTORE
+// =====================================================
+// Restore-specific persistence belongs here.
+// The current schema stores recovery snapshots in snapshot.prisma; no separate restore job model exists yet.
+// =====================================================

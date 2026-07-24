@@ -1,0 +1,139 @@
+// =====================================================
+// BONNI CORE V3 / two-factor.bonni.prisma
+// 2FA gehört zur Bonni-Core-Sicherheit.
+// =====================================================
+
+enum SecurityTwoFactorMethod {
+  TOTP
+  RECOVERY_CODE
+  WEBAUTHN
+}
+
+enum SecurityTwoFactorCredentialStatus {
+  PENDING
+  ACTIVE
+  DISABLED
+  REVOKED
+}
+
+enum SecurityTwoFactorChallengePurpose {
+  LOGIN
+  SECURITY_SETTINGS
+  ADMIN_ELEVATION
+  DSGVO_SUBJECT_DATA_VIEW
+  DSGVO_SUBJECT_DATA_EXPORT
+  DSGVO_SUBJECT_DATA_DELETE
+  DSGVO_DELETION_RULE_UPDATE
+}
+
+enum SecurityTwoFactorChallengeStatus {
+  PENDING
+  VERIFIED
+  CONSUMED
+  EXPIRED
+  FAILED
+  CANCELLED
+}
+
+enum SecurityTwoFactorAuditResult {
+  SUCCESS
+  FAILURE
+  BLOCKED
+}
+
+model SecurityTwoFactorCredential {
+  id                   String                            @id @default(cuid())
+  accountId            String
+  account              Account                           @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  method               SecurityTwoFactorMethod
+  label                String?
+  secretEncrypted      String?
+  secretFingerprint    String?
+  externalCredentialId String?
+  publicKeyJson        Json?
+  status               SecurityTwoFactorCredentialStatus @default(PENDING)
+  confirmedAt          DateTime?
+  lastUsedAt           DateTime?
+  disabledAt           DateTime?
+  metadataJson         Json?
+  challenges           SecurityTwoFactorChallenge[]
+  createdAt            DateTime                          @default(now())
+  updatedAt            DateTime                          @updatedAt
+
+  @@index([accountId, status])
+  @@index([method, status])
+  @@index([externalCredentialId])
+}
+
+model SecurityTwoFactorRecoveryCode {
+  id        String    @id @default(cuid())
+  accountId String
+  account   Account   @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  codeHash  String    @unique
+  lastFour  String
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([accountId, usedAt])
+}
+
+model SecurityTwoFactorChallenge {
+  id           String                           @id @default(cuid())
+  accountId    String
+  account      Account                          @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  purpose      SecurityTwoFactorChallengePurpose
+  method       SecurityTwoFactorMethod          @default(TOTP)
+  credentialId String?
+  credential   SecurityTwoFactorCredential?     @relation(fields: [credentialId], references: [id], onDelete: SetNull)
+  status       SecurityTwoFactorChallengeStatus @default(PENDING)
+  attempts     Int                              @default(0)
+  maxAttempts  Int                              @default(3)
+  expiresAt    DateTime
+  verifiedAt   DateTime?
+  consumedAt   DateTime?
+  ipAddress    String?
+  userAgent    String?
+  metadataJson Json?
+  createdAt    DateTime                         @default(now())
+  updatedAt    DateTime                         @updatedAt
+
+  @@index([accountId, purpose, status])
+  @@index([expiresAt])
+  @@index([credentialId])
+}
+
+model SecurityTwoFactorLockout {
+  id             String    @id @default(cuid())
+  accountId      String
+  account        Account   @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  scopeKey       String
+  failedAttempts Int       @default(0)
+  lockLevel      Int       @default(0)
+  lockedUntil    DateTime?
+  lastFailureAt  DateTime?
+  lastSuccessAt  DateTime?
+  metadataJson   Json?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  @@unique([accountId, scopeKey])
+  @@index([accountId, lockedUntil])
+  @@index([scopeKey, lockedUntil])
+}
+
+model SecurityTwoFactorAuditLog {
+  id           String                        @id @default(cuid())
+  accountId    String?
+  event        String
+  purpose      SecurityTwoFactorChallengePurpose?
+  method       SecurityTwoFactorMethod?
+  result       SecurityTwoFactorAuditResult
+  ipAddress    String?
+  userAgent    String?
+  metadataJson Json?
+  createdAt    DateTime                      @default(now())
+
+  @@index([accountId, createdAt])
+  @@index([event, createdAt])
+  @@index([purpose, createdAt])
+}

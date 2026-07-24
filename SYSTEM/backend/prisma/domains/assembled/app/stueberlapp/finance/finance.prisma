@@ -1,0 +1,482 @@
+// =====================================================
+// MODULE: STUEBERLAPP / FINANCE
+// =====================================================
+// Finance = Geld, Werte, Konten, Buchungen, Steuern,
+// Verwendung, Belege, Rücklagen und Abschlüsse.
+//
+// Buchhalterischer Kern:
+// - FinanceTransaction = Buchungskopf / Geschäftsvorfall.
+// - FinanceTransactionLine = Soll-/Haben-Zeile.
+// - Jede gebuchte Transaktion muss Summe Soll = Summe Haben erfüllen.
+// - financeAccountId sitzt auf der Zeile, nicht nur am Kopf.
+//
+// Finance ist nicht Product, nicht Article, nicht Inventory.
+// Finance sagt, was ein Vorgang finanziell bedeutet.
+// =====================================================
+
+enum FinanceAccountType {
+  ASSET
+  LIABILITY
+  EQUITY
+  INCOME
+  EXPENSE
+  INTERNAL
+  RESERVE
+}
+
+enum FinanceAccountKind {
+  CASH
+  BANK
+  PAYMENT_PROVIDER
+  DEPOSIT_ASSET
+  DEPOSIT_LIABILITY
+  SALES
+  PURCHASE
+  TAX
+  RESERVE
+  CLEARING
+  OTHER
+}
+
+enum FinanceEntrySide {
+  DEBIT
+  CREDIT
+}
+
+enum FinanceTransactionType {
+  CASH_FLOW
+  VALUE_ALLOCATION
+  TRANSFER
+  SALE
+  PURCHASE
+  DEPOSIT_CHARGE
+  DEPOSIT_RETURN
+  CASH_DIFFERENCE
+  CORRECTION
+  REVERSAL
+  CLOSING
+}
+
+enum FinanceTransactionStatus {
+  DRAFT
+  POSTED
+  CANCELLED
+  REVERSED
+  LOCKED
+}
+
+enum FinanceCategoryType {
+  INCOME
+  EXPENSE
+  ASSET
+  LIABILITY
+  TRANSFER
+  TAX
+  DEPOSIT
+  RESERVE
+  CORRECTION
+}
+
+enum FinanceUsageType {
+  ON_SITE
+  TAKE_AWAY
+  OUTSIDE_EVENT
+  INTERNAL_USE
+  DONATION
+  MEMBERSHIP
+  DEPOSIT
+  GENERAL_OPERATION
+  OTHER
+}
+
+enum FinanceTaxRateKind {
+  STANDARD
+  REDUCED
+  ZERO
+  TAX_FREE
+  NON_TAXABLE
+  CUSTOM
+}
+
+enum FinanceClosingType {
+  DAILY
+  MONTHLY
+  YEARLY
+  CASH_COUNT
+  PERIOD_LOCK
+}
+
+enum FinanceClosingStatus {
+  DRAFT
+  CLOSED
+  APPROVED
+  CANCELLED
+}
+
+enum FinanceReserveStatus {
+  ACTIVE
+  PAUSED
+  CLOSED
+}
+
+model FinanceAccount {
+  id String @id @default(cuid())
+
+  // Menschlich stabiler Schlüssel, z. B. CASH_BAR, BANK_A, DEPOSIT_LIABILITY.
+  key String @unique
+
+  // Optionaler Kontenplan-Code, z. B. 1000, 1200, 1700.
+  code String?
+  name String
+  description String?
+
+  type FinanceAccountType
+  kind FinanceAccountKind @default(OTHER)
+  normalSide FinanceEntrySide
+
+  parentId String?
+  parent FinanceAccount? @relation("FinanceAccountTree", fields: [parentId], references: [id])
+  children FinanceAccount[] @relation("FinanceAccountTree")
+
+  currency String @default("EUR")
+  active Boolean @default(true)
+  sortOrder Int @default(100)
+
+  // Optional für Bank A / Bank B / SumUp etc.
+  institutionName String?
+  iban String?
+  bic String?
+  providerAccountRef String?
+
+  lines FinanceTransactionLine[]
+
+  inventoryScopes      InventoryScope[]
+  inventorySnapshots   InventorySnapshot[]
+  inventoryStocks      InventoryStock[]
+  inventoryDifferences InventoryDifference[]
+  inventoryCorrections InventoryCorrection[]
+
+  conversionInputs  ConversionInput[]  @relation("ConversionInputFinanceAccount")
+  conversionOutputs ConversionOutput[] @relation("ConversionOutputFinanceAccount")
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([code])
+  @@index([type])
+  @@index([kind])
+  @@index([parentId])
+}
+
+model FinanceTransaction {
+  id String @id @default(cuid())
+
+  type FinanceTransactionType
+  status FinanceTransactionStatus @default(DRAFT)
+
+  bookingNo String? @unique
+  title String?
+  description String?
+
+  // Externe fachliche Quelle, z. B. ProductTransaction, ArticleTransaction, DepositTransaction, POS, manuell.
+  sourceModule String?
+  sourceType String?
+  sourceId String?
+
+  conversionTransactionId String?
+  conversionTransaction   ConversionTransaction? @relation("ConversionFinanceTransactions", fields: [conversionTransactionId], references: [id])
+
+  financeSessionId String?
+  financeSession FinanceSession? @relation(fields: [financeSessionId], references: [id])
+
+  financeSessionEntryId String?
+  financeSessionEntry FinanceSessionEntry? @relation(fields: [financeSessionEntryId], references: [id])
+
+  occurredAt DateTime @default(now())
+  postedAt DateTime?
+  lockedAt DateTime?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  createdByAccountId String?
+  postedByAccountId String?
+
+  // Schnelle Prüf-/Summenfelder. Maßgeblich bleiben die Lines.
+  totalDebitCents Int @default(0)
+  totalCreditCents Int @default(0)
+  currency String @default("EUR")
+
+  lines FinanceTransactionLine[]
+  receipts FinanceReceipt[]
+  payments PaymentTransaction[]
+  cashBookEntries CashBookEntry[]
+
+  @@index([type])
+  @@index([status])
+  @@index([occurredAt])
+  @@index([conversionTransactionId])
+  @@index([financeSessionId])
+  @@index([financeSessionEntryId])
+  @@index([sourceModule, sourceType, sourceId])
+}
+
+model FinanceTransactionLine {
+  id String @id @default(cuid())
+
+  transactionId String
+  transaction FinanceTransaction @relation(fields: [transactionId], references: [id], onDelete: Cascade)
+
+  financeAccountId String
+  financeAccount FinanceAccount @relation(fields: [financeAccountId], references: [id])
+
+  side FinanceEntrySide
+  amountCents Int
+  currency String @default("EUR")
+
+  categoryId String?
+  category FinanceCategory? @relation(fields: [categoryId], references: [id])
+
+  usageId String?
+  usage FinanceUsage? @relation(fields: [usageId], references: [id])
+
+  purposeId String?
+  purpose FinancePurpose? @relation(fields: [purposeId], references: [id])
+
+  taxRateId String?
+  taxRate FinanceTaxRate? @relation(fields: [taxRateId], references: [id])
+
+  grossCents Int?
+  netCents Int?
+  taxCents Int?
+
+  productId String?
+  productTransactionId String?
+  articleId String?
+  articleTransactionId String?
+  depositProductId String?
+  depositTransactionId String?
+
+  description String?
+  lineNo Int @default(1)
+  createdAt DateTime @default(now())
+
+  @@index([transactionId])
+  @@index([financeAccountId])
+  @@index([categoryId])
+  @@index([usageId])
+  @@index([purposeId])
+  @@index([taxRateId])
+  @@index([productId])
+  @@index([articleId])
+  @@index([depositProductId])
+}
+
+model FinanceCategory {
+  id String @id @default(cuid())
+  key String @unique
+  name String
+  type FinanceCategoryType
+  description String?
+  active Boolean @default(true)
+  sortOrder Int @default(100)
+
+  defaultAccountId String?
+  defaultTaxRateId String?
+
+  lines FinanceTransactionLine[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([type])
+  @@index([active])
+}
+
+model FinanceUsage {
+  id String @id @default(cuid())
+  key String @unique
+  name String
+  type FinanceUsageType
+  description String?
+  active Boolean @default(true)
+  sortOrder Int @default(100)
+
+  lines FinanceTransactionLine[]
+  taxRules FinanceTaxRule[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([type])
+  @@index([active])
+}
+
+model FinancePurpose {
+  id String @id @default(cuid())
+  key String @unique
+  name String
+  description String?
+  active Boolean @default(true)
+  parentId String?
+  parent FinancePurpose? @relation("FinancePurposeTree", fields: [parentId], references: [id])
+  children FinancePurpose[] @relation("FinancePurposeTree")
+
+  lines FinanceTransactionLine[]
+  reserves FinanceReserve[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([active])
+  @@index([parentId])
+}
+
+model FinanceTaxRate {
+  id String @id @default(cuid())
+  key String @unique
+  name String
+  kind FinanceTaxRateKind
+
+  // 1900 = 19,00 %, 700 = 7,00 %, 0 = 0,00 %.
+  rateBasisPoints Int
+
+  validFrom DateTime?
+  validTo DateTime?
+  active Boolean @default(true)
+  note String?
+
+  lines FinanceTransactionLine[]
+  rules FinanceTaxRule[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([kind])
+  @@index([active])
+  @@index([validFrom, validTo])
+}
+
+model FinanceTaxRule {
+  id String @id @default(cuid())
+
+  // Steuerregel für Produkt-/Artikel-/Pfand-/Verwendungs-Kombinationen.
+  productType String?
+  productId String?
+  articleId String?
+  depositProductId String?
+
+  usageId String?
+  usage FinanceUsage? @relation(fields: [usageId], references: [id])
+
+  taxRateId String
+  taxRate FinanceTaxRate @relation(fields: [taxRateId], references: [id])
+
+  priority Int @default(100)
+  active Boolean @default(true)
+  validFrom DateTime?
+  validTo DateTime?
+  note String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([productType])
+  @@index([productId])
+  @@index([articleId])
+  @@index([depositProductId])
+  @@index([usageId])
+  @@index([taxRateId])
+}
+
+model FinanceReceipt {
+  id String @id @default(cuid())
+
+  transactionId String?
+  transaction FinanceTransaction? @relation(fields: [transactionId], references: [id])
+
+  fileId String?
+  fileName String?
+  mimeType String?
+  receiptNo String?
+  issuer String?
+  amountCents Int?
+  currency String @default("EUR")
+  receiptDate DateTime?
+  note String?
+
+  createdAt DateTime @default(now())
+  createdByAccountId String?
+
+  @@index([transactionId])
+  @@index([receiptDate])
+}
+
+model FinanceClosing {
+  id String @id @default(cuid())
+  type FinanceClosingType
+  status FinanceClosingStatus @default(DRAFT)
+
+  title String?
+  accountId String?
+
+  periodStart DateTime
+  periodEnd DateTime
+
+  expectedBalanceCents Int?
+  countedBalanceCents Int?
+  differenceCents Int?
+  currency String @default("EUR")
+
+  summaryJson Json?
+  createdAt DateTime @default(now())
+  closedAt DateTime?
+  approvedAt DateTime?
+  createdByAccountId String?
+  approvedByAccountId String?
+
+  @@index([type])
+  @@index([status])
+  @@index([periodStart, periodEnd])
+  @@index([accountId])
+}
+
+model FinanceReserve {
+  id String @id @default(cuid())
+  key String @unique
+  name String
+  status FinanceReserveStatus @default(ACTIVE)
+
+  purposeId String?
+  purpose FinancePurpose? @relation(fields: [purposeId], references: [id])
+
+  targetAmountCents Int?
+  reservedAmountCents Int @default(0)
+  currency String @default("EUR")
+  startAt DateTime?
+  targetAt DateTime?
+  note String?
+
+  conversionInputs  ConversionInput[]  @relation("ConversionInputFinanceReserve")
+  conversionOutputs ConversionOutput[] @relation("ConversionOutputFinanceReserve")
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([status])
+  @@index([purposeId])
+}
+
+model FinanceCalculation {
+  id String @id @default(cuid())
+  type String
+  title String?
+  fromAt DateTime?
+  toAt DateTime?
+  basisJson Json?
+  resultJson Json?
+  calculatedAt DateTime @default(now())
+  createdByAccountId String?
+
+  @@index([type])
+  @@index([calculatedAt])
+}

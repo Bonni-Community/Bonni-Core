@@ -1,0 +1,27 @@
+// App-owned extension data for Bonni Core persons and member profiles.
+// Core IDs are stored as scalar references so the optional app schema does not
+// force reverse relations into the Bonni Core schema.
+
+model StueberlPersonAddress {
+  id         String   @id @default(cuid())
+  personId   String
+  type       String   @default("PRIMARY")
+  street     String?
+  houseNo    String?
+  postalCode String?
+  city       String?
+  country    String?
+  note       String?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@unique([personId, type])
+  @@index([personId])
+}
+
+model StueberlMemberDetails {
+  memberProfileId String   @id
+  socialCategory  String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+}

@@ -1,0 +1,13 @@
+export { systemRuntimeRouter } from "./system-runtime.routes.js";
+export {
+  getSystemCompatibilityStatus,
+  getSystemRuntimeModules,
+  getSystemRuntimeStatus,
+  runSystemRuntimeModuleLifecycleAction,
+  getSystemRuntimeModuleLifecycleStatus,
+  getSystemRuntimeModuleInstallPlan,
+  getSystemRuntimeModuleDetails,
+  deactivateSystemRuntimeModule,
+  applySystemRuntimeModuleInstallPlan,
+  activateSystemRuntimeModule,
+} from "./system-runtime.service.js";

@@ -1,0 +1,61 @@
+// =====================================================
+// SYSTEM IDENTITY: ACCOUNT
+// =====================================================
+// Technische Bonni-Account-Identität und Basis-Login.
+// Fach-Apps, Terminals oder Plugins dürfen eigene Profile liefern,
+// Bonni Core besitzt hier nur den Start-/Login-Kern.
+// =====================================================
+
+enum AccountType {
+  MEMBER
+  ADMIN
+  TERMINAL
+  SERVICE
+}
+
+enum PersonAccountRole {
+  PRIMARY
+  SUB_ACCOUNT
+}
+
+model Account {
+  id              String      @id @default(cuid())
+  type            AccountType
+  loginName       String      @unique
+  email           String?
+  passwordHash    String?
+  externalSubject String?
+  isActive        Boolean     @default(true)
+  isSandbox       Boolean     @default(false)
+  lastLoginAt     DateTime?
+
+  personId String?
+  person   Person? @relation(fields: [personId], references: [id])
+  personAccountRole PersonAccountRole @default(PRIMARY)
+  linkedAt         DateTime?
+
+  authProviderId String
+  authProvider   AuthProvider @relation(fields: [authProviderId], references: [id])
+
+  roles              AccountRole[]
+  sessions           Session[]
+  externalIdentities ExternalIdentity[]
+  refreshTokens      RefreshToken[]
+
+  accountMemberCapabilities AccountMemberCapability[]
+  twoFactorCredentials      SecurityTwoFactorCredential[]
+  twoFactorRecoveryCodes    SecurityTwoFactorRecoveryCode[]
+  twoFactorChallenges       SecurityTwoFactorChallenge[]
+  twoFactorLockouts         SecurityTwoFactorLockout[]
+
+  archiveGrantsCreated ArchiveFolderGrant[] @relation("ArchiveFolderGrantor")
+  accountLinksRequested AccountPersonLinkRequest[] @relation("AccountLinkRequester")
+  accountLinksTargeted  AccountPersonLinkRequest[] @relation("AccountLinkTarget")
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([type])
+  @@index([isActive])
+  @@index([authProviderId])
+}

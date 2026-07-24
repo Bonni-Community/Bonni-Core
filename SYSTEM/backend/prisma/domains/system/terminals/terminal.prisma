@@ -1,0 +1,131 @@
+// =====================================================
+// BONNI CORE: TERMINALS
+// =====================================================
+// 
+// 
+// =====================================================
+
+// =====================================================
+// ENUMS
+// =====================================================
+
+enum TerminalType {
+  BAR
+  KITCHEN
+  TABLE
+  CASHIER
+  ADMIN
+  STORAGE
+  SELF_SERVICE
+  INVENTORY_SCANNER
+}
+
+// =====================================================
+// MODELS
+// =====================================================
+
+model Terminal {
+  id           String       @id @default(cuid())
+  key          String       @unique
+  name         String
+  type         TerminalType
+  layoutPreset String
+  roomId       String?
+  localNodeId  String?
+  active       Boolean      @default(true)
+  createdAt    DateTime     @default(now())
+  updatedAt    DateTime     @updatedAt
+
+  capabilities TerminalCapability[]
+  sessions     TerminalSession[]
+  favorites    TerminalFavoriteProduct[]
+  printers     TerminalPrinter[]
+}
+
+model TerminalSession {
+  id         String    @id @default(cuid())
+  terminalId String
+  terminal   Terminal  @relation(fields: [terminalId], references: [id])
+  accountId  String?
+  personId   String?
+  startedAt  DateTime  @default(now())
+  endedAt    DateTime?
+}
+
+model TerminalFavoriteProduct {
+  id         String   @id @default(cuid())
+  terminalId String
+  terminal   Terminal @relation(fields: [terminalId], references: [id])
+  productId  String
+  position   Int
+  label      String?
+
+  @@unique([terminalId, position])
+}
+
+model TerminalPrinter {
+  terminalId String
+  printerId  String
+  purpose    String
+
+  terminal Terminal @relation(fields: [terminalId], references: [id])
+
+  @@id([terminalId, printerId, purpose])
+}
+
+
+model TerminalCapability {
+  id         String   @id @default(cuid())
+  terminalId String
+  terminal   Terminal @relation(fields: [terminalId], references: [id])
+  capability String
+  enabled    Boolean  @default(true)
+
+  @@unique([terminalId, capability])
+}
+
+model TerminalOperatorConfirmation {
+  id                String   @id @default(cuid())
+  terminalId        String
+  terminalSessionId String?
+  workerProfileId   String?
+  accountId         String?
+  action            String
+  entityType        String?
+  entityId          String?
+  confirmedAt       DateTime @default(now())
+
+  @@index([terminalId, confirmedAt])
+}
+
+model TerminalGroup {
+  id        String   @id @default(cuid())
+  key       String   @unique
+  label     String
+  note      String?
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+
+  terminals TerminalGroupTerminal[]
+}
+
+model TerminalGroupTerminal {
+  terminalGroupId String
+  terminalId      String
+
+  group TerminalGroup @relation(fields: [terminalGroupId], references: [id])
+
+  @@id([terminalGroupId, terminalId])
+}
+
+model TerminalLayoutOverride {
+  id           String        @id @default(cuid())
+  terminalId   String?
+  terminalType TerminalType?
+  layoutPreset String?
+  configJson   Json
+  active       Boolean       @default(true)
+  createdAt    DateTime      @default(now())
+}
+
+

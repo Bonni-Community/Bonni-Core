@@ -1,0 +1,84 @@
+// =====================================================
+// SYSTEM PRIVACY
+// =====================================================
+// Kleine allgemeine Datenschutz-Basis für Bonni Core.
+// Umfangreiche DSGV-/Compliance-Automation bleibt ein Add-on.
+// =====================================================
+
+enum PrivacyRequestStatus {
+  OPEN
+  IN_REVIEW
+  COMPLETED
+  REJECTED
+  CANCELLED
+}
+
+enum ConsentRecordStatus {
+  ACTIVE
+  REVOKED
+  EXPIRED
+}
+
+model PrivacySetting {
+  id        String   @id @default(cuid())
+  key       String   @unique
+  value     Json
+  note      String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model ConsentRecord {
+  id        String              @id @default(cuid())
+  subjectType String
+  subjectId   String?
+  accountId   String?
+
+  consentKey  String
+  consentText String?
+  status      ConsentRecordStatus @default(ACTIVE)
+
+  grantedAt DateTime  @default(now())
+  revokedAt DateTime?
+  expiresAt DateTime?
+
+  metadataJson Json?
+
+  @@index([subjectType, subjectId])
+  @@index([accountId])
+  @@index([consentKey, status])
+}
+
+model PrivacyRequest {
+  id          String               @id @default(cuid())
+  requestType String
+  status      PrivacyRequestStatus @default(OPEN)
+
+  subjectType String
+  subjectId   String?
+  accountId   String?
+
+  requestedByAccountId String?
+  message              String?
+  resultJson           Json?
+  errorMessage         String?
+
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  completedAt DateTime?
+
+  @@index([requestType, status])
+  @@index([subjectType, subjectId])
+  @@index([accountId])
+}
+
+model DataRetentionRule {
+  id            String   @id @default(cuid())
+  key           String   @unique
+  target        String
+  retentionDays Int
+  active        Boolean  @default(true)
+  note          String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+}

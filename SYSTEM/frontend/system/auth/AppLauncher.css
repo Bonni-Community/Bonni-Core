@@ -1,0 +1,385 @@
+.bonni-launcher {
+  min-height: 100vh;
+  box-sizing: border-box;
+  padding: clamp(20px, 4vw, 52px);
+  color: #2f241f;
+  background:
+    radial-gradient(circle at 50% 38%, rgba(190, 148, 91, 0.12), transparent 38%),
+    #fff;
+}
+
+.bonni-launcher *,
+.bonni-launcher *::before,
+.bonni-launcher *::after {
+  box-sizing: border-box;
+}
+
+.bonni-launcher__header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 24px;
+  width: min(1040px, 100%);
+  margin: 0 auto clamp(18px, 3vw, 34px);
+}
+
+.bonni-launcher__brand,
+.bonni-launcher__welcome {
+  margin: 0;
+  color: rgba(47, 36, 31, 0.58);
+}
+
+.bonni-launcher__brand {
+  font-size: 0.78rem;
+  font-weight: 900;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.bonni-launcher__header h1 {
+  margin: 5px 0 4px;
+  font-size: clamp(2rem, 5vw, 4.2rem);
+  line-height: 0.95;
+  letter-spacing: -0.065em;
+}
+
+.bonni-launcher__welcome {
+  font-size: 0.92rem;
+}
+
+.bonni-launcher__logout,
+.bonni-launcher__additional button {
+  border: 1px solid rgba(47, 36, 31, 0.2);
+  border-radius: 999px;
+  color: #2f241f;
+  background: rgba(255, 255, 255, 0.88);
+  cursor: pointer;
+  transition: color 160ms ease, background 160ms ease, border-color 160ms ease;
+}
+
+.bonni-launcher__logout {
+  padding: 10px 16px;
+}
+
+.bonni-launcher__logout:hover,
+.bonni-launcher__logout:focus-visible,
+.bonni-launcher__additional button:hover,
+.bonni-launcher__additional button:focus-visible {
+  color: #fff;
+  border-color: #2f241f;
+  background: #2f241f;
+}
+
+.bonni-launcher__stage {
+  display: grid;
+  justify-items: center;
+  width: min(1040px, 100%);
+  margin: 0 auto;
+}
+
+.bonni-launcher__wheel {
+  position: relative;
+  width: min(70vh, 720px, 92vw);
+  aspect-ratio: 1;
+  overflow: hidden;
+  border: 1px solid rgba(47, 36, 31, 0.18);
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.82);
+  box-shadow: 0 34px 90px rgba(56, 41, 33, 0.12);
+  isolation: isolate;
+}
+
+.bonni-launcher__wheel::before {
+  content: "";
+  position: absolute;
+  inset: 1.5%;
+  z-index: 4;
+  border: 1px solid rgba(47, 36, 31, 0.08);
+  border-radius: inherit;
+  pointer-events: none;
+}
+
+.bonni-launcher__segment {
+  position: absolute;
+  inset: 0;
+  border: 0;
+  color: #2f241f;
+  background: transparent;
+  cursor: pointer;
+  transition: color 170ms ease, background 170ms ease;
+}
+
+.bonni-launcher__segment:hover,
+.bonni-launcher__segment:focus-visible {
+  z-index: 3;
+  color: #fff;
+  background: #2f241f;
+}
+
+.bonni-launcher__segment:focus-visible {
+  outline: 4px solid rgba(47, 36, 31, 0.3);
+  outline-offset: -12px;
+}
+
+.bonni-launcher__segment--top {
+  clip-path: polygon(50% 50%, 8% 0, 92% 0);
+}
+
+.bonni-launcher__segment--right {
+  clip-path: polygon(50% 50%, 100% 8%, 100% 92%);
+}
+
+.bonni-launcher__segment--bottom {
+  clip-path: polygon(50% 50%, 92% 100%, 8% 100%);
+}
+
+.bonni-launcher__segment--left {
+  clip-path: polygon(50% 50%, 0 92%, 0 8%);
+}
+
+.bonni-launcher__segment-content {
+  position: absolute;
+  z-index: 2;
+  display: grid;
+  justify-items: center;
+  gap: 7px;
+  width: clamp(174px, 25vw, 260px);
+  text-align: center;
+  pointer-events: none;
+}
+
+.bonni-launcher__segment--top .bonni-launcher__segment-content {
+  top: 9%;
+  left: 50%;
+  transform: translateX(-50%);
+}
+
+.bonni-launcher__segment--right .bonni-launcher__segment-content {
+  top: 50%;
+  right: 5%;
+  transform: translateY(-50%);
+}
+
+.bonni-launcher__segment--bottom .bonni-launcher__segment-content {
+  bottom: 9%;
+  left: 50%;
+  transform: translateX(-50%);
+}
+
+.bonni-launcher__segment--left .bonni-launcher__segment-content {
+  top: 50%;
+  left: 5%;
+  transform: translateY(-50%);
+}
+
+.bonni-launcher__eyebrow {
+  color: rgba(47, 36, 31, 0.52);
+  font-size: 0.7rem;
+  font-weight: 900;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  transition: color 170ms ease;
+}
+
+.bonni-launcher__title {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 9px;
+}
+
+.bonni-launcher__icon {
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  border-radius: 14px;
+  font-size: 1.25rem;
+  background: rgba(47, 36, 31, 0.08);
+  transition: background 170ms ease;
+}
+
+.bonni-launcher__title strong {
+  font-size: clamp(1.3rem, 2.7vw, 2.35rem);
+  line-height: 0.98;
+  letter-spacing: -0.055em;
+  white-space: nowrap;
+}
+
+.bonni-launcher__description {
+  max-width: 240px;
+  color: rgba(47, 36, 31, 0.67);
+  font-size: clamp(0.78rem, 1.15vw, 0.95rem);
+  line-height: 1.35;
+  transition: color 170ms ease;
+}
+
+.bonni-launcher__segment:hover .bonni-launcher__eyebrow,
+.bonni-launcher__segment:hover .bonni-launcher__description,
+.bonni-launcher__segment:focus-visible .bonni-launcher__eyebrow,
+.bonni-launcher__segment:focus-visible .bonni-launcher__description {
+  color: rgba(255, 255, 255, 0.74);
+}
+
+.bonni-launcher__segment:hover .bonni-launcher__icon,
+.bonni-launcher__segment:focus-visible .bonni-launcher__icon {
+  background: rgba(255, 255, 255, 0.14);
+}
+
+.bonni-launcher__divider {
+  position: absolute;
+  z-index: 5;
+  background: rgba(47, 36, 31, 0.15);
+  pointer-events: none;
+}
+
+.bonni-launcher__divider--vertical {
+  top: 50%;
+  left: 50%;
+  width: 1px;
+  height: 90%;
+  transform: translate(-50%, -50%) rotate(45deg);
+}
+
+.bonni-launcher__divider--horizontal {
+  top: 50%;
+  left: 50%;
+  width: 1px;
+  height: 90%;
+  transform: translate(-50%, -50%) rotate(-45deg);
+}
+
+.bonni-launcher__center {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  z-index: 8;
+  display: grid;
+  place-items: center;
+  align-content: center;
+  width: clamp(108px, 15vw, 154px);
+  aspect-ratio: 1;
+  border: 1px solid rgba(47, 36, 31, 0.18);
+  border-radius: 50%;
+  color: #2f241f;
+  background: #fff;
+  box-shadow: 0 24px 64px rgba(56, 41, 33, 0.16);
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+}
+
+.bonni-launcher__center strong {
+  font-size: clamp(1.4rem, 3vw, 2.25rem);
+  line-height: 1;
+  letter-spacing: -0.05em;
+}
+
+.bonni-launcher__center span {
+  margin-top: 5px;
+  color: rgba(47, 36, 31, 0.58);
+  font-size: 0.7rem;
+  font-weight: 900;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.bonni-launcher__empty {
+  margin: 22px 0 0;
+  color: rgba(47, 36, 31, 0.68);
+  text-align: center;
+}
+
+.bonni-launcher__additional {
+  width: min(720px, 100%);
+  margin-top: 26px;
+  text-align: center;
+}
+
+.bonni-launcher__additional h2 {
+  margin: 0 0 12px;
+  font-size: 1rem;
+}
+
+.bonni-launcher__additional > div {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 10px;
+}
+
+.bonni-launcher__additional button {
+  padding: 9px 14px;
+}
+
+@media (max-width: 760px) {
+  .bonni-launcher__header {
+    align-items: center;
+  }
+
+  .bonni-launcher__wheel {
+    width: min(92vw, 620px);
+  }
+
+  .bonni-launcher__segment-content {
+    width: clamp(126px, 31vw, 184px);
+    gap: 5px;
+  }
+
+  .bonni-launcher__eyebrow,
+  .bonni-launcher__description {
+    display: none;
+  }
+
+  .bonni-launcher__title {
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .bonni-launcher__title strong {
+    font-size: clamp(0.96rem, 4vw, 1.38rem);
+  }
+
+  .bonni-launcher__icon {
+    width: 34px;
+    height: 34px;
+    font-size: 1.05rem;
+  }
+}
+
+@media (max-width: 480px) {
+  .bonni-launcher {
+    padding: 16px 10px 28px;
+  }
+
+  .bonni-launcher__header {
+    padding: 0 6px;
+  }
+
+  .bonni-launcher__welcome {
+    display: none;
+  }
+
+  .bonni-launcher__logout {
+    padding: 8px 12px;
+    font-size: 0.82rem;
+  }
+
+  .bonni-launcher__segment--right .bonni-launcher__segment-content {
+    right: 1%;
+  }
+
+  .bonni-launcher__segment--left .bonni-launcher__segment-content {
+    left: 1%;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .bonni-launcher__segment,
+  .bonni-launcher__eyebrow,
+  .bonni-launcher__description,
+  .bonni-launcher__icon,
+  .bonni-launcher__logout,
+  .bonni-launcher__additional button {
+    transition: none;
+  }
+}

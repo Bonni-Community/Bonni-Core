@@ -1,0 +1,11 @@
+export const permissions = {
+  SYSTEM_ADMIN: "SYSTEM_ADMIN",
+  SERVER_VIEW: "SERVER_VIEW",
+  AUTH_MODE_SWITCH: "AUTH_MODE_SWITCH",
+  AUDIT_VIEW: "AUDIT_VIEW",
+  SYSTEM_LOG_VIEW: "SYSTEM_LOG_VIEW",
+  TERMINAL_MANAGE: "TERMINAL_MANAGE",
+  LOCAL_NODE_MANAGE: "LOCAL_NODE_MANAGE"
+} as const;
+
+export type PermissionKey = keyof typeof permissions;

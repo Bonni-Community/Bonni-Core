@@ -1,0 +1,106 @@
+// =====================================================
+// SYSTEM TIMECAPSULE: ARCHIVE
+// =====================================================
+// Logische, zugriffsgesteuerte Archivstruktur. Physische Pfade werden nicht
+// als Berechtigung verwendet; storageKey ist die opake Ablagekennung.
+// =====================================================
+
+enum ArchiveFolderKind {
+  ACCOUNT_ROOT
+  PERSONAL
+  DOCUMENTS
+  CUSTOM
+  APP
+}
+
+model ArchiveFolder {
+  id             String            @id @default(cuid())
+  provisionKey   String?           @unique
+  storageKey     String            @unique @default(cuid())
+  name           String
+  normalizedName String
+  kind           ArchiveFolderKind @default(CUSTOM)
+  readOnly       Boolean           @default(false)
+  systemManaged  Boolean           @default(false)
+
+  parentId String?
+  parent   ArchiveFolder?  @relation("ArchiveFolderTree", fields: [parentId], references: [id], onDelete: Restrict)
+  children ArchiveFolder[] @relation("ArchiveFolderTree")
+
+  ownerPersonId String
+  ownerPerson   Person @relation("ArchiveFolderOwner", fields: [ownerPersonId], references: [id], onDelete: Restrict)
+
+  createdByAccountId String?
+  deletedAt         DateTime?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  grants ArchiveFolderGrant[]
+  files  ArchiveFile[]
+
+  @@index([parentId, deletedAt])
+  @@index([ownerPersonId, kind, deletedAt])
+  @@unique([parentId, normalizedName])
+}
+
+model ArchiveFile {
+  id                      String        @id @default(cuid())
+  folderId                String
+  folder                  ArchiveFolder @relation(fields: [folderId], references: [id], onDelete: Restrict)
+
+  ownerPersonId           String
+  ownerPerson             Person @relation("ArchiveFileOwner", fields: [ownerPersonId], references: [id], onDelete: Restrict)
+
+  createdByAccountId      String?
+  displayName             String
+  normalizedDisplayName   String
+  originalName            String
+  normalizedOriginalName  String
+  storageName             String
+  normalizedStorageName   String
+  objectKey               String @unique
+  mimeType                String
+  sizeBytes               Int
+  sha256                   String
+  encryptionVersion       Int @default(1)
+
+  deletedAt DateTime?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([folderId, storageName])
+  @@index([folderId, deletedAt, createdAt])
+  @@index([ownerPersonId, normalizedDisplayName, deletedAt])
+  @@index([normalizedOriginalName])
+  @@index([normalizedStorageName])
+}
+
+model ArchiveFolderGrant {
+  id       String        @id @default(cuid())
+  folderId String
+  folder   ArchiveFolder @relation(fields: [folderId], references: [id], onDelete: Cascade)
+
+  granteePersonId String
+  granteePerson   Person @relation("ArchiveFolderGrantee", fields: [granteePersonId], references: [id], onDelete: Cascade)
+
+  grantedByAccountId String
+  grantedByAccount   Account @relation("ArchiveFolderGrantor", fields: [grantedByAccountId], references: [id], onDelete: Restrict)
+
+  canList    Boolean @default(true)
+  canRead    Boolean @default(true)
+  canCopy    Boolean @default(true)
+  canDeposit Boolean @default(false)
+  canWrite   Boolean @default(false)
+  canManage  Boolean @default(false)
+  canShare   Boolean @default(false)
+  canExport  Boolean @default(false)
+
+  expiresAt DateTime?
+  revokedAt DateTime?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  @@unique([folderId, granteePersonId])
+  @@index([granteePersonId, revokedAt, expiresAt])
+  @@index([folderId, revokedAt])
+}
