@@ -6,7 +6,7 @@
 
 > **Die modulare Plattform für Vereine, das Ehrenamt und weitere Organisationen.**
 
-Bonni Core ist die zentrale Plattform und gemeinsame Grundlage für alle Anwendungen.
+Bonni Core ist die zentrale Plattform für alle Anwendungen.
 
 Es stellt grundlegende Funktionen wie Benutzerverwaltung, Rollen, Berechtigungen, Schnittstellen und weitere Systemdienste bereit. Anwendungen können diese Funktionen gemeinsam nutzen und sich auf ihre eigentlichen Aufgaben konzentrieren.
 
