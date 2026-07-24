@@ -1,4 +1,3 @@
-# Bonni Core
 # 🧩 Bonni Core
 
 [![License](https://img.shields.io/badge/License-BCL%20v1.0-orange)](https://github.com/Bonni-Community/bonni-core/blob/main/LICENSE.md)
