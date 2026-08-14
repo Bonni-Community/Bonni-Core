@@ -24,6 +24,7 @@ enum SecurityTwoFactorChallengePurpose {
   DSGVO_SUBJECT_DATA_EXPORT
   DSGVO_SUBJECT_DATA_DELETE
   DSGVO_DELETION_RULE_UPDATE
+  MODULE_PRIVATE_DATA_ACCESS
 }
 
 enum SecurityTwoFactorChallengeStatus {

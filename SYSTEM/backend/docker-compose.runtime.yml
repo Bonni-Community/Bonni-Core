@@ -12,7 +12,7 @@ x-backend-environment: &backend_environment
   LOCAL_AUTH_PORT: 4001
   SYSTEM_SLOT_NAME: backend-active
   SYSTEM_SLOT_ROLE: active
-  SYSTEM_VERSION: ${SYSTEM_VERSION:-0.1.13}
+  SYSTEM_VERSION: ${SYSTEM_VERSION:-0.1.19}
   SYSTEM_UPDATE_PROBE_MODE: "false"
   # Exactly one trusted hop: the closed runtime-proxy nginx container. Core
   # defaults to zero outside this topology and validates the configured count.
@@ -23,7 +23,6 @@ x-backend-environment: &backend_environment
   BONNI_UPDATE_TRUSTED_KEYS_DIR: /run/secrets/bonni-update/trusted-keys
   BONNI_PROJECT_ROOT: /app
   BONNI_STORAGE_ROOT: /app/storage
-  BONNI_NETWORK_DATA_DIR: /app/storage/addons/bonni-network
   RUN_SYSTEM_ROOT: /app/run_system
   FRONTEND_DIST_ROOT: /app/public
   SYSTEM_EMERGENCY_HOLD_DAYS: ${SYSTEM_EMERGENCY_HOLD_DAYS:-14}
@@ -34,12 +33,11 @@ x-backend-environment: &backend_environment
   BONNI_SITE_ID: ${BONNI_SITE_ID:?BONNI_SITE_ID muss gesetzt sein}
   BONNI_NODE_ID: ${BONNI_NODE_ID:?BONNI_NODE_ID muss gesetzt sein}
   BONNI_TENANT_ID: ${BONNI_TENANT_ID:?BONNI_TENANT_ID muss gesetzt sein}
-  HOCKET_INVITATION_PEPPER: ${HOCKET_INVITATION_PEPPER:?HOCKET_INVITATION_PEPPER muss gesetzt sein}
   BONNI_GATEWAY_INTERNAL_SECRET: ${BONNI_GATEWAY_INTERNAL_SECRET:?BONNI_GATEWAY_INTERNAL_SECRET muss gesetzt sein}
   DATABASE_OPERATION_MODE: ${DATABASE_OPERATION_MODE:-server-only}
   DATABASE_SYNC_MODE: ${DATABASE_SYNC_MODE:-manual}
-  DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD muss gesetzt sein}@db:5432/${POSTGRES_DB:-stueberlapp}?schema=public
-  SERVER_DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD muss gesetzt sein}@db:5432/${POSTGRES_DB:-stueberlapp}?schema=public
+  DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD muss gesetzt sein}@db:5432/${POSTGRES_DB:-bonni_core}?schema=public
+  SERVER_DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD muss gesetzt sein}@db:5432/${POSTGRES_DB:-bonni_core}?schema=public
   LOCAL_DATABASE_URL: ${LOCAL_DATABASE_URL:-}
   MASTER_KEY: ${MASTER_KEY:?MASTER_KEY muss gesetzt sein}
   JWT_SECRET: ${JWT_SECRET:?JWT_SECRET muss gesetzt sein}
@@ -52,10 +50,6 @@ x-backend-environment: &backend_environment
   MEDIA_STORAGE_ROOT: /app/storage/media
   MEDIA_PUBLIC_BASE_PATH: /api/media/files
   MEDIA_MAX_UPLOAD_BYTES: ${MEDIA_MAX_UPLOAD_BYTES:-10485760}
-  LICENSE_PUBLIC_KEY_PATH: ./config/licenses/public-key.pem
-  LICENSE_DEFAULT_KEY_FILE: ./config/licenses/community.license
-  LICENSE_KEY_FILE: /app/storage/licenses/current.license
-  LICENSE_INSTALLATION_FILE: /app/storage/licenses/installation.json
 
 x-production-volumes: &production_volumes
   - ${BONNI_HOST_RUNTIME_ROOT:-../../runtime}/storage:/app/storage
@@ -124,7 +118,7 @@ services:
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-postgres}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD muss gesetzt sein}
-      POSTGRES_DB: ${POSTGRES_DB:-stueberlapp}
+      POSTGRES_DB: ${POSTGRES_DB:-bonni_core}
     volumes:
       - postgres_data:/var/lib/postgresql/data
     networks:
@@ -155,6 +149,7 @@ services:
       <<: *backend_environment
       SYSTEM_SLOT_NAME: database-bootstrap
       SYSTEM_SLOT_ROLE: installer
+      BONNI_BOOTSTRAP_ADMIN_PASSWORD: ${BONNI_BOOTSTRAP_ADMIN_PASSWORD:-}
     volumes: *production_volumes
     networks:
       - runtime_database
@@ -263,13 +258,13 @@ services:
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-postgres}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD muss gesetzt sein}
-      POSTGRES_DB: ${POSTGRES_DB:-stueberlapp}
+      POSTGRES_DB: ${POSTGRES_DB:-bonni_core}
     volumes:
       - candidate_postgres_data:/var/lib/postgresql/data
     networks:
       - runtime_candidate
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-stueberlapp}"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-bonni_core}"]
       interval: 5s
       timeout: 5s
       retries: 12
@@ -292,8 +287,8 @@ services:
       db-candidate:
         condition: service_healthy
     environment:
-      SOURCE_DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD muss gesetzt sein}@db:5432/${POSTGRES_DB:-stueberlapp}?schema=public
-      TARGET_DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD muss gesetzt sein}@db-candidate:5432/${POSTGRES_DB:-stueberlapp}?schema=public
+      SOURCE_DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD muss gesetzt sein}@db:5432/${POSTGRES_DB:-bonni_core}?schema=public
+      TARGET_DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD muss gesetzt sein}@db-candidate:5432/${POSTGRES_DB:-bonni_core}?schema=public
       BONNI_CANDIDATE_DATABASE_HOST: db-candidate
       SOURCE_STORAGE_ROOT: /source-storage
       TARGET_STORAGE_ROOT: /candidate-storage
@@ -330,9 +325,9 @@ services:
       <<: *backend_environment
       SYSTEM_SLOT_NAME: candidate-migrator
       SYSTEM_SLOT_ROLE: installer
-      SYSTEM_VERSION: ${CANDIDATE_SYSTEM_VERSION:-0.1.13}
-      DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD muss gesetzt sein}@db-candidate:5432/${POSTGRES_DB:-stueberlapp}?schema=public
-      SERVER_DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD muss gesetzt sein}@db-candidate:5432/${POSTGRES_DB:-stueberlapp}?schema=public
+      SYSTEM_VERSION: ${CANDIDATE_SYSTEM_VERSION:-0.1.19}
+      DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD muss gesetzt sein}@db-candidate:5432/${POSTGRES_DB:-bonni_core}?schema=public
+      SERVER_DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD muss gesetzt sein}@db-candidate:5432/${POSTGRES_DB:-bonni_core}?schema=public
     volumes:
       - candidate_storage:/app/storage
       - candidate_run_system:/app/run_system
@@ -369,11 +364,11 @@ services:
       <<: *backend_environment
       SYSTEM_SLOT_NAME: backend-candidate
       SYSTEM_SLOT_ROLE: candidate
-      SYSTEM_VERSION: ${CANDIDATE_SYSTEM_VERSION:-0.1.13}
+      SYSTEM_VERSION: ${CANDIDATE_SYSTEM_VERSION:-0.1.19}
       SYSTEM_UPDATE_PROBE_MODE: "true"
       LOCAL_AUTH_BIND: 127.0.0.1
-      DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD muss gesetzt sein}@db-candidate:5432/${POSTGRES_DB:-stueberlapp}?schema=public
-      SERVER_DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD muss gesetzt sein}@db-candidate:5432/${POSTGRES_DB:-stueberlapp}?schema=public
+      DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD muss gesetzt sein}@db-candidate:5432/${POSTGRES_DB:-bonni_core}?schema=public
+      SERVER_DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD muss gesetzt sein}@db-candidate:5432/${POSTGRES_DB:-bonni_core}?schema=public
       LOCAL_DATABASE_URL: ""
       MEDIA_STORAGE_ROOT: /app/storage/media
     volumes:
@@ -413,7 +408,7 @@ services:
       <<: *backend_environment
       SYSTEM_SLOT_NAME: database-migrator
       SYSTEM_SLOT_ROLE: installer
-      SYSTEM_VERSION: ${CANDIDATE_SYSTEM_VERSION:-0.1.13}
+      SYSTEM_VERSION: ${CANDIDATE_SYSTEM_VERSION:-0.1.19}
     volumes: *production_volumes
     networks:
       - runtime_database
@@ -436,7 +431,7 @@ services:
       db:
         condition: service_healthy
     environment:
-      DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD muss gesetzt sein}@db:5432/${POSTGRES_DB:-stueberlapp}?schema=public
+      DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD muss gesetzt sein}@db:5432/${POSTGRES_DB:-bonni_core}?schema=public
       BONNI_UPDATE_ROLLBACK_SNAPSHOT_ROOT: /var/lib/bonni-rollback-snapshots
       BONNI_UPDATE_SNAPSHOT_ID: ${BONNI_UPDATE_SNAPSHOT_ID:-invalid}
       BONNI_UPDATE_SNAPSHOT_WORKFLOW_ID: ${BONNI_UPDATE_SNAPSHOT_WORKFLOW_ID:-invalid}
@@ -475,7 +470,7 @@ services:
       db:
         condition: service_healthy
     environment:
-      DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD muss gesetzt sein}@db:5432/${POSTGRES_DB:-stueberlapp}?schema=public
+      DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD muss gesetzt sein}@db:5432/${POSTGRES_DB:-bonni_core}?schema=public
       BONNI_UPDATE_ROLLBACK_SNAPSHOT_ROOT: /var/lib/bonni-rollback-snapshots
       BONNI_UPDATE_ROLLBACK_RESULT_ROOT: /var/lib/bonni-rollback-results
       BONNI_UPDATE_SNAPSHOT_ID: ${BONNI_UPDATE_SNAPSHOT_ID:-invalid}

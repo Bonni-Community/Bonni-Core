@@ -1,5 +1,7 @@
 import type { Request, Response, NextFunction } from "express";
-import { prisma } from "../../../../core/database/database.js";
+import { getServerPrismaClient } from "../../../../core/database/database.js";
+
+const prisma = getServerPrismaClient("core");
 
 function normalizePermissionVariants(permissionKey: string): Set<string> {
   const raw = String(permissionKey || "").trim();

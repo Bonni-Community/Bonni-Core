@@ -2,7 +2,9 @@ import type { NextFunction, Request, Response } from "express";
 
 import {
   createLocalMember,
+  deleteLocalMemberAccount,
   getMemberDetailsById,
+  updateLocalMemberAccess,
   updateLocalMemberProfile,
   updateMemberById,
   UserMutationError,
@@ -145,6 +147,58 @@ export async function updateMemberByIdController(
       ok: false,
       code: "MEMBER_UPDATE_FAILED",
       message: "Mitglied konnte nicht gespeichert werden.",
+    });
+  }
+}
+
+export async function updateLocalMemberAccessController(
+  req: Request,
+  res: Response,
+  _next: NextFunction,
+) {
+  try {
+    res.json(await updateLocalMemberAccess(req.params.accountId, req.body || {}, (req as any).user));
+  } catch (error) {
+    if (error instanceof UserMutationError) {
+      res.status(error.status).json({
+        ok: false,
+        code: error.code,
+        message: error.message,
+      });
+      return;
+    }
+
+    console.error("[system/users] Zugangsdaten konnten nicht aktualisiert werden", error);
+    res.status(500).json({
+      ok: false,
+      code: "LOCAL_MEMBER_ACCESS_UPDATE_FAILED",
+      message: "Zugangsdaten konnten nicht gespeichert werden.",
+    });
+  }
+}
+
+export async function deleteLocalMemberAccountController(
+  req: Request,
+  res: Response,
+  _next: NextFunction,
+) {
+  try {
+    res.json(await deleteLocalMemberAccount(req.params.accountId, (req as any).user));
+  } catch (error) {
+    if (error instanceof UserMutationError) {
+      res.status(error.status).json({
+        ok: false,
+        code: error.code,
+        message: error.message,
+      });
+      return;
+    }
+
+    console.error("[system/users] Benutzerzugang konnte nicht gelöscht werden", error);
+    res.status(500).json({
+      ok: false,
+      code: "LOCAL_MEMBER_DELETE_FAILED",
+      message: "Benutzerzugang konnte nicht gelöscht werden.",
     });
   }
 }

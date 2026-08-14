@@ -56,9 +56,6 @@ const QUICK_ACTIONS = [
   { key: "logout", icon: "⎋", label: "Logout", action: "logout" },
   { key: "terminal", icon: ">_", label: "Terminal", target: "terminal" },
   { key: "files", icon: "▤", label: "Datei-Verwaltung", target: "system" },
-  { key: "messages", icon: "▭", label: "Nachrichten", target: "logs" },
-  { key: "info", icon: "ⓘ", label: "Info", target: "license" },
-  { key: "logs", icon: "☰", label: "Protokoll", target: "logs" },
   { key: "help", icon: "?", label: "Systemstatus", target: "system" },
 ];
 
@@ -83,8 +80,6 @@ export default function ControlCenterTopBar({
   useEffect(() => {
     let cancelled = false;
     let intervalId;
-    let automaticCheckHandled = false;
-    let automaticDownloadHandled = false;
 
     async function loadRuntimeStatus() {
       try {
@@ -112,6 +107,8 @@ export default function ControlCenterTopBar({
   useEffect(() => {
     let cancelled = false;
     let intervalId;
+    let automaticCheckHandled = false;
+    let automaticDownloadHandled = false;
 
     async function loadUpdateStatus({ quiet = true } = {}) {
       if (!token) return;

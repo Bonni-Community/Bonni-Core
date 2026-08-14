@@ -102,13 +102,6 @@ if [ -n "$running_writers" ]; then
   exit 2
 fi
 
-# One-time tag migration for installations that previously used daemon-global
-# names. Existing images are only copied to the new project scope, never moved.
-if [ "$existing_runtime" = true ] \
-  && ! docker image inspect "$SYSTEM_IMAGE" >/dev/null 2>&1 \
-  && docker image inspect stueberlapp-system:active >/dev/null 2>&1; then
-  docker image tag stueberlapp-system:active "$SYSTEM_IMAGE"
-fi
 if [ "$existing_runtime" = true ] && ! docker image inspect "$SYSTEM_IMAGE" >/dev/null 2>&1; then
   legacy_containers="$(docker ps -aq \
     --filter "label=com.docker.compose.project=$COMPOSE_PROJECT_NAME" \
@@ -119,11 +112,6 @@ if [ "$existing_runtime" = true ] && ! docker image inspect "$SYSTEM_IMAGE" >/de
       docker image tag "$legacy_image" "$SYSTEM_IMAGE"
     fi
   fi
-fi
-if [ "$existing_runtime" = true ] \
-  && ! docker image inspect "$EMERGENCY_SYSTEM_IMAGE" >/dev/null 2>&1 \
-  && docker image inspect stueberlapp-system:emergency >/dev/null 2>&1; then
-  docker image tag stueberlapp-system:emergency "$EMERGENCY_SYSTEM_IMAGE"
 fi
 if [ "$existing_runtime" = true ] && ! docker image inspect "$SYSTEM_IMAGE" >/dev/null 2>&1; then
   echo "Bestehende Installation besitzt kein eindeutig migrierbares Active-Image; lokaler Neubau wurde verweigert." >&2
@@ -141,7 +129,7 @@ if ! docker image inspect "$SYSTEM_IMAGE" >/dev/null 2>&1; then
   docker build \
     --file "$BONNI_HOST_PROJECT_ROOT/System/backend/Dockerfile" \
     --tag "$SYSTEM_IMAGE" \
-    --build-arg "BONNI_CORE_VERSION=${SYSTEM_VERSION:-0.1.13}" \
+    --build-arg "BONNI_CORE_VERSION=${SYSTEM_VERSION:-0.1.19}" \
     --build-arg "BONNI_CORE_REVISION=${BONNI_CORE_REVISION:-unknown}" \
     "$BONNI_HOST_PROJECT_ROOT"
 fi

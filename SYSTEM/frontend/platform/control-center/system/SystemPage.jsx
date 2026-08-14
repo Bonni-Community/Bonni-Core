@@ -1,6 +1,10 @@
 import { useEffect, useState } from "react";
 
 import { fetchSystemMonitoringStatus } from "../../../system/api/systemMonitoringApi.js";
+import {
+  fetchSystemNetworkPolicies,
+  updateSystemNetworkPolicy,
+} from "../../../system/api/systemNetworkPolicyApi.js";
 import "./SystemPage.css";
 
 const STATE_LABELS = {
@@ -37,6 +41,9 @@ export default function SystemPage({ token, onNavigate }) {
   const [status, setStatus] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [networkPolicies, setNetworkPolicies] = useState([]);
+  const [networkObservations, setNetworkObservations] = useState([]);
+  const [networkSaving, setNetworkSaving] = useState("");
 
   async function loadStatus({ quiet = false } = {}) {
     if (!token) return;
@@ -51,9 +58,46 @@ export default function SystemPage({ token, onNavigate }) {
     }
   }
 
+  async function loadNetworkPolicies({ quiet = false } = {}) {
+    if (!token) return;
+    try {
+      const payload = await fetchSystemNetworkPolicies(token);
+      setNetworkPolicies(payload?.policies || []);
+      setNetworkObservations(payload?.observations || []);
+    } catch (loadError) {
+      if (!quiet) setError(loadError?.message || "Netzwerkregeln konnten nicht geladen werden.");
+    }
+  }
+
+  function updatePolicyDraft(moduleKey, change) {
+    setNetworkPolicies((current) => current.map((policy) => (
+      policy.key === moduleKey ? { ...policy, ...change } : policy
+    )));
+  }
+
+  async function saveNetworkPolicy(policy) {
+    setNetworkSaving(policy.key);
+    try {
+      await updateSystemNetworkPolicy(token, policy.key, {
+        exposure: policy.exposure,
+        outboundEnabled: Boolean(policy.outboundEnabled),
+        requireTls: Boolean(policy.requireTls),
+        allowedHosts: policy.allowedHosts || [],
+        allowedProtocols: policy.allowedProtocols || [],
+      });
+      await loadNetworkPolicies();
+      setError("");
+    } catch (saveError) {
+      setError(saveError?.message || "Netzwerkregel konnte nicht gespeichert werden.");
+    } finally {
+      setNetworkSaving("");
+    }
+  }
+
   useEffect(() => {
     let intervalId;
     loadStatus();
+    loadNetworkPolicies();
     intervalId = window.setInterval(() => loadStatus({ quiet: true }), 10_000);
     return () => window.clearInterval(intervalId);
   }, [token]);
@@ -108,6 +152,91 @@ export default function SystemPage({ token, onNavigate }) {
               ) : <small>Systemüberwachung</small>}
             </article>
           ))}
+        </div>
+      </section>
+
+      <section className="cc-monitoring-section">
+        <div className="cc-monitoring-section__heading">
+          <div><span>Mini-Firewall</span><h2>Netzwerkzugriff der Apps</h2></div>
+          <small>Ohne gespeicherte Regel bleibt ein Modul vom Bonni-Netz getrennt.</small>
+        </div>
+        <div className="cc-network-policy-list">
+          {networkPolicies.map((policy) => (
+            <article className="cc-network-policy" key={policy.key}>
+              <div className="cc-network-policy__title">
+                <div><strong>{policy.name}</strong><small>{policy.key}</small></div>
+                <span className={policy.configured ? "is-configured" : ""}>
+                  {policy.configured ? "Regel aktiv" : "Abgetrennt"}
+                </span>
+              </div>
+              <div className="cc-network-policy__fields">
+                <label>
+                  <span>Eingehend</span>
+                  <select
+                    value={policy.exposure}
+                    onChange={(event) => updatePolicyDraft(policy.key, { exposure: event.target.value })}
+                  >
+                    <option value="DISABLED">Aus</option>
+                    <option value="LOCAL">Nur eigene Organisation</option>
+                    <option value="INTERNAL">Bonni-Netz</option>
+                    <option value="PUBLIC">Öffentlich erreichbar</option>
+                  </select>
+                </label>
+                <label>
+                  <span>Erlaubte Gegenstellen</span>
+                  <input
+                    value={(policy.allowedHosts || []).join(", ")}
+                    placeholder="leer = alle verifizierten Bonni-Gegenstellen"
+                    onChange={(event) => updatePolicyDraft(policy.key, {
+                      allowedHosts: event.target.value.split(",").map((value) => value.trim()).filter(Boolean),
+                    })}
+                  />
+                </label>
+                <label>
+                  <span>Erlaubte Protokolle</span>
+                  <input
+                    value={(policy.allowedProtocols || []).join(", ")}
+                    placeholder="leer = alle eigenen Protokolle"
+                    onChange={(event) => updatePolicyDraft(policy.key, {
+                      allowedProtocols: event.target.value.split(",").map((value) => value.trim()).filter(Boolean),
+                    })}
+                  />
+                </label>
+              </div>
+              <div className="cc-network-policy__actions">
+                <label><input type="checkbox" checked={Boolean(policy.outboundEnabled)} onChange={(event) => updatePolicyDraft(policy.key, { outboundEnabled: event.target.checked })} /> Ausgehend erlauben</label>
+                <label><input type="checkbox" checked={Boolean(policy.requireTls)} onChange={(event) => updatePolicyDraft(policy.key, { requireTls: event.target.checked })} /> Verschlüsselung erzwingen</label>
+                <button type="button" disabled={networkSaving === policy.key} onClick={() => saveNetworkPolicy(policy)}>
+                  {networkSaving === policy.key ? "Speichere …" : "Regel speichern"}
+                </button>
+              </div>
+            </article>
+          ))}
+        </div>
+      </section>
+
+      <section className="cc-monitoring-section">
+        <div className="cc-monitoring-section__heading">
+          <div><span>Protokoll</span><h2>Letzte Netzwerkentscheidungen</h2></div>
+          <b>{networkObservations.length}</b>
+        </div>
+        <div className="cc-network-observation-table-wrap">
+          <table className="cc-network-observation-table">
+            <thead><tr><th>Zeit</th><th>App</th><th>Richtung</th><th>Protokoll</th><th>Gegenstelle</th><th>Entscheidung</th><th>Grund</th></tr></thead>
+            <tbody>
+              {networkObservations.length ? networkObservations.map((entry) => (
+                <tr key={entry.id}>
+                  <td>{new Date(entry.observedAt).toLocaleString("de-DE")}</td>
+                  <td>{entry.moduleKey}</td>
+                  <td>{entry.direction === "INBOUND" ? "Eingehend" : "Ausgehend"}</td>
+                  <td>{entry.protocol || "—"}</td>
+                  <td>{entry.remoteHost || "—"}</td>
+                  <td><span className={`cc-network-decision is-${String(entry.decision).toLowerCase()}`}>{entry.decision === "ALLOW" ? "Erlaubt" : "Blockiert"}</span></td>
+                  <td>{entry.reason || "—"}</td>
+                </tr>
+              )) : <tr><td colSpan="7">Noch keine Netzwerkzugriffe protokolliert.</td></tr>}
+            </tbody>
+          </table>
         </div>
       </section>
 

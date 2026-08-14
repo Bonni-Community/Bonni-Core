@@ -535,18 +535,15 @@ export function isPersonalDataAdminLoginAccount(user: PersonalDataLoginGuardUser
   const roles = Array.isArray(user.roles) ? user.roles : [];
   const hasAdminRole = roles.some((role) => {
     const normalized = String(role).trim().toUpperCase();
-    return normalized === "ADMIN" || normalized === "SYSTEM.ADMIN" || normalized.endsWith(".ADMIN");
+    return [
+      "*",
+      "ADMIN",
+      "SYSTEM_ADMIN",
+      "SYSTEM.ADMIN",
+    ].includes(normalized);
   });
 
-  if (hasAdminRole) {
-    return true;
-  }
-
-  // Sandbox-/Erststart-Fallback: Der lokale Bootstrap-Admin hat in manchen
-  // Entwicklungsständen noch keine Rollenliste im Token.
-  const loginName = String(user.loginName || "").trim().toLowerCase();
-  const accountId = String(user.accountId || "").trim().toLowerCase();
-  return loginName === "admin" || loginName === "administrator" || accountId === "sandbox-admin";
+  return hasAdminRole;
 }
 
 function isAdminLoginAccount(user: PersonalDataLoginGuardUser): boolean {

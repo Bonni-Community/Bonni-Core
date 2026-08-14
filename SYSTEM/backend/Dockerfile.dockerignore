@@ -1,9 +1,11 @@
 **/node_modules
 **/dist
-!System/addons/bonni-network/frontend/dist
-!System/addons/bonni-network/frontend/dist/**
-System/addons/bonni-network/data/**
-System/app/hocketapp/data/**
+!System/app/**/dist
+!System/app/**/dist/**
+!System/addons/**/dist
+!System/addons/**/dist/**
+System/app/**/data/**
+System/addons/**/data/**
 **/.vite
 **/.cache
 **/coverage

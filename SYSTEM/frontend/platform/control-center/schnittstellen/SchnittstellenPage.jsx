@@ -3,14 +3,16 @@ import { useState } from "react";
 import FiskalyApiTab from "./tab/FiskalyApi.jsx";
 import FfAgentTab from "./tab/FFAgent.jsx";
 import PosTab from "./tab/POS.jsx";
+import JitsiTab from "./tab/Jitsi.jsx";
 
 const TABS = [
   { key: "ffAgent", label: "FF-Agent" },
   { key: "pos", label: "POS" },
   { key: "fiskalyApi", label: "Fiskaly API" },
+  { key: "jitsi", label: "Jitsi / WebRTC" },
 ];
 
-export default function SchnittstellenPage() {
+export default function SchnittstellenPage({ token }) {
   const [activeTab, setActiveTab] = useState("ffAgent");
 
   return (
@@ -18,7 +20,7 @@ export default function SchnittstellenPage() {
       <div className="cc-user-page__header cc-menu-page-header">
         <div>
           <h1>Schnittstellen</h1>
-          <p>FF-Agent, POS und Fiskaly-Integrationen verwalten.</p>
+          <p>FF-Agent, POS, Fiskaly und den zentralen Jitsi-Server verwalten.</p>
         </div>
       </div>
 
@@ -41,6 +43,7 @@ export default function SchnittstellenPage() {
         {activeTab === "ffAgent" ? <FfAgentTab /> : null}
         {activeTab === "pos" ? <PosTab /> : null}
         {activeTab === "fiskalyApi" ? <FiskalyApiTab /> : null}
+        {activeTab === "jitsi" ? <JitsiTab token={token} /> : null}
       </div>
     </section>
   );

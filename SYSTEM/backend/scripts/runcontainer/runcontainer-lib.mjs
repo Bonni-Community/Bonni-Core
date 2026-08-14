@@ -4,8 +4,8 @@ import { existsSync } from 'node:fs';
 import path from 'node:path';
 
 export function projectRoot() {
-  return process.env.STUEBERLAPP_ROOT
-    ? path.resolve(process.env.STUEBERLAPP_ROOT)
+  return process.env.BONNI_PROJECT_ROOT
+    ? path.resolve(process.env.BONNI_PROJECT_ROOT)
     : path.resolve(process.cwd(), '../..');
 }
 
@@ -55,7 +55,7 @@ export function computeStateKey(base) {
 export function encodeRunContainerEnvelope(value) {
   const payload = Buffer.from(JSON.stringify(value, null, 2), 'utf8').toString('base64url');
   const checksum = crypto.createHash('sha256').update(payload).digest('hex');
-  return `STUEBERLAPP_RUNCONTAINER_V1\n${payload}\n${checksum}\n`;
+  return `BONNI_RUNCONTAINER_V1\n${payload}\n${checksum}\n`;
 }
 
 export async function writeRunContainerFile(slot, identity, modules) {

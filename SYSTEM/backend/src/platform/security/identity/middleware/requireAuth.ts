@@ -1,10 +1,11 @@
 import type { Request, Response, NextFunction } from "express";
 import { parseAccessToken } from "../services/auth.service.js";
-import { prisma } from "../../../../core/database/database.js";
+import { getServerPrismaClient } from "../../../../core/database/database.js";
 import { permissionsService } from "../../../permissions/permissions.service.js";
 import { assertPersonalDataLoginAllowed, getPersonalDataMasterKeyStatus } from "../../crypto/index.js";
 import {
   getDatabaseRoutingStatus,
+  isDatabaseAuthorizationFailure,
   isDatabaseConnectionFailure,
 } from "../../../../core/database/database-routing.js";
 import {
@@ -22,6 +23,8 @@ type CachedEmergencyIdentity = {
     roles: string[];
   };
 };
+
+const prisma = getServerPrismaClient("core");
 
 export async function requireAuth(req: Request, res: Response, next: NextFunction) {
   const authHeader = req.header("authorization");
@@ -158,6 +161,13 @@ export async function requireAuth(req: Request, res: Response, next: NextFunctio
       }
     }
     console.error("Authentication service unavailable", error);
+    if (isDatabaseAuthorizationFailure(error)) {
+      return res.status(500).json({
+        error: "DATABASE_SCHEMA_PERMISSION_DENIED",
+        code: "DATABASE_SCHEMA_PERMISSION_DENIED",
+        message: "Die Datenbank ist erreichbar, aber dem Backend fehlen Rechte auf das zugewiesene Schema. Bitte das Backend-Setup erneut ausführen und anschließend neu starten.",
+      });
+    }
     return res.status(503).json({
       error: "AUTH_SERVICE_UNAVAILABLE",
       code: "AUTH_SERVICE_UNAVAILABLE",

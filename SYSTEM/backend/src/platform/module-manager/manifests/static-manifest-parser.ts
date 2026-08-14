@@ -8,6 +8,7 @@ type StaticManifestValue =
 
 class StaticLiteralParser {
   private index = 0;
+  private readonly bindings = new Map<string, StaticManifestValue>();
 
   constructor(private readonly source: string) {}
 
@@ -21,6 +22,11 @@ class StaticLiteralParser {
 
   remaining() {
     return this.source.slice(this.index);
+  }
+
+  bind(name: string, value: StaticManifestValue) {
+    if (this.bindings.has(name)) this.fail(`Doppelte Deklaration ${name}`);
+    this.bindings.set(name, cloneStaticValue(value));
   }
 
   skipTrivia() {
@@ -54,18 +60,30 @@ class StaticLiteralParser {
   parseValue(): StaticManifestValue {
     this.skipTrivia();
     const char = this.source[this.index];
+    let value: StaticManifestValue;
 
-    if (char === "{") return this.parseObject();
-    if (char === "[") return this.parseArray();
-    if (char === '"' || char === "'") return this.parseString();
-    if (char === "-" || /\d/.test(char || "")) return this.parseNumber();
+    if (char === "{") value = this.parseObject();
+    else if (char === "[") value = this.parseArray();
+    else if (char === '"' || char === "'") value = this.parseString();
+    else if (char === "-" || /\d/.test(char || "")) value = this.parseNumber();
+    else {
+      const identifier = this.parseIdentifier();
+      if (identifier === "true") value = true;
+      else if (identifier === "false") value = false;
+      else if (identifier === "null") value = null;
+      else if (this.bindings.has(identifier)) value = cloneStaticValue(this.bindings.get(identifier)!);
+      else this.fail(`Nicht erlaubter Wert ${identifier || char || "<Dateiende>"}`);
+    }
 
-    const identifier = this.parseIdentifier();
-    if (identifier === "true") return true;
-    if (identifier === "false") return false;
-    if (identifier === "null") return null;
-
-    this.fail(`Nicht erlaubter Wert ${identifier || char || "<Dateiende>"}`);
+    this.skipTrivia();
+    if (this.source.startsWith(".sort()", this.index)) {
+      if (!Array.isArray(value) || value.some((entry) => typeof entry !== "string")) {
+        this.fail(".sort() ist nur für statische Zeichenkettenlisten erlaubt");
+      }
+      this.index += ".sort()".length;
+      value = [...value].sort((left, right) => String(left).localeCompare(String(right), "en"));
+    }
+    return value;
   }
 
   private parseObject(): { [key: string]: StaticManifestValue } {
@@ -106,7 +124,14 @@ class StaticLiteralParser {
     while (this.source[this.index] !== "]") {
       if (this.index >= this.source.length) this.fail("Nicht abgeschlossenes Array");
 
-      result.push(this.parseValue());
+      if (this.source.startsWith("...", this.index)) {
+        this.index += 3;
+        const spread = this.parseValue();
+        if (!Array.isArray(spread)) this.fail("Array-Spread benötigt eine statische Liste");
+        result.push(...spread);
+      } else {
+        result.push(this.parseValue());
+      }
       this.skipTrivia();
 
       if (this.source[this.index] === ",") {
@@ -228,29 +253,49 @@ class StaticLiteralParser {
   }
 }
 
+function cloneStaticValue(value: StaticManifestValue): StaticManifestValue {
+  if (Array.isArray(value)) return value.map(cloneStaticValue);
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value).map(([key, entry]) => [key, cloneStaticValue(entry)]),
+    );
+  }
+  return value;
+}
+
 /**
  * Liest ausschließlich statische Objektliterale aus `manifest.ts`.
  * Der Inhalt wird bewusst nicht importiert oder ausgeführt.
  */
 export function parseStaticTypeScriptManifest(source: string): Record<string, unknown> {
   const parser = new StaticLiteralParser(source.replace(/^\uFEFF/, ""));
-  parser.skipTrivia();
+  let manifest: StaticManifestValue | undefined;
 
-  const declaration = parser.remaining().match(/^(?:const|let|var)\s+manifest\s*=\s*/);
-  if (!declaration) {
-    throw new Error("manifest.ts muss mit `const manifest = { ... }` beginnen.");
+  while (true) {
+    parser.skipTrivia();
+    const declaration = parser.remaining().match(/^const\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*/);
+    if (!declaration) break;
+    parser.advance(declaration[0].length);
+    const value = parser.parseValue();
+    parser.skipTrivia();
+    const constAssertion = parser.remaining().match(/^as\s+const\b/);
+    if (constAssertion) {
+      parser.advance(constAssertion[0].length);
+      parser.skipTrivia();
+    }
+    if (parser.remaining().startsWith(";")) parser.advance(1);
+    parser.bind(declaration[1], value);
+    if (declaration[1] === "manifest") manifest = value;
   }
 
-  parser.advance(declaration[0].length);
-  const manifest = parser.parseValue();
   if (!manifest || Array.isArray(manifest) || typeof manifest !== "object") {
-    throw new Error("manifest.ts muss ein Objekt exportieren.");
+    throw new Error("manifest.ts muss `const manifest = { ... }` deklarieren.");
   }
 
   parser.skipTrivia();
   const tail = parser.remaining();
-  if (!/^(?:as\s+const\s*)?;?\s*export\s+default\s+manifest\s*;?\s*$/.test(tail)) {
-    throw new Error("Nach dem Manifest sind nur `as const` und `export default manifest` erlaubt.");
+  if (!/^export\s+default\s+manifest\s*;?\s*$/.test(tail)) {
+    throw new Error("Nach den statischen Deklarationen ist nur `export default manifest` erlaubt.");
   }
 
   return manifest;

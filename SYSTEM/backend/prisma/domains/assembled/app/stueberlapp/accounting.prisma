@@ -1,6 +1,5 @@
 // =====================================================
 // STÜBERLAPP / ACCOUNTING
-// Assembled from System/app/stueberlapp/prisma/domains/stueberlapp
 // =====================================================
 
 /// Immutable accounting movement. Corrections are represented by a new

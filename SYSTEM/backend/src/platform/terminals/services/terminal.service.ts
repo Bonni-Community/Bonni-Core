@@ -1,4 +1,3 @@
-import type { TerminalType } from "@prisma/client";
 import { prisma } from "../../../core/database/database.js";
 
 export async function listTerminals() {
@@ -30,7 +29,7 @@ export async function getTerminal(id: string) {
 export async function createTerminal(data: {
   key: string;
   name: string;
-  type: TerminalType;
+  type: string;
   layoutPreset: string;
   roomId?: string;
   localNodeId?: string;

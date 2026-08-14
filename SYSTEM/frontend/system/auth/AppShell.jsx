@@ -80,13 +80,20 @@ export default function AppShell() {
     shellLoading,
     loginName,
     password,
+    twoFactorChallenge,
+    twoFactorCode,
+    twoFactorPassword,
     message,
     activeArea,
     allowedWorkspaces,
     setLoginName,
     setPassword,
+    setTwoFactorCode,
+    setTwoFactorPassword,
     setActiveArea,
     login,
+    submitTwoFactor,
+    cancelTwoFactor,
     logout,
   } = useSession();
 
@@ -143,12 +150,18 @@ export default function AppShell() {
   if (!token || !user) {
     content = (
       <LoginView
-        email={loginName}
+        loginName={loginName}
         password={password}
+        twoFactorChallenge={twoFactorChallenge}
+        twoFactorCode={twoFactorCode}
+        twoFactorPassword={twoFactorPassword}
         message={message}
-        onEmailChange={setLoginName}
+        onLoginNameChange={setLoginName}
         onPasswordChange={setPassword}
-        onSubmit={login}
+        onTwoFactorCodeChange={setTwoFactorCode}
+        onTwoFactorPasswordChange={setTwoFactorPassword}
+        onCancelTwoFactor={cancelTwoFactor}
+        onSubmit={twoFactorChallenge ? submitTwoFactor : login}
       />
     );
   } else if (shellLoading && !shell) {

@@ -6,6 +6,12 @@ import pg, { type Pool as PgPool } from "pg";
 
 import { env } from "../config/env.js";
 import { getActiveDatabaseRole, type DatabaseRole } from "./database-context.js";
+import { getDataDomainConnectionString } from "./data-domain-routing.js";
+import {
+  dataDomainAllowsJsonEmergency,
+  dataDomainSchemas,
+  type DataDomain,
+} from "./data-domains.js";
 import {
   getDatabaseReadOrder,
   getDatabaseRoutingStatus,
@@ -52,6 +58,7 @@ const MODEL_PROPERTIES = new Map(
   ]),
 );
 const delegateProxies = new Map<string, object>();
+const routedServerClients = new Map<DataDomain, PrismaClient>();
 let jsonEmergencyReplayRunning = false;
 
 function localConnectionString() {
@@ -67,15 +74,39 @@ export function normalizePrismaConnectionString(connectionString: string) {
     const protocol = parsed.protocol.toLowerCase();
     if (protocol !== "postgres:" && protocol !== "postgresql:") return connectionString;
 
+    const schema = parsed.searchParams.get("schema");
+    if (schema) {
+      const allowedSchemas = new Set(Object.values(dataDomainSchemas));
+      if (!allowedSchemas.has(schema)) {
+        throw new Error(`DATABASE_SCHEMA_INVALID:${schema}`);
+      }
+
+      // `schema` is a Prisma URL parameter. The pg driver used by the Prisma
+      // adapter does not apply it to PostgreSQL sessions by itself. Passing a
+      // startup option makes the selected schema effective before Prisma sends
+      // its first query and prevents an unintended fallback to `public`.
+      const existingOptions = parsed.searchParams.get("options")?.trim();
+      const schemaOption = `-c search_path=${schema}`;
+      parsed.searchParams.delete("schema");
+      parsed.searchParams.set(
+        "options",
+        existingOptions ? `${existingOptions} ${schemaOption}` : schemaOption,
+      );
+    }
+
     // node-postgres does not fall back to a plain connection when a server
     // rejects TLS. In this application, "prefer" is the optional SSL mode;
     // "require" remains untouched for databases that must use TLS.
     if (parsed.searchParams.get("sslmode")?.toLowerCase() === "prefer") {
       parsed.searchParams.set("sslmode", "disable");
       parsed.searchParams.delete("uselibpqcompat");
-      return parsed.toString();
     }
-  } catch {
+
+    return parsed.toString();
+  } catch (error) {
+    if (error instanceof Error && error.message.startsWith("DATABASE_SCHEMA_INVALID:")) {
+      throw error;
+    }
     // Keep non-URL connection strings unchanged and let node-postgres report
     // a useful configuration error when the connection is opened.
   }
@@ -83,16 +114,27 @@ export function normalizePrismaConnectionString(connectionString: string) {
   return connectionString;
 }
 
-function createPrismaClient(connectionString: string): PrismaClientEntry {
+export function prismaPgOptionsForDomain(domain: DataDomain) {
+  return { schema: dataDomainSchemas[domain] } as const;
+}
+
+function createPrismaClient(
+  connectionString: string,
+  domain: DataDomain,
+): PrismaClientEntry {
   const pool = new Pool({
     connectionString: normalizePrismaConnectionString(connectionString),
   });
-  const adapter = new PrismaPg(pool);
+  // `@prisma/adapter-pg` does not derive Prisma's logical schema reliably
+  // from node-postgres pool options. The adapter requires its own explicit
+  // schema option; without it Prisma falls back to `public` even when the
+  // PostgreSQL role itself has the correct search_path.
+  const adapter = new PrismaPg(pool, prismaPgOptionsForDomain(domain));
   const client = new PrismaClient({ adapter });
   return { connectionString, pool, client };
 }
 
-function clientEntry(key: string, connectionString: string) {
+function clientEntry(key: string, connectionString: string, domain: DataDomain) {
   const existing = clients.get(key);
   if (existing?.connectionString === connectionString) return existing;
 
@@ -101,31 +143,41 @@ function clientEntry(key: string, connectionString: string) {
     void Promise.allSettled([existing.client.$disconnect(), existing.pool.end()]);
   }
 
-  const created = createPrismaClient(connectionString);
+  const created = createPrismaClient(connectionString, domain);
   clients.set(key, created);
   return created;
 }
 
-export function getDatabaseTargetPrismaClient(target: DatabaseTarget) {
-  return clientEntry(`server:${target}`, getDatabaseTargetConnectionString(target)).client;
+export function getDatabaseTargetPrismaClient(
+  target: DatabaseTarget,
+  domain: DataDomain = "core",
+) {
+  const connectionString = getDataDomainConnectionString(
+    domain,
+    target,
+    getDatabaseTargetConnectionString(target),
+  );
+  return clientEntry(`server:${target}:${domain}`, connectionString, domain).client;
 }
 
-function getLocalPrismaClientEntry() {
-  return clientEntry("local", localConnectionString());
+function getLocalPrismaClientEntry(domain: DataDomain = "core") {
+  const connectionString = getDataDomainConnectionString(domain, "local", localConnectionString());
+  return clientEntry(`local:${domain}`, connectionString, domain);
 }
 
-function targetDelegate(target: DatabaseTarget, modelProperty: string) {
-  const client = getDatabaseTargetPrismaClient(target) as unknown as Record<string, unknown>;
+function targetDelegate(target: DatabaseTarget, domain: DataDomain, modelProperty: string) {
+  const client = getDatabaseTargetPrismaClient(target, domain) as unknown as Record<string, unknown>;
   return Reflect.get(client, modelProperty, client) as Record<string, unknown>;
 }
 
 async function runDelegateOperation(
   target: DatabaseTarget,
+  domain: DataDomain,
   modelProperty: string,
   operation: string,
   args: unknown[],
 ) {
-  const delegate = targetDelegate(target, modelProperty);
+  const delegate = targetDelegate(target, domain, modelProperty);
   const method = Reflect.get(delegate, operation, delegate);
   if (typeof method !== "function") {
     throw new Error(`PRISMA_OPERATION_NOT_AVAILABLE:${modelProperty}.${operation}`);
@@ -276,16 +328,22 @@ function queuedWriteResult(operation: string, args: unknown[]) {
 }
 
 async function queueEmergencyWrite(
+  domain: DataDomain,
   modelProperty: string,
   operation: string,
   args: unknown[],
   databaseError: unknown,
 ) {
   const routing = getDatabaseRoutingStatus();
-  if (!routing.jsonEmergency.enabled || !isDatabaseConnectionFailure(databaseError)) {
+  if (
+    !dataDomainAllowsJsonEmergency(domain)
+    || !routing.jsonEmergency.enabled
+    || !isDatabaseConnectionFailure(databaseError)
+  ) {
     throw databaseError;
   }
   const queued = await enqueueJsonEmergencyWrite({
+    dataDomain: domain,
     modelProperty,
     operation,
     args,
@@ -299,13 +357,18 @@ async function queueEmergencyWrite(
   return modelProperty === "$client" ? 0 : queuedWriteResult(operation, args);
 }
 
-async function executeRead(modelProperty: string, operation: string, args: unknown[]) {
+async function executeRead(
+  domain: DataDomain,
+  modelProperty: string,
+  operation: string,
+  args: unknown[],
+) {
   const targets = getDatabaseReadOrder();
   let lastError: unknown;
 
   for (const target of targets) {
     try {
-      const result = await runDelegateOperation(target, modelProperty, operation, args);
+      const result = await runDelegateOperation(target, domain, modelProperty, operation, args);
       recordDatabaseTargetSuccess(target);
       reportDatabaseRecovered();
       return result;
@@ -319,7 +382,12 @@ async function executeRead(modelProperty: string, operation: string, args: unkno
   throw lastError;
 }
 
-async function executeWrite(modelProperty: string, operation: string, originalArgs: unknown[]) {
+async function executeWrite(
+  domain: DataDomain,
+  modelProperty: string,
+  operation: string,
+  originalArgs: unknown[],
+) {
   const targets = getDatabaseWriteOrder();
   const routing = getDatabaseRoutingStatus();
   const args = targets.length > 1 || routing.jsonEmergency.enabled
@@ -328,14 +396,14 @@ async function executeWrite(modelProperty: string, operation: string, originalAr
   const primary = targets[0];
 
   try {
-    const result = await runDelegateOperation(primary, modelProperty, operation, args);
+    const result = await runDelegateOperation(primary, domain, modelProperty, operation, args);
     recordDatabaseTargetSuccess(primary);
     reportDatabaseRecovered();
 
     if (targets.length > 1) {
       const mirror = targets[1];
       try {
-        await runDelegateOperation(mirror, modelProperty, operation, args);
+        await runDelegateOperation(mirror, domain, modelProperty, operation, args);
         recordDatabaseTargetSuccess(mirror);
         reportDatabaseRecovered();
       } catch (error) {
@@ -352,42 +420,43 @@ async function executeWrite(modelProperty: string, operation: string, originalAr
   } catch (error) {
     recordDatabaseTargetFailure(primary, `${modelProperty}.${operation}`, error);
     const fallback = targets[1];
-    if (!fallback) return queueEmergencyWrite(modelProperty, operation, args, error);
+    if (!fallback) return queueEmergencyWrite(domain, modelProperty, operation, args, error);
     if (!isDatabaseConnectionFailure(error)) throw error;
 
     try {
-      const result = await runDelegateOperation(fallback, modelProperty, operation, args);
+      const result = await runDelegateOperation(fallback, domain, modelProperty, operation, args);
       recordDatabaseTargetSuccess(fallback);
       reportDatabaseRecovered();
       return result;
     } catch (fallbackError) {
       recordDatabaseTargetFailure(fallback, `${modelProperty}.${operation}`, fallbackError);
-      return queueEmergencyWrite(modelProperty, operation, args, fallbackError);
+      return queueEmergencyWrite(domain, modelProperty, operation, args, fallbackError);
     }
   }
 }
 
-function delegateProxy(modelProperty: string) {
-  const cached = delegateProxies.get(modelProperty);
+function delegateProxy(domain: DataDomain, modelProperty: string) {
+  const cacheKey = `${domain}:${modelProperty}`;
+  const cached = delegateProxies.get(cacheKey);
   if (cached) return cached;
 
   const proxy = new Proxy({}, {
     get(_target, operation) {
       if (typeof operation !== "string") return undefined;
       return (...args: unknown[]) => WRITE_OPERATIONS.has(operation)
-        ? executeWrite(modelProperty, operation, args)
-        : executeRead(modelProperty, operation, args);
+        ? executeWrite(domain, modelProperty, operation, args)
+        : executeRead(domain, modelProperty, operation, args);
     },
   });
-  delegateProxies.set(modelProperty, proxy);
+  delegateProxies.set(cacheKey, proxy);
   return proxy;
 }
 
-async function executeClientRead(property: string, args: unknown[]) {
+async function executeClientRead(domain: DataDomain, property: string, args: unknown[]) {
   const targets = getDatabaseReadOrder();
   let lastError: unknown;
   for (const target of targets) {
-    const client = getDatabaseTargetPrismaClient(target) as unknown as Record<string, unknown>;
+    const client = getDatabaseTargetPrismaClient(target, domain) as unknown as Record<string, unknown>;
     const method = Reflect.get(client, property, client);
     try {
       const result = await Reflect.apply(method as (...values: unknown[]) => unknown, client, args);
@@ -402,10 +471,10 @@ async function executeClientRead(property: string, args: unknown[]) {
   throw lastError;
 }
 
-async function executeClientWrite(property: string, args: unknown[]) {
+async function executeClientWrite(domain: DataDomain, property: string, args: unknown[]) {
   const targets = getDatabaseWriteOrder();
   const primary = targets[0];
-  const primaryClient = getDatabaseTargetPrismaClient(primary) as unknown as Record<string, unknown>;
+  const primaryClient = getDatabaseTargetPrismaClient(primary, domain) as unknown as Record<string, unknown>;
   const primaryMethod = Reflect.get(primaryClient, property, primaryClient);
   let result: unknown;
   try {
@@ -415,9 +484,9 @@ async function executeClientWrite(property: string, args: unknown[]) {
   } catch (error) {
     recordDatabaseTargetFailure(primary, property, error);
     const fallback = targets[1];
-    if (!fallback) return queueEmergencyWrite("$client", property, args, error);
+    if (!fallback) return queueEmergencyWrite(domain, "$client", property, args, error);
     if (!isDatabaseConnectionFailure(error)) throw error;
-    const fallbackClient = getDatabaseTargetPrismaClient(fallback) as unknown as Record<string, unknown>;
+    const fallbackClient = getDatabaseTargetPrismaClient(fallback, domain) as unknown as Record<string, unknown>;
     const fallbackMethod = Reflect.get(fallbackClient, property, fallbackClient);
     try {
       result = await Reflect.apply(fallbackMethod as (...values: unknown[]) => unknown, fallbackClient, args);
@@ -426,13 +495,13 @@ async function executeClientWrite(property: string, args: unknown[]) {
       return result;
     } catch (fallbackError) {
       recordDatabaseTargetFailure(fallback, property, fallbackError);
-      return queueEmergencyWrite("$client", property, args, fallbackError);
+      return queueEmergencyWrite(domain, "$client", property, args, fallbackError);
     }
   }
 
   if (targets.length > 1) {
     const mirror = targets[1];
-    const mirrorClient = getDatabaseTargetPrismaClient(mirror) as unknown as Record<string, unknown>;
+    const mirrorClient = getDatabaseTargetPrismaClient(mirror, domain) as unknown as Record<string, unknown>;
     const mirrorMethod = Reflect.get(mirrorClient, property, mirrorClient);
     try {
       await Reflect.apply(mirrorMethod as (...values: unknown[]) => unknown, mirrorClient, args);
@@ -464,12 +533,13 @@ async function replayJsonEmergencyWritesUnlocked(target: DatabaseTarget) {
   let recoveryMarked = false;
 
   for (const entry of entries) {
+    const domain = entry.dataDomain || "core";
     try {
       if (entry.modelProperty === "$client") {
         if (entry.operation !== "$executeRaw" && entry.operation !== "$executeRawUnsafe") {
           throw new Error(`JSON_EMERGENCY_OPERATION_NOT_ALLOWED:${entry.operation}`);
         }
-        const client = getDatabaseTargetPrismaClient(target) as unknown as Record<string, unknown>;
+        const client = getDatabaseTargetPrismaClient(target, domain) as unknown as Record<string, unknown>;
         const method = Reflect.get(client, entry.operation, client);
         if (typeof method !== "function") {
           throw new Error(`PRISMA_OPERATION_NOT_AVAILABLE:${entry.operation}`);
@@ -481,7 +551,7 @@ async function replayJsonEmergencyWritesUnlocked(target: DatabaseTarget) {
             `JSON_EMERGENCY_OPERATION_NOT_ALLOWED:${entry.modelProperty}.${entry.operation}`,
           );
         }
-        await runDelegateOperation(target, entry.modelProperty, entry.operation, entry.args);
+        await runDelegateOperation(target, domain, entry.modelProperty, entry.operation, entry.args);
       }
 
       recordDatabaseTargetSuccess(target);
@@ -534,42 +604,59 @@ export async function replayJsonEmergencyWrites(target: DatabaseTarget) {
   }
 }
 
-const routedServerClient = new Proxy({} as PrismaClient, {
-  get(_target, property) {
-    if (typeof property !== "string") return undefined;
-    if (MODEL_PROPERTIES.has(property)) return delegateProxy(property);
-    if (property === "$queryRaw" || property === "$queryRawUnsafe") {
-      return (...args: unknown[]) => executeClientRead(property, args);
-    }
-    if (property === "$executeRaw" || property === "$executeRawUnsafe") {
-      return (...args: unknown[]) => executeClientWrite(property, args);
-    }
+function routedServerClient(domain: DataDomain) {
+  const existing = routedServerClients.get(domain);
+  if (existing) return existing;
 
-    const primary = getDatabaseReadOrder()[0];
-    const client = getDatabaseTargetPrismaClient(primary) as unknown as Record<string, unknown>;
-    const value = Reflect.get(client, property, client);
-    return typeof value === "function" ? value.bind(client) : value;
-  },
-});
+  const routed = new Proxy({} as PrismaClient, {
+    get(_target, property) {
+      if (typeof property !== "string") return undefined;
+      if (MODEL_PROPERTIES.has(property)) return delegateProxy(domain, property);
+      if (property === "$queryRaw" || property === "$queryRawUnsafe") {
+        return (...args: unknown[]) => executeClientRead(domain, property, args);
+      }
+      if (property === "$executeRaw" || property === "$executeRawUnsafe") {
+        return (...args: unknown[]) => executeClientWrite(domain, property, args);
+      }
 
-export function getPrismaClient(role: DatabaseRole = getActiveDatabaseRole()) {
-  return role === "local" ? getLocalPrismaClientEntry().client : routedServerClient;
+      const primary = getDatabaseReadOrder()[0];
+      const client = getDatabaseTargetPrismaClient(primary, domain) as unknown as Record<string, unknown>;
+      const value = Reflect.get(client, property, client);
+      return typeof value === "function" ? value.bind(client) : value;
+    },
+  });
+  routedServerClients.set(domain, routed);
+  return routed;
 }
 
-export function getServerPrismaClient() {
-  return routedServerClient;
+export function getPrismaClient(
+  role: DatabaseRole = getActiveDatabaseRole(),
+  domain: DataDomain = "core",
+) {
+  return role === "local" ? getLocalPrismaClientEntry(domain).client : routedServerClient(domain);
 }
 
-export function getLocalPrismaClient() {
-  return getLocalPrismaClientEntry().client;
+export function getDataDomainPrismaClient(domain: DataDomain) {
+  return getPrismaClient(getActiveDatabaseRole(), domain);
+}
+
+export function getServerPrismaClient(domain: DataDomain = "core") {
+  return routedServerClient(domain);
+}
+
+export function getLocalPrismaClient(domain: DataDomain = "core") {
+  return getLocalPrismaClientEntry(domain).client;
 }
 
 export async function disconnectDatabaseTarget(target: DatabaseTarget) {
-  const key = `server:${target}`;
-  const entry = clients.get(key);
-  if (!entry) return;
-  clients.delete(key);
-  await Promise.allSettled([entry.client.$disconnect(), entry.pool.end()]);
+  const prefix = `server:${target}:`;
+  const entries = [...clients.entries()].filter(([key]) => key.startsWith(prefix));
+  await Promise.all(entries.map(async ([key, entry]) => {
+    clients.delete(key);
+    await Promise.allSettled([entry.client.$disconnect(), entry.pool.end()]);
+  }));
+  routedServerClients.clear();
+  delegateProxies.clear();
 }
 
 export async function disconnectPrismaClients() {
@@ -580,11 +667,13 @@ export async function disconnectPrismaClients() {
     }),
   );
   clients.clear();
+  routedServerClients.clear();
+  delegateProxies.clear();
 }
 
 export const prisma = new Proxy({} as PrismaClient, {
   get(_target, property) {
-    const client = getPrismaClient();
+    const client = getPrismaClient(getActiveDatabaseRole(), "core");
     const value = Reflect.get(client, property, client) as unknown;
     return typeof value === "function" ? value.bind(client) : value;
   },

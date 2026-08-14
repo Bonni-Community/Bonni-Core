@@ -76,6 +76,7 @@ function AccessPanel({
   onDeleted,
   onBusyChange,
   onFooterActionChange,
+  bootstrapAdmin = false,
 }) {
   const [email, setEmail] = useState(() => getEmailCandidate(member, account));
   const [password, setPassword] = useState("");
@@ -313,20 +314,34 @@ function AccessPanel({
         Das Passwort wird nur in diesem Fenster angezeigt. Speichern läuft über den unteren Button „Passwort ändern“.
       </p>
 
-      <div className="cc-member-window-danger-zone">
-        <div>
-          <strong>Benutzer löschen</strong>
-          <span>Entfernt den lokalen Zugang und blendet den Benutzer aus der Verwaltung aus.</span>
+      {bootstrapAdmin ? (
+        <p className="cc-member-window-note">
+          Der feste Systembenutzer admin kann nicht gelöscht oder deaktiviert werden. Sein Passwort darf hier geändert werden.
+        </p>
+      ) : (
+        <div className="cc-member-window-danger-zone">
+          <div>
+            <strong>Benutzer löschen</strong>
+            <span>Entfernt den lokalen Zugang und blendet den Benutzer aus der Verwaltung aus.</span>
+          </div>
+          <button type="button" className="cc-member-window__danger" onClick={handleDelete} disabled={saving || deleting}>
+            {deleting ? "Löscht..." : "Benutzer löschen"}
+          </button>
         </div>
-        <button type="button" className="cc-member-window__danger" onClick={handleDelete} disabled={saving || deleting}>
-          {deleting ? "Löscht..." : "Benutzer löschen"}
-        </button>
-      </div>
+      )}
     </section>
   );
 }
 
-export default function AccessTab({ member, token, onAccountChange, onDeleted, onBusyChange, onFooterActionChange }) {
+export default function AccessTab({
+  member,
+  token,
+  onAccountChange,
+  onDeleted,
+  onBusyChange,
+  onFooterActionChange,
+  bootstrapAdmin = false,
+}) {
   const accounts = getAccounts(member);
   const primaryAccount = getPrimaryAccount(member) || accounts[0] || null;
 
@@ -346,6 +361,7 @@ export default function AccessTab({ member, token, onAccountChange, onDeleted, o
         onDeleted={onDeleted}
         onBusyChange={onBusyChange}
         onFooterActionChange={onFooterActionChange}
+        bootstrapAdmin={bootstrapAdmin}
       />
     </div>
   );

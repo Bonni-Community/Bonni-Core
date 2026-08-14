@@ -11,6 +11,14 @@
 // ENUMS
 // =====================================================
 
+enum StueberlLogLevel {
+  DEBUG
+  INFO
+  WARN
+  ERROR
+  FATAL
+}
+
 enum TabStatus {
   ACTIVE
   CANCELLED
@@ -548,10 +556,8 @@ model MembershipFeeRun {
 // - TabService sagt, ob der Tab bestellt, in Bearbeitung, ausgeliefert oder storniert ist.
 // - TabAssumption ist eine spätere Übernahme, aber keine Zahlung.
 //
-// Die alten Tabellen Tab/TabItem liegen isoliert in bierdeckel_legacy.prisma
-// als LegacyTab/LegacyTabItem und können später entfernt werden.
-// Das neue Prisma-Modell Tab wird bewusst auf die neue Tabelle TabNew gemappt,
-// damit die alte Tabelle Tab während der Migration unverändert bleiben kann.
+// Dieses Schema ist der vollständige neue Schnitt. Ein paralleles Legacy-Tab-
+// Schema oder ein Startzeit-Migrationspfad ist nicht Bestandteil der App.
 // -----------------------------------------------------
 
 model TabSessionGroup {
@@ -746,7 +752,7 @@ model Tab {
   @@index([serviceArea, status])
   @@index([productId, createdAt])
   @@index([tabLocationId, tabSeatId])
-  @@map("TabNew")
+  @@map("Tab")
 }
 
 model TabService {
@@ -1540,7 +1546,7 @@ model ContributionConflict {
   contributionBId String
 
   reason   String
-  severity LogLevel @default(WARN)
+  severity StueberlLogLevel @default(WARN)
   status   String   @default("OPEN") // OPEN | ACKNOWLEDGED | RESOLVED | IGNORED
 
   detectedBy          String?
@@ -1761,7 +1767,7 @@ model ReconciliationIssue {
   id           String            @id @default(cuid())
   runId        String
   run          ReconciliationRun @relation(fields: [runId], references: [id])
-  severity     LogLevel
+  severity     StueberlLogLevel
   module       String
   message      String
   entityType   String?
@@ -1833,11 +1839,13 @@ model ShiftParticipant {
 }
 
 model CashDrawer {
-  id         String  @id @default(cuid())
-  key        String  @unique
-  name       String
-  terminalId String?
-  active     Boolean @default(true)
+  id               String          @id @default(cuid())
+  key              String          @unique
+  name             String
+  terminalId       String?
+  active           Boolean         @default(true)
+  financeAccountId String?         @unique
+  financeAccount   FinanceAccount? @relation(fields: [financeAccountId], references: [id], onDelete: SetNull)
 
   closings CashClosing[]
   bookEntries CashBookEntry[]
@@ -1879,19 +1887,32 @@ model CashClosing {
   expectedAmount   Decimal?
   countedAmount    Decimal?
   differenceAmount Decimal?
+  expectedAmountCents   Int?
+  countedAmountCents    Int?
+  differenceAmountCents Int?
+  currency              String   @default("EUR")
+  countedById           String?
+  countedAt             DateTime?
   closedById       String?
   closedAt         DateTime?
+  createdAt        DateTime  @default(now())
 
   items CashClosingItem[]
+
+  @@index([cashDrawerId, countedAt])
 }
 
 model CashClosingItem {
-  id            String      @id @default(cuid())
-  cashClosingId String
-  cashClosing   CashClosing @relation(fields: [cashClosingId], references: [id])
-  denomination  String
-  quantity      Int
-  amount        Decimal
+  id                String      @id @default(cuid())
+  cashClosingId     String
+  cashClosing       CashClosing @relation(fields: [cashClosingId], references: [id])
+  denomination      String
+  denominationCents Int?
+  quantity          Int
+  amount            Decimal
+  amountCents       Int?
+
+  @@index([cashClosingId, denominationCents])
 }
 
 model DunningRun {
@@ -2096,7 +2117,7 @@ model LayoutPreset {
   id           String        @id @default(cuid())
   key          String        @unique
   label        String
-  terminalType TerminalType?
+  terminalType String?
   configJson   Json?
   active       Boolean       @default(true)
   createdAt    DateTime      @default(now())

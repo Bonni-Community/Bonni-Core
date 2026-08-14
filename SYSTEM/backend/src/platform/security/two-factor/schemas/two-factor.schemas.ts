@@ -8,6 +8,7 @@ export const twoFactorPurposeSchema = z.enum([
   "DSGVO_SUBJECT_DATA_EXPORT",
   "DSGVO_SUBJECT_DATA_DELETE",
   "DSGVO_DELETION_RULE_UPDATE",
+  "MODULE_PRIVATE_DATA_ACCESS",
 ]);
 
 export const setupTotpSchema = z.object({
@@ -21,7 +22,7 @@ export const setupTotpSchema = z.object({
 export const confirmTotpSchema = z.object({
   body: z.object({
     credentialId: z.string().trim().min(1),
-    code: z.string().trim().regex(/^\d{8}$/),
+    code: z.string().trim().regex(/^\d{6}(?:\d{2})?$/),
   }),
 });
 
@@ -38,42 +39,48 @@ export const verifyChallengeSchema = z.object({
     id: z.string().trim().min(1),
   }),
   body: z.object({
-    code: z.string().trim().regex(/^\d{8}$/).optional(),
+    code: z.string().trim().min(4).max(128).regex(/^[^\r\n]+$/).optional(),
     recoveryCode: z.string().trim().min(8).max(80).optional(),
-  }).refine((value) => Boolean(value.code || value.recoveryCode), {
-    message: "code oder recoveryCode ist erforderlich",
+    token: z.string().trim().min(1).max(128).regex(/^[^\r\n]+$/).optional(),
+    password: z.string().min(1).max(256).regex(/^[^\r\n]+$/).optional(),
+  }).refine((value) => Boolean(value.code || value.recoveryCode || value.token), {
+    message: "code, recoveryCode oder token ist erforderlich",
   }),
 });
 
 export const disableTwoFactorSchema = z.object({
   body: z.object({
     credentialId: z.string().trim().min(1).optional(),
-    code: z.string().trim().regex(/^\d{8}$/).optional(),
+    code: z.string().trim().min(4).max(128).regex(/^[^\r\n]+$/).optional(),
     recoveryCode: z.string().trim().min(8).max(80).optional(),
+    token: z.string().trim().min(1).max(128).regex(/^[^\r\n]+$/).optional(),
     password: z.string().min(1).optional(),
-  }).refine((value) => Boolean(value.code || value.recoveryCode || value.password), {
-    message: "code, recoveryCode oder password ist erforderlich",
+  }).refine((value) => Boolean(value.code || value.recoveryCode || value.token || value.password), {
+    message: "code, recoveryCode, token oder password ist erforderlich",
   }),
 });
 
 export const regenerateRecoveryCodesSchema = z.object({
   body: z.object({
-    code: z.string().trim().regex(/^\d{8}$/).optional(),
+    code: z.string().trim().min(4).max(128).regex(/^[^\r\n]+$/).optional(),
     recoveryCode: z.string().trim().min(8).max(80).optional(),
+    token: z.string().trim().min(1).max(128).regex(/^[^\r\n]+$/).optional(),
     password: z.string().min(1).optional(),
-  }).refine((value) => Boolean(value.code || value.recoveryCode || value.password), {
-    message: "code, recoveryCode oder password ist erforderlich",
+  }).refine((value) => Boolean(value.code || value.recoveryCode || value.token || value.password), {
+    message: "code, recoveryCode, token oder password ist erforderlich",
   }),
 });
 
 export const verifyLoginTwoFactorSchema = z.object({
   body: z.object({
     challengeId: z.string().trim().min(1),
-    code: z.string().trim().regex(/^\d{8}$/).optional(),
+    code: z.string().trim().min(4).max(128).regex(/^[^\r\n]+$/).optional(),
     recoveryCode: z.string().trim().min(8).max(80).optional(),
+    token: z.string().trim().min(1).max(128).regex(/^[^\r\n]+$/).optional(),
+    password: z.string().min(1).max(256).regex(/^[^\r\n]+$/).optional(),
     terminalId: z.string().trim().min(1).optional(),
-  }).refine((value) => Boolean(value.code || value.recoveryCode), {
-    message: "code oder recoveryCode ist erforderlich",
+  }).refine((value) => Boolean(value.code || value.recoveryCode || value.token), {
+    message: "code, recoveryCode oder token ist erforderlich",
   }),
 });
 

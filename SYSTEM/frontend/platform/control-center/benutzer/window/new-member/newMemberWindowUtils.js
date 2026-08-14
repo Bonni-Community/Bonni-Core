@@ -18,16 +18,16 @@ const DEFAULT_PERMISSIONS = {
     [TECHNICAL_USAGE]: ["Administrator"],
   },
   app: {
-    [LOCAL_USAGE]: ["Member", "Manager", "Storeman", "Treasurer"],
-    [TECHNICAL_USAGE]: ["Barkeeper", "Member", "Terminal", "Küche"],
+    [LOCAL_USAGE]: [],
+    [TECHNICAL_USAGE]: [],
   },
   "add-on": {
     [LOCAL_USAGE]: [],
-    [TECHNICAL_USAGE]: ["Zugriff"],
+    [TECHNICAL_USAGE]: [],
   },
   "plug-in": {
     [LOCAL_USAGE]: [],
-    [TECHNICAL_USAGE]: ["Zugriff"],
+    [TECHNICAL_USAGE]: [],
   },
 };
 
@@ -326,7 +326,7 @@ export function getNewMemberDefaultRoles(surface, usage) {
 export function getNewMemberDefaultPermissions(module, usage) {
   const options = getNewMemberModulePermissions(module, usage);
   if (module?.kind === "control-center") return options.includes("Administrator") ? ["Administrator"] : options.slice(0, 1);
-  if (module?.kind === "app" && usage === LOCAL_USAGE) return options.includes("Member") ? ["Member"] : options.slice(0, 1);
+  if (module?.kind === "app" && usage === LOCAL_USAGE) return options.slice(0, 1);
   if (["add-on", "plug-in"].includes(module?.kind) && options.length === 1) return options;
   return [];
 }

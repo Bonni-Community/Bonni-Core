@@ -133,13 +133,6 @@ export default function ControlCenter({
     window.history.replaceState(null, "", "/control-center");
   }
 
-  function openPlaceholder(tile) {
-    setActiveModuleKey("");
-    setActiveNavigationKey(tile.key);
-    setMessage(`${tile.label} ist als Bereich vorgesehen und kann jetzt als eigene Seite oder Funktion angebunden werden.`);
-    window.history.replaceState(null, "", `/control-center/${tile.key}`);
-  }
-
   function findModuleByKey(key) {
     return modules.find((module) => module.key === key);
   }
@@ -178,7 +171,7 @@ export default function ControlCenter({
       return;
     }
 
-    openPlaceholder(item);
+    backToLauncher();
   }
 
   useEffect(() => {
@@ -217,7 +210,7 @@ export default function ControlCenter({
     if (!networkAddonChecked || networkAddon || activeNavigationKey !== NETWORK_NAVIGATION_KEY) return;
     setActiveModuleKey("");
     setActiveNavigationKey("");
-    setMessage("Bonni Core Netzwerk ist nicht installiert. Der Netzwerk-Reiter wurde ausgeblendet.");
+    setMessage("Network ist nicht installiert. Der Network-Reiter wurde ausgeblendet.");
     window.history.replaceState(null, "", "/control-center");
   }, [activeNavigationKey, networkAddon, networkAddonChecked]);
 
@@ -255,7 +248,7 @@ export default function ControlCenter({
             onOpenStore={() => handleNavigate({ key: "store", targetModule: "store" })}
           />
         ) : (
-          <p>Lade Bonni Core Netzwerk …</p>
+          <p>Lade Network …</p>
         )
       ) : ActivePage ? (
         <ActivePage
@@ -270,7 +263,6 @@ export default function ControlCenter({
           modules={modules}
           overview={overview}
           onOpenModule={(module) => openModule(module)}
-          onOpenPlaceholder={openPlaceholder}
         />
       )}
     </ControlCenterShell>

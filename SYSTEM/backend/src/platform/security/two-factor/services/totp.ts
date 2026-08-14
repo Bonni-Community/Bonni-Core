@@ -5,13 +5,16 @@ import {
   encryptAes256Gcm,
   hmacDigest,
   hmacSha256,
+  requireRuntimeSecret,
   safeEqual,
   secureRandomBytes,
 } from "../../crypto/index.js";
 
 const BASE32_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
 const TOTP_SECRET_AAD = "security:two-factor:totp-secret:v1";
-const DEFAULT_TOTP_DIGITS = 8;
+// Six digits are the interoperable default used by the otpauth URI format.
+// Eight digits remain available through TWO_FACTOR_TOTP_DIGITS for existing installations.
+const DEFAULT_TOTP_DIGITS = 6;
 const DEFAULT_TOTP_PERIOD_SECONDS = 30;
 const DEFAULT_TOTP_WINDOW = 1;
 
@@ -39,7 +42,10 @@ export function getTotpWindow() {
 }
 
 function getEncryptionKey() {
-  const secret = process.env.TWO_FACTOR_ENCRYPTION_KEY || process.env.JWT_SECRET || "development-two-factor-key";
+  const secret = requireRuntimeSecret({
+    names: ["TWO_FACTOR_ENCRYPTION_KEY", "JWT_SECRET"],
+    errorCode: "TWO_FACTOR_ENCRYPTION_KEY_MISSING_OR_WEAK",
+  });
   return deriveSha256Key(secret);
 }
 

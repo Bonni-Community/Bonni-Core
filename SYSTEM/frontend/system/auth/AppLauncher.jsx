@@ -5,40 +5,15 @@ import {
 } from "./accessPolicy.js";
 import "./AppLauncher.css";
 
-const FIXED_TILES = [
-  {
-    key: "app.kontorapp",
-    label: "KontorApp",
-    eyebrow: "Verein",
-    icon: "🏛️",
-    description: "Mitglieder und Vereinsverwaltung",
-    position: "top",
-  },
-  {
-    key: "app.hocketapp",
-    label: "HocketApp",
-    eyebrow: "Veranstaltungen",
-    icon: "🎟️",
-    description: "Events und Veranstaltungen",
-    position: "left",
-  },
-  {
-    key: "app.stueberlapp",
-    label: "StüberlApp",
-    eyebrow: "Betrieb",
-    icon: "🍺",
-    description: "Bar, Küche, Lager und Verkauf",
-    position: "right",
-  },
-  {
-    key: "control-center",
-    label: "Control Center",
-    eyebrow: "Verwaltung",
-    icon: "⚙️",
-    description: "Benutzer, Rechte und Einstellungen",
-    position: "bottom",
-  },
-];
+const APP_POSITIONS = ["top", "left", "right"];
+const CONTROL_CENTER_TILE = {
+  key: "control-center",
+  label: "Control Center",
+  eyebrow: "Plattform",
+  icon: "⚙️",
+  description: "Benutzer, Rechte und Einstellungen",
+  position: "bottom",
+};
 
 function asList(value) {
   return Array.isArray(value) ? value : [];
@@ -52,11 +27,27 @@ function navigationEntries(shell) {
 }
 
 function targetLabel(target, shell, fallback) {
-  const entry = navigationEntries(shell).find((item) => (
-    normalizeLaunchTarget(item?.appRoute || item?.route || item?.key) === target
-  ));
+  const entry = navigationEntry(target, shell);
 
   return entry?.label || entry?.name || fallback || target.replace(/^app\./, "");
+}
+
+function navigationEntry(target, shell) {
+  return navigationEntries(shell).find((item) => (
+    normalizeLaunchTarget(item?.appRoute || item?.route || item?.key) === target
+  ));
+}
+
+function appTile(target, shell, position) {
+  const entry = navigationEntry(target, shell) || {};
+  return {
+    key: target,
+    label: targetLabel(target, shell),
+    eyebrow: entry.eyebrow || entry.category || entry.kind || "App",
+    icon: entry.icon || "◆",
+    description: entry.description || "Installierte Anwendung",
+    position,
+  };
 }
 
 function displayName(user, shell) {
@@ -77,12 +68,14 @@ function initials(value) {
 export default function AppLauncher({ user, shell, onOpenTarget, onOpenControlCenter, onLogout }) {
   const assignedApps = getAssignedTargets(user, shell).filter((target) => target.startsWith("app."));
   const controlCenterAllowed = canOpenControlCenter(user, shell);
-  const allowedTargets = new Set([
-    ...assignedApps,
-    ...(controlCenterAllowed ? ["control-center"] : []),
-  ]);
-  const fixedKeys = new Set(FIXED_TILES.map((tile) => tile.key));
-  const additionalApps = assignedApps.filter((target) => !fixedKeys.has(target));
+  const primaryApps = assignedApps.slice(0, APP_POSITIONS.length);
+  const primaryTiles = primaryApps.map((target, index) => appTile(target, shell, APP_POSITIONS[index]));
+  const tiles = [
+    ...primaryTiles,
+    ...(controlCenterAllowed ? [CONTROL_CENTER_TILE] : []),
+  ];
+  const additionalApps = assignedApps.slice(primaryApps.length);
+  const hasTargets = assignedApps.length > 0 || controlCenterAllowed;
   const name = displayName(user, shell);
 
   return (
@@ -100,7 +93,7 @@ export default function AppLauncher({ user, shell, onOpenTarget, onOpenControlCe
 
       <section className="bonni-launcher__stage" aria-label="Freigeschaltete Bereiche">
         <div className="bonni-launcher__wheel" role="list" aria-label="App-Auswahl">
-          {FIXED_TILES.filter((tile) => allowedTargets.has(tile.key)).map((tile) => {
+          {tiles.map((tile) => {
             const label = targetLabel(tile.key, shell, tile.label);
             const open = tile.key === "control-center" ? onOpenControlCenter : onOpenTarget;
 
@@ -133,7 +126,7 @@ export default function AppLauncher({ user, shell, onOpenTarget, onOpenControlCe
           </div>
         </div>
 
-        {!allowedTargets.size ? (
+        {!hasTargets ? (
           <p className="bonni-launcher__empty">
             Für diesen Benutzer ist noch keine installierte App freigeschaltet.
           </p>

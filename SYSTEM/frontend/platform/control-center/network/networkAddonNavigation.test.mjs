@@ -45,10 +45,9 @@ test("installed and enabled states also work with manifest-nested package data",
   assert.equal(findInstalledNetworkAddon([nested]), nested);
 });
 
-test("network tab is inserted directly after logs and omitted without the add-on", () => {
+test("network tab is appended and omitted without the add-on", () => {
   const hidden = buildControlCenterNavigation(false);
   const visible = buildControlCenterNavigation(true);
   assert.equal(hidden.some((item) => item.key === "network"), false);
-  const logsIndex = visible.findIndex((item) => item.key === "logs");
-  assert.equal(visible[logsIndex + 1]?.key, "network");
+  assert.equal(visible.at(-1)?.key, "network");
 });

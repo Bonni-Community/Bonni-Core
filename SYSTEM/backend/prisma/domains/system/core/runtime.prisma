@@ -116,3 +116,95 @@ model ModuleRuntimeState {
   @@index([slotName])
   @@index([status])
 }
+enum ModuleNetworkExposure {
+  DISABLED
+  LOCAL
+  INTERNAL
+  PUBLIC
+}
+
+model ModuleNetworkPolicy {
+  moduleKey          String                @id
+  exposure           ModuleNetworkExposure @default(DISABLED)
+  outboundEnabled    Boolean               @default(false)
+  allowedHosts       Json                  @default("[]")
+  allowedProtocols   Json                  @default("[]")
+  requireTls         Boolean               @default(true)
+  changedByAccountId String?
+  changedAt          DateTime              @default(now())
+  createdAt          DateTime              @default(now())
+  updatedAt          DateTime              @updatedAt
+}
+
+model ModuleNetworkObservation {
+  id          String   @id @default(cuid())
+  moduleKey   String
+  direction   String
+  protocol    String?
+  remoteHost  String?
+  remotePort  Int?
+  route       String?
+  decision    String
+  reason      String?
+  accountId   String?
+  ipAddress   String?
+  observedAt  DateTime @default(now())
+
+  @@index([moduleKey, observedAt])
+  @@index([decision, observedAt])
+  @@index([remoteHost, observedAt])
+}
+
+enum DomainMessageStatus {
+  PENDING
+  DELIVERING
+  DELIVERED
+  REJECTED
+  FAILED
+  EXPIRED
+}
+
+// Core only transports and proves delivery. It never interprets app payloads.
+// The payload is encrypted for the destination domain and removed after the
+// configured retention period; payloadHash/correlationId remain as evidence.
+model DomainMessage {
+  id                   String              @id @default(cuid())
+  correlationId        String
+  idempotencyKey       String              @unique
+  protocol             String
+  sourceDomain         String
+  targetDomain         String
+  sourceRecordId       String?
+  targetRecordId       String?
+  payloadCiphertext    String?
+  payloadHash          String
+  status               DomainMessageStatus @default(PENDING)
+  initiatedByAccountId String?
+  expiresAt            DateTime
+  deliveredAt          DateTime?
+  rejectedAt           DateTime?
+  failedAt             DateTime?
+  lastErrorCode        String?
+  createdAt            DateTime            @default(now())
+  updatedAt            DateTime            @updatedAt
+  attempts             DomainMessageAttempt[]
+
+  @@index([correlationId, createdAt])
+  @@index([sourceDomain, targetDomain, status])
+  @@index([expiresAt, status])
+}
+
+model DomainMessageAttempt {
+  id             String   @id @default(cuid())
+  messageId      String
+  message        DomainMessage @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  attemptNumber  Int
+  decision       String
+  resultCode     String?
+  resultHash     String?
+  remoteIdentity String?
+  createdAt      DateTime @default(now())
+
+  @@unique([messageId, attemptNumber])
+  @@index([decision, createdAt])
+}

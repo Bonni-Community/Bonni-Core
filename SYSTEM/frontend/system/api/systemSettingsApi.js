@@ -12,6 +12,26 @@ export function saveControlCenterSystemSettings(token, payload) {
   });
 }
 
+export function getCurrentTwoFactorStatus(token) {
+  return apiRequest("/api/security/2fa/status", { token });
+}
+
+export function startCurrentUserTotpSetup(token, payload = {}) {
+  return apiRequest("/api/security/2fa/totp/setup", {
+    token,
+    method: "POST",
+    body: payload,
+  });
+}
+
+export function confirmCurrentUserTotpSetup(token, payload) {
+  return apiRequest("/api/security/2fa/totp/confirm", {
+    token,
+    method: "POST",
+    body: payload,
+  });
+}
+
 export function pingControlCenterDatabase(token, payload) {
   return apiRequest("/api/system/system/database/ping", {
     token,

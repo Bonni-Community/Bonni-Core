@@ -4,7 +4,15 @@ import {
   getSelectedNewMemberModules,
 } from "../newMemberWindowUtils.js";
 
-export function NewMemberEditableField({ label, value, onChange, type = "text", placeholder = "" }) {
+export function NewMemberEditableField({
+  label,
+  value,
+  onChange,
+  type = "text",
+  placeholder = "",
+  readOnly = false,
+  disabled = false,
+}) {
   return (
     <label className="cc-member-window-field cc-member-window-field--editable">
       <span>{label}</span>
@@ -13,6 +21,8 @@ export function NewMemberEditableField({ label, value, onChange, type = "text", 
         value={value || ""}
         type={type}
         placeholder={placeholder}
+        readOnly={readOnly}
+        disabled={disabled}
         onChange={(event) => onChange(event.target.value)}
       />
     </label>

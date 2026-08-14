@@ -7,18 +7,11 @@ import {
   requirePermission,
 } from "../../security/identity/middleware/requirePermission.js";
 import {
-  createKontorMeetingController,
-  downloadKontorMeetingProtocolController,
-  getKontorMeetingAttendanceController,
-  listKontorMeetingsController,
-  updateKontorMeetingDraftController,
-  updateKontorMeetingAttendanceController,
-  uploadKontorMeetingProtocolController,
-} from "./meetings.controller.js";
-import {
   createLocalMemberController,
+  deleteLocalMemberAccountController,
   getMemberDetailsController,
   getUsersOverviewController,
+  updateLocalMemberAccessController,
   updateLocalMemberProfileController,
   updateMemberByIdController,
 } from "./users.controller.js";
@@ -31,25 +24,17 @@ export const systemUsersRouter = Router();
 systemUsersRouter.use(currentUserMiddleware);
 systemUsersRouter.use(requireAuth);
 
-// Kontor-Manager dürfen ausschließlich die bereits in den Services nochmals
-// geprüften Vereinsfunktionen verwenden. Die eigentliche Core-Kontoverwaltung
-// bleibt weiterhin dem System-Administrator vorbehalten.
-const requireKontorManager = requireAnyPermission(
+const requireUserManager = requireAnyPermission(
   "SYSTEM_ADMIN",
-  "module.app-kontorapp.manager",
+  "auth.users.write",
 );
 
-systemUsersRouter.get("/", requireKontorManager, getUsersOverviewController);
-systemUsersRouter.get("/list", requireKontorManager, getUsersOverviewController);
-systemUsersRouter.get("/overview", requireKontorManager, getUsersOverviewController);
-systemUsersRouter.get("/meetings", requireKontorManager, listKontorMeetingsController);
-systemUsersRouter.post("/meetings", requireKontorManager, createKontorMeetingController);
-systemUsersRouter.patch("/meetings/:meetingId/draft", requireKontorManager, updateKontorMeetingDraftController);
-systemUsersRouter.get("/meetings/:meetingId/protocol", requireKontorManager, downloadKontorMeetingProtocolController);
-systemUsersRouter.put("/meetings/:meetingId/protocol", requireKontorManager, uploadKontorMeetingProtocolController);
-systemUsersRouter.get("/meetings/:meetingId/attendance", requireKontorManager, getKontorMeetingAttendanceController);
-systemUsersRouter.patch("/meetings/:meetingId/attendance/:memberId", requireKontorManager, updateKontorMeetingAttendanceController);
-systemUsersRouter.get("/members/:memberId", requireKontorManager, getMemberDetailsController);
-systemUsersRouter.post("/", requireKontorManager, createLocalMemberController);
-systemUsersRouter.patch("/members/:memberId", requireKontorManager, updateMemberByIdController);
+systemUsersRouter.get("/", requireUserManager, getUsersOverviewController);
+systemUsersRouter.get("/list", requireUserManager, getUsersOverviewController);
+systemUsersRouter.get("/overview", requireUserManager, getUsersOverviewController);
+systemUsersRouter.get("/members/:memberId", requireUserManager, getMemberDetailsController);
+systemUsersRouter.post("/", requireUserManager, createLocalMemberController);
+systemUsersRouter.patch("/members/:memberId", requireUserManager, updateMemberByIdController);
+systemUsersRouter.patch("/:accountId/access", requirePermission("SYSTEM_ADMIN"), updateLocalMemberAccessController);
 systemUsersRouter.patch("/:accountId", requirePermission("SYSTEM_ADMIN"), updateLocalMemberProfileController);
+systemUsersRouter.delete("/:accountId", requirePermission("SYSTEM_ADMIN"), deleteLocalMemberAccountController);

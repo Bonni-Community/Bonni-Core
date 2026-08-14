@@ -392,6 +392,25 @@ export function isDatabaseConnectionFailure(error: unknown) {
   ].some((part) => message.includes(part));
 }
 
+export function isDatabaseAuthorizationFailure(error: unknown) {
+  const codes = new Set<string>();
+  const messages: string[] = [];
+  let current = error as ({ code?: unknown; message?: unknown; cause?: unknown } | null);
+  for (let depth = 0; current && depth < 5; depth += 1) {
+    if (current.code) codes.add(String(current.code).toUpperCase());
+    if (current.message) messages.push(String(current.message).toUpperCase());
+    current = current.cause && typeof current.cause === "object"
+      ? current.cause as { code?: unknown; message?: unknown; cause?: unknown }
+      : null;
+  }
+
+  if (codes.has("42501")) return true;
+  const message = messages.join(" ");
+  return message.includes("42501")
+    || message.includes("PERMISSION DENIED FOR SCHEMA")
+    || message.includes("KEINE BERECHTIGUNG FÜR SCHEMA");
+}
+
 export function recordDatabaseTargetSuccess(target: DatabaseTarget) {
   if (runtime.lastFailure?.target === target) runtime.lastFailure = null;
 }

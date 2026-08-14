@@ -1,11 +1,16 @@
 import type { Express } from "express";
 
 import { clientLogRouter } from "../../core/logger/clientLog.routes.js";
+import {
+  mediaFilesRouter,
+  resolveMediaPublicBasePath,
+} from "../../core/media/index.js";
 import { notificationRouter } from "../../platform/notifications/index.js";
 import { terminalRouter } from "../../platform/terminals/index.js";
 import { timecapsuleRouter } from "../../platform/timecapsule/index.js";
 import { systemUsersRouter } from "../../platform/auth/users/index.js";
 import { updateRouter } from "../../platform/module-manager/update/index.js";
+import { twoFactorRouter } from "../../platform/security/index.js";
 import { runtimeControlRouter } from "../runtime/runtime-control.routes.js";
 import { runContainerRouter } from "../runtime/run-container/index.js";
 import { healthRouter } from "./health.routes.js";
@@ -22,8 +27,10 @@ import { systemRouter } from "./system.routes.js";
  */
 export function registerCoreRoutes(app: Express) {
   app.use("/api/health", healthRouter);
+  app.use(resolveMediaPublicBasePath(), mediaFilesRouter);
   app.use("/api/terminals", terminalRouter);
   app.use("/api/notifications", notificationRouter);
+  app.use("/api/security/2fa", twoFactorRouter);
   app.use("/api/timecapsule", timecapsuleRouter);
   app.use("/api/system", systemRouter);
   app.use("/api/runtime", runtimeRouter);

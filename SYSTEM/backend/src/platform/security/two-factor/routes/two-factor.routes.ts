@@ -65,7 +65,7 @@ twoFactorRouter.post("/challenge", requireAuth, validate(createChallengeSchema),
 
 twoFactorRouter.post("/challenge/:id/verify", requireAuth, validate(verifyChallengeSchema), async (req: AuthenticatedRequest, res, next) => {
   try {
-    res.json(await twoFactorService.verifyChallenge(accountId(req), req.params.id, req.body, meta(req)));
+    res.json(await twoFactorService.verifyChallenge(accountId(req), String(req.params.id), req.body, meta(req)));
   } catch (error) {
     next(error);
   }

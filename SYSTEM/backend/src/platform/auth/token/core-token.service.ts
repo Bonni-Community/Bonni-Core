@@ -1,6 +1,5 @@
 import jwt, { type SignOptions } from "jsonwebtoken";
-
-const FALLBACK_SECRET = "dev-secret-change-me";
+import { requireRuntimeSecret } from "../../security/crypto/runtime-secret.js";
 
 export type CoreTokenPayload = {
   accountId: string;
@@ -10,7 +9,7 @@ export type CoreTokenPayload = {
 
 export class CoreTokenService {
   issueToken(payload: CoreTokenPayload) {
-    const secret = process.env.JWT_SECRET || FALLBACK_SECRET;
+    const secret = getJwtSecret();
 
     return jwt.sign(payload, secret, {
       expiresIn: (process.env.JWT_EXPIRES_IN || "8h") as SignOptions["expiresIn"],
@@ -18,9 +17,16 @@ export class CoreTokenService {
   }
 
   verifyToken(token: string): CoreTokenPayload {
-    const secret = process.env.JWT_SECRET || FALLBACK_SECRET;
+    const secret = getJwtSecret();
     return jwt.verify(token, secret) as CoreTokenPayload;
   }
+}
+
+function getJwtSecret() {
+  return requireRuntimeSecret({
+    names: ["JWT_SECRET"],
+    errorCode: "JWT_SECRET_MISSING_OR_WEAK",
+  });
 }
 
 export const coreTokenService = new CoreTokenService();

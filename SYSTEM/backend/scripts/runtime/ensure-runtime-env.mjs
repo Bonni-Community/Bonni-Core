@@ -74,9 +74,11 @@ const tagPattern = /^[a-z0-9][a-z0-9._/-]*:[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$/;
 const configuredSystemImage = currentValue("SYSTEM_IMAGE");
 const configuredEmergencyImage = currentValue("EMERGENCY_SYSTEM_IMAGE");
 let activeImage = currentValue("BONNI_ACTIVE_IMAGE_TAG")
-  || (configuredSystemImage && configuredSystemImage !== "stueberlapp-system:active" ? configuredSystemImage : `${projectName}-system:active`);
+  || configuredSystemImage
+  || `${projectName}-system:active`;
 let emergencyImage = currentValue("BONNI_EMERGENCY_IMAGE_TAG")
-  || (configuredEmergencyImage && configuredEmergencyImage !== "stueberlapp-system:emergency" ? configuredEmergencyImage : `${projectName}-system:emergency`);
+  || configuredEmergencyImage
+  || `${projectName}-system:emergency`;
 const rollbackImage = currentValue("BONNI_ROLLBACK_IMAGE_TAG") || `${projectName}-system:rollback`;
 if (!tagPattern.test(activeImage) || !tagPattern.test(emergencyImage) || !tagPattern.test(rollbackImage)) {
   throw new Error("Projektgescopte Active-/Emergency-/Rollback-Image-Tags sind ungültig.");
@@ -84,8 +86,6 @@ if (!tagPattern.test(activeImage) || !tagPattern.test(emergencyImage) || !tagPat
 if (!currentValue("BONNI_ACTIVE_IMAGE_TAG")) setValue("BONNI_ACTIVE_IMAGE_TAG", activeImage);
 if (!currentValue("BONNI_EMERGENCY_IMAGE_TAG")) setValue("BONNI_EMERGENCY_IMAGE_TAG", emergencyImage);
 if (!currentValue("BONNI_ROLLBACK_IMAGE_TAG")) setValue("BONNI_ROLLBACK_IMAGE_TAG", rollbackImage);
-if (configuredSystemImage === "stueberlapp-system:active") setValue("SYSTEM_IMAGE", activeImage);
-if (configuredEmergencyImage === "stueberlapp-system:emergency") setValue("EMERGENCY_SYSTEM_IMAGE", emergencyImage);
 
 const uuidV4Pattern = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const publicIdentityKeys = [
@@ -120,7 +120,6 @@ const specifications = [
   { key: "JWT_SECRET", minimum: 32, bytes: 48 },
   { key: "POSTGRES_PASSWORD", minimum: 24, bytes: 36 },
   { key: "SANDBOX_PASSWORD", minimum: 16, bytes: 24 },
-  { key: "HOCKET_INVITATION_PEPPER", minimum: 32, bytes: 48, initializeWhenMissing: true },
   { key: "BONNI_GATEWAY_INTERNAL_SECRET", minimum: 32, bytes: 48, initializeWhenMissing: true },
 ];
 

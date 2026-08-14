@@ -2,14 +2,14 @@
   "schemaVersion": 2,
   "product": "bonni-core",
   "channel": "stable",
-  "version": "0.1.13",
+  "version": "0.1.19",
   "artifact": {
     "type": "oci-image-archive",
     "sizeBytes": 123456789,
     "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
     "source": {
       "kind": "local",
-      "path": "bonni-core-0.1.13.oci"
+      "path": "bonni-core-0.1.19.oci"
     },
     "imageIdentity": {
       "repository": "registry.bonni.example/bonni/core",
@@ -31,7 +31,7 @@
   "expiresAt": "2026-08-21T12:00:00.000Z",
   "minimumRunnerVersion": "0.2.1",
   "releaseNotes": {
-    "title": "Bonni Core 0.1.13",
+    "title": "Bonni Core 0.1.19",
     "descriptions": {
       "de": "Beschreibung der neuen Bonni-Core-Version.",
       "en": "Description of the new Bonni Core release."

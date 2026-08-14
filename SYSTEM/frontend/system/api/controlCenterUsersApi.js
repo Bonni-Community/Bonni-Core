@@ -13,7 +13,7 @@ export async function createControlCenterLocalMember(token, payload) {
 }
 
 export async function updateControlCenterLocalMemberAccess(token, accountId, payload) {
-  return apiRequest(`/api/auth/stewardship/identification/local-members/${encodeURIComponent(accountId)}/access`, {
+  return apiRequest(`/api/system/user/${encodeURIComponent(accountId)}/access`, {
     token,
     method: "PATCH",
     body: payload,
@@ -29,7 +29,7 @@ export async function updateControlCenterLocalMemberProfile(token, accountId, pa
 }
 
 export async function deleteControlCenterLocalMember(token, accountId) {
-  return apiRequest(`/api/auth/stewardship/identification/local-members/${encodeURIComponent(accountId)}`, {
+  return apiRequest(`/api/system/user/${encodeURIComponent(accountId)}`, {
     token,
     method: "DELETE",
   });

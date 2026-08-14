@@ -15,3 +15,18 @@ test("Control Center sends a confirmed target version to the protected install e
   assert.match(popover, /runnerUnavailable/);
   assert.match(popover, /Update installieren/);
 });
+
+test("automatic update guards live in the update polling effect", async () => {
+  const topbar = await readFile(
+    new URL("../layout/ControlCenterTopBar.jsx", import.meta.url),
+    "utf8",
+  );
+  const loadUpdateStatusIndex = topbar.indexOf("async function loadUpdateStatus");
+  const updateEffectIndex = topbar.lastIndexOf("useEffect(() => {", loadUpdateStatusIndex);
+  const updateEffectPrefix = topbar.slice(updateEffectIndex, loadUpdateStatusIndex);
+
+  assert.ok(loadUpdateStatusIndex > -1, "Update polling function is missing");
+  assert.ok(updateEffectIndex > -1, "Update polling effect is missing");
+  assert.match(updateEffectPrefix, /let automaticCheckHandled = false;/);
+  assert.match(updateEffectPrefix, /let automaticDownloadHandled = false;/);
+});

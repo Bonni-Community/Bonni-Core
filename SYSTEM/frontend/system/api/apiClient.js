@@ -36,6 +36,7 @@ const INVALID_SESSION_CODES = new Set([
   "ACCOUNT_INACTIVE_OR_MISSING",
   "ACCOUNT_DISABLED",
 ]);
+const SESSION_MESSAGE_KEY = "bonni.sessionMessage";
 
 let sessionResetScheduled = false;
 
@@ -62,11 +63,20 @@ function clearStoredSession() {
   }
 }
 
-function resetInvalidSession() {
+function resetInvalidSession(message) {
   if (typeof window === "undefined" || sessionResetScheduled) return;
 
   sessionResetScheduled = true;
   clearStoredSession();
+
+  try {
+    window.sessionStorage.setItem(
+      SESSION_MESSAGE_KEY,
+      String(message || "Deine Sitzung ist abgelaufen. Bitte melde dich erneut an."),
+    );
+  } catch {
+    // Die Sitzung wird auch dann sicher bereinigt, wenn Storage gesperrt ist.
+  }
 
   // Der React-Session-State wird beim Neuladen aus dem nun bereinigten
   // Storage aufgebaut und zeigt dadurch wieder zuverlässig den Login.
@@ -81,6 +91,17 @@ function isFormBody(body) {
   return typeof FormData !== "undefined" && body instanceof FormData;
 }
 
+function isRawBody(body) {
+  return (
+    isFormBody(body)
+    || (typeof Blob !== "undefined" && body instanceof Blob)
+    || (typeof ArrayBuffer !== "undefined" && (
+      body instanceof ArrayBuffer
+      || ArrayBuffer.isView(body)
+    ))
+  );
+}
+
 function buildHeaders({ token, body, headers, auth }) {
   const nextHeaders = {
     ...headers,
@@ -88,7 +109,7 @@ function buildHeaders({ token, body, headers, auth }) {
 
   // GET/HEAD requests without body must stay "simple" whenever possible.
   // Otherwise the browser sends an OPTIONS preflight for every read request.
-  if (body != null && !isFormBody(body) && !nextHeaders["Content-Type"]) {
+  if (body != null && !isRawBody(body) && !nextHeaders["Content-Type"]) {
     nextHeaders["Content-Type"] = "application/json";
   }
 
@@ -99,11 +120,19 @@ function buildHeaders({ token, body, headers, auth }) {
   return nextHeaders;
 }
 
-async function parseResponse(response) {
+async function parseResponse(response, responseType = "json") {
+  if (responseType === "blob") {
+    return { rawText: "", data: await response.blob() };
+  }
+
   const rawText = await response.text().catch(() => "");
 
   if (!rawText) {
     return { rawText, data: null };
+  }
+
+  if (responseType === "text") {
+    return { rawText, data: rawText };
   }
 
   try {
@@ -171,14 +200,41 @@ function shouldTryNextBackend({ response, data, nextUrl }) {
   return isRuntimeFailureCode(data?.code || data?.error?.code || data?.reason);
 }
 
+export function normalizeBrowserApiUrl(
+  value,
+  browserOrigin = typeof window !== "undefined" ? window.location?.origin : "",
+) {
+  if (!browserOrigin || !/^https?:\/\//i.test(String(value || ""))) {
+    return value;
+  }
+
+  try {
+    const target = new URL(value);
+    const origin = new URL(browserOrigin).origin;
+    if (
+      target.origin === origin
+      || (target.pathname !== "/api" && !target.pathname.startsWith("/api/"))
+    ) {
+      return value;
+    }
+    return `${origin}${target.pathname}${target.search}${target.hash}`;
+  } catch {
+    return value;
+  }
+}
+
 export async function apiRequest(path, {
   token,
   method = "GET",
   body,
   headers = {},
   auth = true,
+  responseType = "json",
+  signal,
 } = {}) {
-  const urls = orderRuntimeApiUrls(buildApiUrls(path));
+  const urls = orderRuntimeApiUrls([
+    ...new Set(buildApiUrls(path).map((url) => normalizeBrowserApiUrl(url))),
+  ]);
   const networkErrors = [];
 
   for (let index = 0; index < urls.length; index += 1) {
@@ -191,9 +247,11 @@ export async function apiRequest(path, {
       response = await fetch(url, {
         method,
         headers: buildHeaders({ token, body, headers, auth }),
-        body: body == null ? undefined : isFormBody(body) ? body : JSON.stringify(body),
+        body: body == null ? undefined : isRawBody(body) ? body : JSON.stringify(body),
+        signal,
       });
     } catch (error) {
+      if (signal?.aborted || error?.name === "AbortError") throw error;
       networkErrors.push({ url, error });
       markRuntimeEndpointFailure(url, error, { reason: "NETWORK_ERROR" });
 
@@ -214,7 +272,10 @@ export async function apiRequest(path, {
       return null;
     }
 
-    const { rawText, data } = await parseResponse(response);
+    const { rawText, data } = await parseResponse(
+      response,
+      response.ok ? responseType : "json",
+    );
 
     if (!response.ok) {
       const errorCode = responseErrorCode(data);
@@ -226,7 +287,9 @@ export async function apiRequest(path, {
       );
 
       if (invalidSession) {
-        resetInvalidSession();
+        resetInvalidSession(errorMessageFromResponse(data, rawText, response.status, {
+          invalidSession: true,
+        }));
       }
 
       const error = new ApiError(errorMessageFromResponse(data, rawText, response.status, {

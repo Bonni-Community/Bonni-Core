@@ -3,12 +3,14 @@ import { findModuleManifest, listModuleManifests, validateModuleManifest } from 
 import {
   findInstalledModule,
   listInstalledModules,
+  syncInstalledModuleFromManifest,
   updateInstalledModuleStatus,
   upsertInstalledModuleFromManifest,
 } from "../registry/index.js";
 import { assembleModulePrisma } from "./prisma-assembly.service.js";
 import { deactivateRuntimeModule, refreshRuntimeModule } from "../loader/index.js";
 import { isRuntimeActivationReady } from "./runtime-activation-policy.js";
+import { installModuleLegalPayload } from "./module-legal-storage.service.js";
 
 export async function getModuleInstallPlan(key: string) {
   const [manifest, installed, installedModules, manifests] = await Promise.all([
@@ -76,8 +78,9 @@ export async function installModulePackage(key: string) {
   }
 
   const prismaAssembly = await assembleModulePrisma(manifest);
+  const legalPayload = await installModuleLegalPayload(manifest);
   const module = await upsertInstalledModuleFromManifest(manifest, manifest.sourcePath);
-  return { ok: true, module, prismaAssembly, compatibility };
+  return { ok: true, module, prismaAssembly, legalPayload, compatibility };
 }
 
 export async function activateModulePackage(key: string) {
@@ -99,7 +102,9 @@ export async function activateModulePackage(key: string) {
   if (!compatibility.ok) {
     return { ok: false, error: "MODULE_INCOMPATIBLE", key, compatibility };
   }
+  await syncInstalledModuleFromManifest(manifest, manifest.sourcePath);
   const prismaAssembly = manifest ? await assembleModulePrisma(manifest) : null;
+  const legalPayload = await installModuleLegalPayload(manifest);
 
   const enabledModule = await updateInstalledModuleStatus(key, "enabled");
   const runtime = await refreshRuntimeModule(enabledModule);
@@ -110,14 +115,16 @@ export async function activateModulePackage(key: string) {
     return {
       ok: false,
       error: "MODULE_RUNTIME_LOAD_FAILED",
+      message: `Modul konnte nicht gestartet werden: ${runtime.error || "unbekannter Laufzeitfehler"}`,
       module: rolledBackModule,
       runtime,
       prismaAssembly,
+      legalPayload,
       compatibility,
     };
   }
 
-  return { ok: true, module: enabledModule, runtime, prismaAssembly, compatibility };
+  return { ok: true, module: enabledModule, runtime, prismaAssembly, legalPayload, compatibility };
 }
 
 export async function deactivateModulePackage(key: string) {
@@ -144,30 +151,40 @@ export async function deleteModulePackage(key: string) {
   return { ok: true, module: deletedModule };
 }
 
-export async function listModulePackages() {
-  const [manifests, installed] = await Promise.all([
-    listModuleManifests(),
-    listInstalledModules(),
-  ]);
+const REPLACED_PACKAGE_KEYS = new Map([
+  ["app.vereinsapp", "app.kontorapp"],
+]);
+
+function isReplacedPackage(key: string, manifestKeys: Set<string>) {
+  const replacement = REPLACED_PACKAGE_KEYS.get(key);
+  return Boolean(replacement && manifestKeys.has(replacement));
+}
+
+export function mergeModulePackages(manifests: any[], installed: any[]) {
+  const allManifestKeys = new Set(manifests.map((manifest) => manifest.key));
+  const visibleManifests = manifests.filter((manifest) => !isReplacedPackage(manifest.key, allManifestKeys));
 
   const installedByKey = new Map(installed.map((module) => [module.key, module]));
-  const discovered = manifests.map((manifest) => {
-    const compatibility = evaluateModuleCompatibility(manifest, { installedModules: installed, manifests });
+  const discovered = visibleManifests.map((manifest) => {
+    const installation = installedByKey.get(manifest.key) as any;
+    const compatibility = evaluateModuleCompatibility(manifest, { installedModules: installed, manifests: visibleManifests });
     return {
       ...manifest,
-      installation: installedByKey.get(manifest.key) || manifest.installation || null,
+      installation: installation || manifest.installation || null,
       installationPolicy: manifest.installation || null,
-      installed: installedByKey.has(manifest.key),
-      enabled: installedByKey.get(manifest.key)?.enabled || false,
-      status: installedByKey.get(manifest.key)?.status || "discovered",
+      installed: Boolean(installation?.installed),
+      enabled: Boolean(installation?.enabled),
+      status: installation?.status || "discovered",
       compatibility,
       compatible: compatibility.ok,
     };
   });
 
-  const manifestKeys = new Set(manifests.map((manifest) => manifest.key));
+  const manifestKeys = new Set(visibleManifests.map((manifest) => manifest.key));
   const installedOnly = installed
     .filter((module) => !manifestKeys.has(module.key))
+    .filter((module) => module.installed)
+    .filter((module) => !isReplacedPackage(module.key, allManifestKeys))
     .map((module) => ({
       ...module,
       compatibility: {
@@ -179,4 +196,12 @@ export async function listModulePackages() {
     }));
 
   return [...discovered, ...installedOnly];
+}
+
+export async function listModulePackages() {
+  const [manifests, installed] = await Promise.all([
+    listModuleManifests(),
+    listInstalledModules(),
+  ]);
+  return mergeModulePackages(manifests, installed);
 }

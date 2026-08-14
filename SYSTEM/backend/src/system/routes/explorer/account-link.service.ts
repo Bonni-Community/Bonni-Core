@@ -19,6 +19,23 @@ function linkError(statusCode: number, code: string, message: string, details?: 
   return Object.assign(new Error(message), { statusCode, code, details });
 }
 
+export function assertAccountLinkMemberMergeAllowed(
+  targetMember: { id: string } | null | undefined,
+  primaryMember: { id: string } | null | undefined,
+) {
+  if (targetMember && primaryMember) {
+    throw linkError(
+      409,
+      "ACCOUNT_LINK_MEMBER_MERGE_REVIEW_REQUIRED",
+      "Zwei vorhandene Mitgliedsprofile dürfen erst nach einer modulübergreifenden Referenzprüfung zusammengeführt werden.",
+      {
+        targetMemberId: targetMember.id,
+        primaryMemberId: primaryMember.id,
+      },
+    );
+  }
+}
+
 function cleanLoginName(value: unknown) {
   return String(value || "").trim().toLowerCase().slice(0, 80);
 }
@@ -270,13 +287,7 @@ export async function approveAccountLink(accountId: string, requestId: string) {
       where: { personId: request.primaryPersonId },
       include: { account: true },
     });
-    if (targetMember?.account && primaryMember?.account) {
-      throw linkError(
-        409,
-        "ACCOUNT_LINK_FINANCE_REVIEW_REQUIRED",
-        "Beide Benutzer besitzen bereits ein Mitgliedskonto. Die finanziellen Daten müssen vor der Verknüpfung manuell geprüft werden.",
-      );
-    }
+    assertAccountLinkMemberMergeAllowed(targetMember, primaryMember);
 
     const snapshot = {
       oldPersonId: oldPerson.id,
@@ -307,31 +318,6 @@ export async function approveAccountLink(accountId: string, requestId: string) {
         where: { id: targetMember.id },
         data: { personId: request.primaryPersonId },
       });
-    } else if (targetMember && primaryMember) {
-      if (targetMember.account && !primaryMember.account) {
-        await transaction.memberAccount.update({
-          where: { id: targetMember.account.id },
-          data: { memberId: primaryMember.id },
-        });
-      }
-      await transaction.memberPresenceLog.updateMany({
-        where: { memberId: targetMember.id },
-        data: { memberId: primaryMember.id },
-      });
-      const oldMemberNumber = targetMember.memberNumber;
-      if (oldMemberNumber) {
-        await transaction.memberProfile.update({
-          where: { id: targetMember.id },
-          data: { memberNumber: null },
-        });
-      }
-      await transaction.memberProfile.delete({ where: { id: targetMember.id } });
-      if (!primaryMember.memberNumber && oldMemberNumber) {
-        await transaction.memberProfile.update({
-          where: { id: primaryMember.id },
-          data: { memberNumber: oldMemberNumber },
-        });
-      }
     }
 
     await transaction.person.update({

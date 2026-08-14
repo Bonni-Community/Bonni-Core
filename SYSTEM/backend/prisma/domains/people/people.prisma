@@ -1,0 +1,199 @@
+// Protected personal data. Every *Encrypted value is AES-256-GCM ciphertext.
+// personId/memberId are opaque Core identifiers, never Prisma relations.
+
+enum PeopleDataStatus {
+  ACTIVE
+  ARCHIVED
+  DELETED
+}
+
+enum PeopleAddressType {
+  PRIMARY
+  POSTAL
+  BILLING
+  EMERGENCY
+  OTHER
+}
+
+enum PeopleBankAccountType {
+  SEPA
+  TRANSFER
+  PAYPAL
+  OTHER
+}
+
+model PeopleProfile {
+  personId             String           @id
+  memberId             String?          @unique
+  firstNameEncrypted   String?
+  lastNameEncrypted    String?
+  nicknameEncrypted    String?
+  emailEncrypted       String?
+  phoneEncrypted       String?
+  mobileEncrypted      String?
+  birthDateEncrypted   String?
+  genderEncrypted      String?
+  searchFingerprint    String?
+  status               PeopleDataStatus @default(ACTIVE)
+  encryptionVersion    Int              @default(1)
+  keyVersion           Int              @default(1)
+  createdAt            DateTime         @default(now())
+  updatedAt            DateTime         @updatedAt
+
+  @@index([memberId])
+  @@index([searchFingerprint])
+  @@index([status])
+}
+
+model PeopleAddress {
+  id                    String            @id @default(cuid())
+  personId              String
+  type                  PeopleAddressType @default(PRIMARY)
+  recipientEncrypted    String?
+  streetEncrypted       String?
+  houseNumberEncrypted  String?
+  postalCodeEncrypted   String?
+  cityEncrypted         String?
+  regionEncrypted       String?
+  countryEncrypted      String?
+  noteEncrypted         String?
+  validFrom             DateTime?
+  validUntil            DateTime?
+  encryptionVersion     Int               @default(1)
+  keyVersion            Int               @default(1)
+  createdAt             DateTime          @default(now())
+  updatedAt             DateTime          @updatedAt
+
+  @@index([personId, type])
+  @@index([validUntil])
+}
+
+model PeopleBankAccount {
+  id                       String                @id @default(cuid())
+  personId                 String
+  memberId                 String?
+  type                     PeopleBankAccountType @default(SEPA)
+  accountHolderEncrypted   String?
+  ibanEncrypted            String?
+  bicEncrypted             String?
+  paypalEncrypted          String?
+  ibanLast4                String?
+  preferred               Boolean               @default(false)
+  preferredMethod         String                @default("BANK_TRANSFER")
+  verifiedAt               DateTime?
+  revokedAt                DateTime?
+  encryptionVersion        Int                   @default(1)
+  keyVersion               Int                   @default(1)
+  createdAt                DateTime              @default(now())
+  updatedAt                DateTime              @updatedAt
+
+  @@index([personId, type])
+  @@index([memberId])
+  @@index([preferred])
+}
+
+model PeopleSepaMandate {
+  id                          String   @id @default(cuid())
+  personId                    String
+  memberId                    String?
+  bankAccountId               String?
+  mandateReferenceEncrypted   String
+  mandateReferenceFingerprint String  @unique
+  creditorIdentifierHash      String
+  creditorIdentifierEncrypted String
+  signedAt                    DateTime
+  sequenceType                String   @default("RCUR")
+  status                      String   @default("ACTIVE")
+  documentObjectKeyEncrypted  String?
+  revokedAt                   DateTime?
+  encryptionVersion           Int      @default(1)
+  keyVersion                  Int      @default(1)
+  createdAt                   DateTime @default(now())
+  updatedAt                   DateTime @updatedAt
+
+  @@index([personId, status])
+  @@index([memberId, status])
+  @@index([signedAt])
+}
+
+model PeopleFamilyRelation {
+  id                    String   @id @default(cuid())
+  personId              String
+  relatedPersonId       String?
+  relationshipEncrypted String
+  displayNameEncrypted  String?
+  contactEncrypted      String?
+  noteEncrypted         String?
+  validFrom             DateTime?
+  validUntil            DateTime?
+  encryptionVersion     Int      @default(1)
+  keyVersion            Int      @default(1)
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+
+  @@index([personId])
+  @@index([relatedPersonId])
+}
+
+model PeopleEmergencyContact {
+  id                    String   @id @default(cuid())
+  personId              String
+  nameEncrypted         String
+  relationshipEncrypted String?
+  phoneEncrypted        String?
+  emailEncrypted        String?
+  noteEncrypted         String?
+  priority              Int      @default(100)
+  encryptionVersion     Int      @default(1)
+  keyVersion            Int      @default(1)
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+
+  @@index([personId, priority])
+}
+
+model PeopleHealthRecord {
+  id                    String           @id @default(cuid())
+  personId              String
+  category              String
+  payloadEncrypted      String
+  validFrom             DateTime?
+  validUntil            DateTime?
+  status                PeopleDataStatus @default(ACTIVE)
+  sourceEncrypted       String?
+  encryptionVersion     Int              @default(1)
+  keyVersion            Int              @default(1)
+  createdAt             DateTime         @default(now())
+  updatedAt             DateTime         @updatedAt
+
+  @@index([personId, category, status])
+  @@index([validUntil])
+}
+
+model PeopleDocument {
+  id                  String           @id @default(cuid())
+  personId            String
+  memberId            String?
+  categoryEncrypted   String
+  titleEncrypted      String
+  fileNameEncrypted   String
+  mimeTypeEncrypted   String
+  sizeInBytes         Int
+  checksum            String
+  objectKey           String           @unique
+  validFrom           DateTime?
+  validUntil          DateTime?
+  archivedAt          DateTime?
+  status              PeopleDataStatus @default(ACTIVE)
+  uploadedByAccountId String?
+  encryptionVersion   Int              @default(1)
+  keyVersion          Int              @default(1)
+  storageVersion      Int              @default(1)
+  createdAt           DateTime         @default(now())
+  updatedAt           DateTime         @updatedAt
+
+  @@index([personId, status, archivedAt])
+  @@index([memberId, status, archivedAt])
+  @@index([checksum])
+  @@index([validUntil])
+}

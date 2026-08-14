@@ -139,25 +139,17 @@ export function getAssignedTargets(user, shell) {
 }
 
 function normalizeWorkspace(value) {
-  const workspace = String(value || "").trim().toUpperCase();
-  if (["BAR", "BARTENDER", "BARKEEPER", "THEKE"].includes(workspace)) return "BAR";
-  if (["KITCHEN", "KUECHE", "KÜCHE", "COOK", "KOCH"].includes(workspace)) return "KITCHEN";
-  if (["TABLE", "TISCH", "TERMINAL"].includes(workspace)) return "TABLE";
-  if ([
-    "MEMBER",
-    "MITGLIED",
-    "MANAGER",
-    "STOREMAN",
-    "TREASURER",
-    "HELPER",
-    "WAREHOUSE",
-    "LAGER",
-    "ACCOUNTING",
-    "CASHIER",
-    "KASSE",
-  ].includes(workspace)) return "MEMBER";
+  const workspace = String(value || "")
+    .trim()
+    .toUpperCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^A-Z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+  if (!workspace) return null;
   if (["ADMIN", "ADMINISTRATOR", "SYSTEM_ADMIN"].includes(workspace)) return "ADMIN";
-  return null;
+  if (["MEMBER", "MITGLIED"].includes(workspace)) return "MEMBER";
+  return workspace;
 }
 
 function workspaceFromPermission(value) {
@@ -200,8 +192,6 @@ export function getWorkspaceForLaunchTarget(target, user, shell) {
   const normalizedTarget = normalizeLaunchTarget(target);
   if (!normalizedTarget?.startsWith("app.")) return null;
   if (!canOpenLaunchTarget(normalizedTarget, user, shell)) return null;
-
-  if (normalizedTarget === "app.kontorapp") return "MEMBER";
 
   const matchingAccess = moduleAccessEntries(user, shell)
     .filter((entry) => targetFromAccessEntry(entry) === normalizedTarget);

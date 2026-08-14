@@ -23,7 +23,7 @@ export const logoutSchema = z.object({
 export const loginTwoFactorSchema = z.object({
   body: z.object({
     challengeId: z.string().trim().min(1),
-    code: z.string().trim().regex(/^\d{6}$/).optional(),
+    code: z.string().trim().min(4).max(128).regex(/^[^\r\n]+$/).optional(),
     recoveryCode: z.string().trim().min(8).max(80).optional(),
     terminalId: z.string().optional()
   }).refine((value) => Boolean(value.code || value.recoveryCode), {

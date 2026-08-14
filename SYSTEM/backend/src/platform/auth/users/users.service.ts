@@ -140,8 +140,7 @@ function roleTone(label: string) {
 
   if (normalized.includes("admin")) return "red";
   if (normalized.includes("system") || normalized.includes("verwaltung")) return "blue";
-  if (normalized.includes("finanz") || normalized.includes("treasurer")) return "purple";
-  if (normalized.includes("terminal") || normalized.includes("kasse") || normalized.includes("bar")) return "orange";
+  if (normalized.includes("terminal") || normalized.includes("service")) return "orange";
   if (normalized.includes("member") || normalized.includes("mitglied") || normalized.includes("benutzer")) return "green";
 
   return "gray";
@@ -245,31 +244,12 @@ const ROLE_LABELS: Record<string, string> = {
   member: "Member",
   mitglied: "Member",
   system: "System",
-  storeman: "Storeman",
-  treasurer: "Treasurer",
-  helper: "Helper",
-  bar: "Bar",
-  barkeeper: "Bar",
-  kitchen: "Küche",
-  kueche: "Küche",
-  kuche: "Küche",
-  koch: "Küche",
-  table: "Tisch",
-  tisch: "Tisch",
-  fenster: "Tisch",
-  terminal: "Tisch",
 };
 
 const ACCESS_ORDER = [
   "Administrator",
   "Member",
   "System",
-  "Storeman",
-  "Treasurer",
-  "Helper",
-  "Bar",
-  "Küche",
-  "Tisch",
 ];
 
 function normalizeAccessLabel(value: unknown, fallback = "Ohne Rolle") {
@@ -304,12 +284,10 @@ function hasAnyAccessLabel(labels: string[], wanted: string[]) {
   return wanted.some((item) => normalized.includes(item));
 }
 
-function isTechnicalAccessAccount(account: { type?: string | null; accessLabels?: string[]; usageLabel?: string | null }) {
+export function isTechnicalAccessAccount(account: { type?: string | null; accessLabels?: string[]; usageLabel?: string | null }) {
   const type = String(account.type || "").toUpperCase();
-  const labels = account.accessLabels || [];
 
-  if (["ADMIN", "TERMINAL", "SERVICE"].includes(type)) return true;
-  if (hasAnyAccessLabel(labels, ["Administrator", "Bar", "Küche", "Tisch"]) && !hasAnyAccessLabel(labels, ["Member"])) return true;
+  if (["TERMINAL", "SERVICE"].includes(type)) return true;
   if (String(account.usageLabel || "").toLowerCase().includes("techn")) return true;
 
   return false;
@@ -504,17 +482,13 @@ function humanizeAccountType(value: unknown) {
 
 function humanizeTerminalType(value: unknown) {
   const normalized = String(value || "").toUpperCase();
-
-  if (normalized === "BAR") return "Bar-Terminal";
-  if (normalized === "KITCHEN") return "Küche";
-  if (normalized === "TABLE") return "Tisch";
-  if (normalized === "CASHIER") return "Kasse";
   if (normalized === "ADMIN") return "Admin-Terminal";
-  if (normalized === "STORAGE") return "Lager";
-  if (normalized === "SELF_SERVICE") return "Self-Service";
-  if (normalized === "INVENTORY_SCANNER") return "Scanner";
-
-  return "Terminal";
+  const label = normalized
+    .split(/[_-]+/)
+    .filter(Boolean)
+    .map((part) => `${part.slice(0, 1)}${part.slice(1).toLowerCase()}`)
+    .join(" ");
+  return label ? `${label}-Terminal` : "Terminal";
 }
 
 function surfaceFromAccessLabel(label: string) {
@@ -526,13 +500,7 @@ function surfaceFromAccessLabel(label: string) {
   if (normalized.startsWith("app:")) return "App";
   if (normalized.includes("admin") || normalized.includes("administrator")) return "Control Center";
   if (normalized.includes("member") || normalized.includes("mitglied")) return "App";
-  if (normalized.includes("treasurer") || normalized.includes("finanz") || normalized.includes("cashbook")) return "App";
-  if (normalized.includes("storeman") || normalized.includes("lager")) return "App";
   if (normalized.includes("system")) return "App";
-  if (normalized.includes("bar")) return "App";
-  if (normalized.includes("kitchen") || normalized.includes("küche")) return "App";
-  if (normalized.includes("table") || normalized.includes("tisch")) return "App";
-  if (normalized.includes("terminal") || normalized.includes("kasse")) return "App";
 
   return "";
 }
@@ -544,13 +512,12 @@ function terminalSurfaceLabel(row: TerminalSurfaceRow) {
   return type;
 }
 
-function usageLabelForAccount(account: AccountRow, labels: string[] = []) {
+export function usageLabelForAccount(account: AccountRow, labels: string[] = []) {
   const accountType = String(account.accountType || "").toUpperCase();
   const providerType = String(account.authProviderType || "").toUpperCase();
   const providerKey = String(account.authProviderKey || "").toLowerCase();
 
-  if (["ADMIN", "SERVICE", "TERMINAL"].includes(accountType)) return "Technischer Account";
-  if (hasAnyAccessLabel(labels, ["Administrator", "Bar", "Küche", "Tisch"]) && !hasAnyAccessLabel(labels, ["Member"])) return "Technischer Account";
+  if (["SERVICE", "TERMINAL"].includes(accountType)) return "Technischer Account";
   if (account.isSandbox) return "Technischer Account";
   if (providerType === "OIDC" || providerKey.includes("oidc")) return "OIDC";
   if (providerType === "LOCAL" || providerKey === "local" || !providerType) return "Lokal";
@@ -665,8 +632,8 @@ function normalizeMember(
   ]);
   const moduleAccess = mergeModuleAccess(accounts.flatMap((account) => account.moduleAccess || []));
   // Die Benutzerverwaltung zeigt ausschließlich den technischen Kontostatus.
-  // Der fachliche Vereinsstatus (z. B. ACTIVE_MEMBER/PASSIVE_MEMBER) gehört zur
-  // KontorApp und darf niemals als Login-Status interpretiert werden.
+  // Fachliche Profilstatus installierter Module dürfen niemals als
+  // technischer Login-Status interpretiert werden.
   const primaryAccount = activeAccounts[0] || accounts[0] || null;
   const accountIsActive = Boolean(primaryAccount?.isActive);
   const status = accountIsActive ? "Aktiviert" : "Deaktiviert";

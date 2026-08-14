@@ -50,46 +50,24 @@ export const AVAILABLE_MEMBER_USAGES = [
 
 const SURFACE_ROLE_OPTIONS = {
   [CONTROL_CENTER_SURFACE]: ["Administrator"],
-  [APP_SURFACE]: {
-    [LOCAL_USAGE]: ["Member", "Manager", "Storeman", "Treasurer"],
-    [TECHNICAL_USAGE]: ["Bar", "Küche", "Tisch"],
-  },
-  [ADD_ON_SURFACE]: ["Zugriff"],
-  [PLUG_IN_SURFACE]: ["Zugriff"],
+  [APP_SURFACE]: [],
+  [ADD_ON_SURFACE]: [],
+  [PLUG_IN_SURFACE]: [],
 };
 
 const DEFAULT_SURFACE_ROLES = {
   [CONTROL_CENTER_SURFACE]: ["Administrator"],
-  [APP_SURFACE]: {
-    [LOCAL_USAGE]: ["Member"],
-    [TECHNICAL_USAGE]: [],
-  },
-  [ADD_ON_SURFACE]: ["Zugriff"],
-  [PLUG_IN_SURFACE]: ["Zugriff"],
+  [APP_SURFACE]: [],
+  [ADD_ON_SURFACE]: [],
+  [PLUG_IN_SURFACE]: [],
 };
 
 const ROLE_LABELS = {
   admin: "Administrator",
   administrator: "Administrator",
-  member: "Member",
-  manager: "Manager",
-  storeman: "Storeman",
-  treasurer: "Treasurer",
-  helper: "Helper",
-  bar: "Bar",
-  barkeeper: "Bar",
-  kitchen: "Küche",
-  kueche: "Küche",
-  kuche: "Küche",
-  koch: "Küche",
-  table: "Tisch",
-  tablebs: "Tisch",
-  tisch: "Tisch",
-  terminal: "Tisch",
-  fenster: "Tisch",
 };
 
-const ROLE_ORDER = ["Administrator", "Member", "Manager", "Storeman", "Treasurer", "Helper", "Bar", "Küche", "Tisch"];
+const ROLE_ORDER = ["Administrator"];
 
 export function formatMemberRoleLabel(label) {
   const value = String(label || "").trim();
@@ -162,30 +140,12 @@ export function normalizeSurfaceName(label) {
 
   if (!normalized) return null;
   if (normalized.includes("control") || normalized.includes("adminbereich") || normalized === "admin" || normalized.includes("administrator")) return CONTROL_CENTER_SURFACE;
-  if (normalized.includes("add-on") || normalized.includes("addon") || normalized.includes("hocket") || normalized.includes("hock")) return ADD_ON_SURFACE;
-  if (normalized.includes("plug-in") || normalized.includes("plugin") || normalized.includes("verein") || normalized.includes("mitgliedsbereich")) return PLUG_IN_SURFACE;
-  if (normalized === "app" || normalized.startsWith("app:")) return APP_SURFACE;
+  if (normalized.includes("add-on") || normalized.includes("addon")) return ADD_ON_SURFACE;
+  if (normalized.includes("plug-in") || normalized.includes("plugin")) return PLUG_IN_SURFACE;
   if (
-    normalized.includes("stubel") ||
-    normalized.includes("bonni") ||
-    normalized.includes("bonni") ||
-    normalized.includes("stuber") ||
-    normalized.includes("member") ||
-    normalized.includes("manager") ||
-    normalized.includes("storeman") ||
-    normalized.includes("treasurer") ||
-    normalized.includes("bar") ||
-    normalized.includes("kuche") ||
-    normalized.includes("kueche") ||
-    normalized.includes("tisch") ||
-    normalized.includes("tablebs") ||
-    normalized.includes("terminal") ||
-    normalized.includes("finanz") ||
-    normalized.includes("lager") ||
-    normalized.includes("store") ||
-    normalized.includes("treasurer") ||
-    normalized.includes("barkeeper") ||
-    normalized.includes("koch")
+    normalized === "app"
+    || normalized.startsWith("app:")
+    || normalized.startsWith("access:app:")
   ) return APP_SURFACE;
 
   return null;

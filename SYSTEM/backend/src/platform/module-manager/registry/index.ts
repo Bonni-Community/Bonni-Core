@@ -12,7 +12,9 @@ export type {
 export {
   findInstalledModule,
   listInstalledModules,
+  listInstalledModulesStrict,
   recordModuleEvent,
+  syncInstalledModuleFromManifest,
   updateInstalledModuleStatus,
   upsertInstalledModuleFromManifest,
 } from "./installed-module.repository.js";

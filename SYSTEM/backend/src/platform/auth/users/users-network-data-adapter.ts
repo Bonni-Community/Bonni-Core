@@ -92,3 +92,24 @@ export async function publishUsersNetworkRecords(
     actor,
   });
 }
+
+export async function publishUserAccountDeletion(
+  accountId: string,
+  actor: CoreDataActor | null,
+) {
+  registerUsersNetworkDataAdapter();
+  const occurredAt = new Date().toISOString();
+  return coreDataAdapterRegistry.publishLocal({
+    domainId: DOMAIN_ID,
+    operations: [{
+      entityId: `account:${accountId}`,
+      action: "delete",
+      version: Date.now(),
+      occurredAt,
+      payload: null,
+    }],
+    sourceModule: "core.auth.users",
+    actor,
+    occurredAt,
+  });
+}

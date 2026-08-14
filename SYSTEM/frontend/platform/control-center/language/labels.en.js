@@ -17,10 +17,7 @@ export const controlCenterLabelsEn = {
     store: "Store",
     backup: "Backup",
     system: "System Monitoring",
-    diagnostics: "Diagnostics",
     explorer: "Explorer",
-    license: "License",
-    logs: "Logs",
     network: "Network",
   },
 
@@ -32,10 +29,7 @@ export const controlCenterLabelsEn = {
     store: "Manage apps, add-ons, plug-ins and bridges.",
     backup: "Manage backups and prepare restore workflows.",
     system: "System status, resources, active warnings and incidents.",
-    diagnostics: "Diagnostics, shell and checks.",
     explorer: "Explore areas, modules and sources.",
-    license: "Prepare license and version information.",
-    logs: "Prepare logs and events.",
     network: "Connect and manage installed Bonni Core instances.",
   },
 

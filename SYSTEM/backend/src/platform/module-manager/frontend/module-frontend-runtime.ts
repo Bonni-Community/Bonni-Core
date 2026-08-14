@@ -6,18 +6,26 @@ import { listModuleManifests } from "../manifests/index.js";
 import { resolveBonniProjectRoot } from "../project-root.js";
 import { findInstalledModule } from "../registry/index.js";
 
-const MODULE_STATUS_CACHE_MS = 1_000;
-const moduleStatusCache = new Map<string, { enabled: boolean; expiresAt: number }>();
-
 async function isModuleEnabled(key: string) {
-  const now = Date.now();
-  const cached = moduleStatusCache.get(key);
-  if (cached && cached.expiresAt > now) return cached.enabled;
-
   const installed = await findInstalledModule(key);
-  const enabled = Boolean(installed?.enabled);
-  moduleStatusCache.set(key, { enabled, expiresAt: now + MODULE_STATUS_CACHE_MS });
-  return enabled;
+  return Boolean(installed?.enabled);
+}
+
+function isHashedBuildAssetRequest(requestPath: string) {
+  const normalized = path.posix.normalize(`/${String(requestPath || "")}`);
+  return (
+    normalized.startsWith("/assets/")
+    && !normalized.includes("..")
+    && /^\/assets\/[a-z0-9/_.-]+$/i.test(normalized)
+  );
+}
+
+function setFrontendResourceHeaders(res: express.Response) {
+  // Das Modul-iframe besitzt absichtlich eine undurchsichtige Origin. Seine
+  // unveraenderlichen Build-Dateien muessen deshalb explizit als oeffentliche
+  // Ressourcen markiert werden. API-, Auth- und Nutzdaten sind davon nicht
+  // betroffen und bleiben durch Core geschuetzt.
+  res.setHeader("Cross-Origin-Resource-Policy", "cross-origin");
 }
 
 function safeMountPath(value: unknown, moduleKey: string) {
@@ -32,6 +40,21 @@ function safeMountPath(value: unknown, moduleKey: string) {
     .replace(/[^a-z0-9_-]+/g, "-");
 
   return `/feature-modules/${slug}`;
+}
+
+function safePublicEntry(value: unknown) {
+  const configured = String(value || "").trim().replace(/\/$/, "");
+  if (!configured || !/^\/[a-z0-9/_-]+$/i.test(configured) || configured.includes("..")) {
+    return null;
+  }
+  if (configured === "/api" || configured.startsWith("/api/")) return null;
+  return configured;
+}
+
+function safeModuleRoute(value: unknown) {
+  const configured = String(value || "").trim();
+  if (!/^[a-z0-9][a-z0-9._-]{1,127}$/i.test(configured)) return null;
+  return configured;
 }
 
 function resolvePublicRoot(packageRoot: string, configuredRoot: unknown) {
@@ -76,7 +99,19 @@ export async function registerModuleFrontends(app: Express) {
     }
 
     const mountPath = safeMountPath(frontend.mountPath, manifest.key);
-    const serveStaticFrontend = express.static(publicRoot, { index: "index.html" });
+    const serveStaticFrontend = express.static(publicRoot, {
+      index: "index.html",
+      // App-Builds werden separat aktualisiert. Nach einer frueheren
+      // JSON-Fehlantwort darf der Browser diese URL nicht mit 304 weiter aus
+      // seinem fehlerhaften Cache bedienen.
+      etag: false,
+      lastModified: false,
+      cacheControl: false,
+      setHeaders(response) {
+        response.setHeader("Cache-Control", "no-store");
+        setFrontendResourceHeaders(response);
+      },
+    });
 
     // Die Route wird für jedes entdeckte Manifest registriert. Ob die App
     // aktuell aktiviert ist und ob ihr Build inzwischen vorhanden ist, wird
@@ -84,7 +119,14 @@ export async function registerModuleFrontends(app: Express) {
     // lokaler Build ohne einen weiteren Backend-Neustart.
     app.use(mountPath, async (req, res, next) => {
       try {
-        if (!await isModuleEnabled(manifest.key)) {
+        const buildAsset = isHashedBuildAssetRequest(req.path);
+
+        // index.html und sonstige App-Einstiege bleiben an den aktivierten
+        // Modulstatus gebunden. Gehashte JS-/CSS-/Bilddateien enthalten keine
+        // Sitzung oder Benutzerdaten und duerfen unmittelbar nach der
+        // Aktivierung geladen werden. So kann ein kurz zuvor gelesener Status
+        // niemals JSON an eine JavaScript-URL liefern.
+        if (!buildAsset && !await isModuleEnabled(manifest.key)) {
           next();
           return;
         }
@@ -97,10 +139,62 @@ export async function registerModuleFrontends(app: Express) {
           return;
         }
 
+        setFrontendResourceHeaders(res);
         serveStaticFrontend(req, res, next);
       } catch (error) {
         next(error);
       }
     });
+
+    const publicEntry = safePublicEntry(frontend.publicEntry);
+    if (publicEntry) {
+      const sendPublicEntry = async (
+        _req: express.Request,
+        res: express.Response,
+        next: express.NextFunction,
+      ) => {
+        try {
+          if (!await isModuleEnabled(manifest.key)) {
+            next();
+            return;
+          }
+          if (!existsSync(indexFile)) {
+            res.status(503).json({
+              error: "MODULE_FRONTEND_BUILD_MISSING",
+              message: `Frontend build missing for ${manifest.key}`,
+            });
+            return;
+          }
+          setFrontendResourceHeaders(res);
+          res.sendFile(indexFile);
+        } catch (error) {
+          next(error);
+        }
+      };
+      app.get(publicEntry, sendPublicEntry);
+      app.get(`${publicEntry}/join/:inviteCode`, sendPublicEntry);
+      app.get(`${publicEntry}/poll/:inviteCode`, sendPublicEntry);
+    }
+
+    const memberEntry = safePublicEntry(frontend.memberEntry);
+    const memberRoute = safeModuleRoute(frontend.route);
+    if (memberEntry && memberRoute && memberEntry !== publicEntry) {
+      app.get(memberEntry, async (_req, res, next) => {
+        try {
+          if (!await isModuleEnabled(manifest.key)) {
+            next();
+            return;
+          }
+
+          // Die lesbare Member-Adresse ist nur ein sicherer Einstieg in den
+          // Core. Login, Rechteprüfung und App-Transport verbleiben dadurch
+          // vollständig in Bonni Core; das App-Frontend wird hier nie direkt
+          // als angemeldete Oberfläche ausgeliefert.
+          res.redirect(302, `/#${encodeURIComponent(memberRoute)}`);
+        } catch (error) {
+          next(error);
+        }
+      });
+    }
   }
 }

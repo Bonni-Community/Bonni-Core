@@ -5,6 +5,7 @@ import {
   fetchControlCenterUsers,
 } from "../../../system/api/controlCenterUsersApi.js";
 import { fetchControlCenterModules } from "../../../system/api/moduleControlApi.js";
+import { isForbiddenLoginName } from "../../../system/auth/systemAccountPolicy.js";
 import MemberActionWindow from "./window/member/MemberActionWindow.jsx";
 import NewMemberWindow from "./window/new-member/NewMemberWindow.jsx";
 import {
@@ -205,42 +206,22 @@ function normalizeSurfaceName(label) {
 
   if (
     normalized.includes("add-on") ||
-    normalized.includes("addon") ||
-    normalized.includes("hocket") ||
-    normalized.includes("hock")
+    normalized.includes("addon")
   ) {
     return ADD_ON_SURFACE;
   }
 
   if (
     normalized.includes("plug-in") ||
-    normalized.includes("plugin") ||
-    normalized.includes("verein") ||
-    normalized.includes("mitgliedsbereich")
+    normalized.includes("plugin")
   ) {
     return PLUG_IN_SURFACE;
   }
 
   if (
-    normalized.includes("stubel") ||
-    normalized.includes("stuebel") ||
-    normalized.includes("app") ||
-    normalized.includes("stüberl") ||
-    normalized.includes("member") ||
-    normalized.includes("manager") ||
-    normalized.includes("storeman") ||
-    normalized.includes("treasurer") ||
-    normalized.includes("bar") ||
-    normalized.includes("kuche") ||
-    normalized.includes("kueche") ||
-    normalized.includes("kuch") ||
-    normalized.includes("tisch") ||
-    normalized.includes("finanz") ||
-    normalized.includes("lager") ||
-    normalized.includes("store") ||
-    normalized.includes("treasurer") ||
-    normalized.includes("barkeeper") ||
-    normalized.includes("koch")
+    normalized === "app" ||
+    normalized.startsWith("app:") ||
+    normalized.startsWith("access:app:")
   ) {
     return APP_SURFACE;
   }
@@ -507,6 +488,10 @@ function getCreateMemberErrorMessage(error) {
     return "Der Loginname darf nur Kleinbuchstaben, Zahlen, Punkt, Minus und Unterstrich enthalten.";
   }
 
+  if (code === "LOCAL_MEMBER_LOGIN_FORBIDDEN") {
+    return "Der Benutzername root ist für Systemzwecke gesperrt.";
+  }
+
   if (code === "LOCAL_MEMBER_ACCESS_REQUIRED") {
     return "Bitte mindestens ein Modul und eine Berechtigung auswählen.";
   }
@@ -521,25 +506,9 @@ function getCreateMemberErrorMessage(error) {
 const ROLE_LABELS = {
   admin: "Administrator",
   administrator: "Administrator",
-  member: "Member",
-  manager: "Manager",
-  storeman: "Storeman",
-  treasurer: "Treasurer",
-  helper: "Helper",
-  bar: "Bar",
-  barkeeper: "Bar",
-  kitchen: "Küche",
-  kueche: "Küche",
-  kuche: "Küche",
-  koch: "Küche",
-  table: "Tisch",
-  tablebs: "Tisch",
-  tisch: "Tisch",
-  terminal: "Tisch",
-  fenster: "Tisch",
 };
 
-const ROLE_ORDER = ["Administrator", "Member", "Manager", "Storeman", "Treasurer", "Helper", "Bar", "Küche", "Tisch"];
+const ROLE_ORDER = ["Administrator"];
 
 function formatRoleLabel(label) {
   const value = String(label || "").trim();
@@ -664,6 +633,7 @@ function validateNewMemberDraft(draft, moduleCatalog) {
 
   if (!loginName) return "Bitte einen Loginnamen eingeben.";
   if (!/^[a-z0-9][a-z0-9._-]*$/.test(loginName)) return "Der Loginname enthält ungültige Zeichen.";
+  if (isForbiddenLoginName(loginName)) return "Der Benutzername root ist für Systemzwecke gesperrt.";
   if (!isValidEmail(String(draft.email || "").trim())) return "Bitte eine gültige E-Mail-Adresse eingeben.";
   if (!String(draft.password || "")) return "Bitte ein Startpasswort eingeben.";
   if (String(draft.password || "").length < 6) return "Das Passwort muss mindestens 6 Zeichen haben.";

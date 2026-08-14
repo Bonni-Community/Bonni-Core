@@ -44,9 +44,9 @@ type RuntimeSlot = {
 
 /**
  * Creates one stable Express mount whose module routers can be published and
- * deactivated at runtime. The authoritative enabled-state is deliberately
- * resolved for every request. If that lookup fails, no module router runs and
- * the request falls through to Core's normal 404/frontend handling.
+ * deactivated at runtime. The callback supplies the already validated live
+ * runtime state. Registry/database synchronisation belongs to startup and the
+ * explicit activation lifecycle, not to every feature request.
  */
 export function createDynamicModuleRuntime(enabledModuleKeys: EnabledModuleKeys): DynamicModuleRuntime {
   const slots = new Map<string, RuntimeSlot>();

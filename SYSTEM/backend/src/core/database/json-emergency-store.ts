@@ -9,6 +9,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 
 import { env } from "../config/env.js";
+import { isDataDomain, type DataDomain } from "./data-domains.js";
 
 const STORE_VERSION = 1;
 const STORE_FILE_NAME = "json-emergency.enc.json";
@@ -25,6 +26,7 @@ const LOCK_RETRY_MS = 20;
 type StoredEmergencyWrite = {
   id: string;
   queuedAt: string;
+  dataDomain?: DataDomain;
   modelProperty: string;
   operation: string;
   args: unknown;
@@ -63,6 +65,7 @@ type EncryptedEnvelope = {
 export type JsonEmergencyWrite = {
   id: string;
   queuedAt: string;
+  dataDomain: DataDomain;
   modelProperty: string;
   operation: string;
   args: unknown[];
@@ -324,6 +327,7 @@ export async function getJsonEmergencyStatus() {
 }
 
 export async function enqueueJsonEmergencyWrite(input: {
+  dataDomain?: DataDomain;
   modelProperty: string;
   operation: string;
   args: unknown[];
@@ -341,6 +345,7 @@ export async function enqueueJsonEmergencyWrite(input: {
     const entry: StoredEmergencyWrite = {
       id: randomUUID(),
       queuedAt,
+      dataDomain: input.dataDomain || "core",
       modelProperty: input.modelProperty,
       operation: input.operation,
       args: encodeValue(input.args),
@@ -365,6 +370,7 @@ export async function listJsonEmergencyWrites(): Promise<JsonEmergencyWrite[]> {
   const state = await readStateUnlocked();
   return state.entries.map((entry) => ({
     ...entry,
+    dataDomain: isDataDomain(entry.dataDomain) ? entry.dataDomain : "core",
     args: decodeValue(entry.args) as unknown[],
   }));
 }

@@ -14,6 +14,7 @@ export default function FeatureModuleUnavailable({
     "not-found": "Dieses Fachmodul ist im System nicht registriert.",
     "not-installed": "Dieses Fachmodul ist nicht installiert oder nicht aktiviert.",
     "missing-entry": "Das Manifest enthält keinen ladbaren Frontend-Einstieg.",
+    "incompatible-contract": "Diese App besitzt keinen kompatiblen, abgesicherten Bonni-Core-Vertrag.",
     "load-failed": "Das Fachmodul konnte nicht geladen werden.",
   };
 

@@ -36,6 +36,7 @@ export default function OverviewTab({
   onModuleToggle,
   onSurfaceSelect,
   onUsageSelect,
+  bootstrapAdmin = false,
 }) {
   const modules = getNewMemberModulesForSurface(moduleCatalog, draft.surface);
   const technicalOnly = isTechnicalOnlySurface(draft.surface);
@@ -51,6 +52,7 @@ export default function OverviewTab({
               value={getLoginName(member)}
               onChange={onLoginNameChange}
               placeholder="Benutzernamen eingeben"
+              readOnly={bootstrapAdmin}
             />
             <NewMemberEditableField
               label="Anzeigename"
@@ -59,6 +61,11 @@ export default function OverviewTab({
               placeholder="optional, sonst wie Benutzer"
             />
           </div>
+        ) : null}
+        {bootstrapAdmin ? (
+          <p className="cc-member-window-note">
+            Der feste Systembenutzer admin bleibt aktiv und behält den Systemzugriff. Der Anzeigename und das Passwort dürfen geändert werden.
+          </p>
         ) : null}
 
         <div className="cc-member-window-field cc-member-window-field--usage-select">
@@ -71,7 +78,7 @@ export default function OverviewTab({
                 name="member-usage"
                 selected={draft.usage === usage}
                 onSelect={onUsageSelect}
-                disabled={technicalOnly && usage === LOCAL_USAGE}
+                disabled={bootstrapAdmin || (technicalOnly && usage === LOCAL_USAGE)}
               />
             ))}
           </div>
@@ -92,6 +99,7 @@ export default function OverviewTab({
                 name="member-surface"
                 selected={draft.surface === surface}
                 onSelect={onSurfaceSelect}
+                disabled={bootstrapAdmin}
               />
             ))}
           </div>

@@ -7,6 +7,7 @@ export * from "./authentication/core-authentication.service.js";
 export * from "./authentication/password-hash.helper.js";
 export * from "./guards/auth.guard.js";
 export * from "./middleware/current-user.middleware.js";
+export * from "./request-identity/index.js";
 export * from "./session/core-session.service.js";
 export * from "./token/core-token.service.js";
 

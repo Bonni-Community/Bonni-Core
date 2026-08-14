@@ -1,4 +1,4 @@
-import { promises as fs } from "node:fs";
+import { constants as fsConstants, promises as fs } from "node:fs";
 import path from "node:path";
 
 import { resolveBonniProjectRoot } from "../project-root.js";
@@ -24,8 +24,38 @@ function assertInside(parent: string, candidate: string, code: string) {
   }
 }
 
+function assertInsideOrEqual(parent: string, candidate: string, code: string) {
+  const relative = path.relative(parent, candidate);
+  if (relative.startsWith("..") || path.isAbsolute(relative)) {
+    throw Object.assign(new Error(code), {
+      statusCode: 400,
+      details: { parent, candidate },
+    });
+  }
+}
+
 function normalizedPath(value: string) {
   return value.replaceAll("\\", "/").replace(/^\.\//, "").replace(/\/$/, "");
+}
+
+function defaultAssemblySetting(manifest: ModuleManifestSummary) {
+  const kindDirectory = manifest.kind === "addon"
+    ? "add-on"
+    : manifest.kind === "plugin"
+      ? "plug-in"
+      : manifest.kind;
+  const prefix = `${manifest.kind}.`;
+  const suffix = manifest.key.startsWith(prefix)
+    ? manifest.key.slice(prefix.length)
+    : manifest.key;
+  const segments = suffix.split(".").filter(Boolean);
+  if (!segments.length || segments.some((segment) => !/^[a-z0-9][a-z0-9-]{0,99}$/.test(segment))) {
+    throw Object.assign(new Error("MODULE_PRISMA_DEFAULT_TARGET_INVALID"), {
+      statusCode: 400,
+      details: { key: manifest.key },
+    });
+  }
+  return `backend/prisma/domains/assembled/${kindDirectory}/${segments.join("/")}`;
 }
 
 function isExcluded(relativePath: string, patterns: string[]) {
@@ -44,23 +74,95 @@ function isExcluded(relativePath: string, patterns: string[]) {
   });
 }
 
-async function countPrismaFiles(directory: string, root: string, excludes: string[]): Promise<number> {
-  const entries = await fs.readdir(directory, { withFileTypes: true });
-  let count = 0;
+async function inspectSourceEntry(entryPath: string, realPackageRoot: string) {
+  const stats = await fs.lstat(entryPath).catch(() => null);
+  if (!stats) return null;
+  if (stats.isSymbolicLink()) {
+    throw Object.assign(new Error("MODULE_PRISMA_SOURCE_SYMLINK_DENIED"), {
+      statusCode: 400,
+      details: { source: entryPath },
+    });
+  }
+  if (!stats.isDirectory() && !stats.isFile()) {
+    throw Object.assign(new Error("MODULE_PRISMA_SOURCE_ENTRY_INVALID"), {
+      statusCode: 400,
+      details: { source: entryPath },
+    });
+  }
+
+  const realEntryPath = await fs.realpath(entryPath);
+  assertInsideOrEqual(
+    realPackageRoot,
+    realEntryPath,
+    "MODULE_PRISMA_SOURCE_OUTSIDE_PACKAGE",
+  );
+  return stats;
+}
+
+async function copySourceFile(source: string, target: string) {
+  const handle = await fs.open(
+    source,
+    fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW || 0),
+  );
+  try {
+    const stats = await handle.stat();
+    if (!stats.isFile()) {
+      throw Object.assign(new Error("MODULE_PRISMA_SOURCE_ENTRY_INVALID"), {
+        statusCode: 400,
+        details: { source },
+      });
+    }
+    await fs.writeFile(target, await handle.readFile(), { flag: "wx" });
+  } finally {
+    await handle.close();
+  }
+}
+
+async function copyPrismaDirectory(
+  source: string,
+  target: string,
+  sourceRoot: string,
+  realPackageRoot: string,
+  excludes: string[],
+): Promise<number> {
+  await fs.mkdir(target, { recursive: true });
+  const entries = await fs.readdir(source, { withFileTypes: true });
+  let prismaFiles = 0;
 
   for (const entry of entries) {
-    const entryPath = path.join(directory, entry.name);
-    const relative = path.relative(root, entryPath);
-    if (isExcluded(relative, excludes)) continue;
+    const entryPath = path.join(source, entry.name);
+    const relative = path.relative(sourceRoot, entryPath);
+    if (
+      entry.name.startsWith(".")
+      || isExcluded(relative, excludes)
+    ) {
+      continue;
+    }
 
-    if (entry.isDirectory()) {
-      count += await countPrismaFiles(entryPath, root, excludes);
-    } else if (entry.isFile() && entry.name.endsWith(".prisma")) {
-      count += 1;
+    const stats = await inspectSourceEntry(entryPath, realPackageRoot);
+    if (!stats) {
+      throw Object.assign(new Error("MODULE_PRISMA_SOURCE_CHANGED"), {
+        statusCode: 400,
+        details: { source: entryPath },
+      });
+    }
+
+    const targetPath = path.join(target, entry.name);
+    if (stats.isDirectory()) {
+      prismaFiles += await copyPrismaDirectory(
+        entryPath,
+        targetPath,
+        sourceRoot,
+        realPackageRoot,
+        excludes,
+      );
+    } else {
+      await copySourceFile(entryPath, targetPath);
+      if (entry.name.endsWith(".prisma")) prismaFiles += 1;
     }
   }
 
-  return count;
+  return prismaFiles;
 }
 
 /**
@@ -72,7 +174,8 @@ export async function assembleModulePrisma(
   manifest: ModuleManifestSummary,
 ): Promise<PrismaAssemblyResult | null> {
   const sourceSetting = manifest.prisma?.source?.trim();
-  const targetSetting = manifest.prisma?.assembled?.trim();
+  const targetSetting = manifest.prisma?.assembled?.trim()
+    || (sourceSetting ? defaultAssemblySetting(manifest) : "");
   const excludes = Array.isArray(manifest.prisma?.exclude)
     ? manifest.prisma.exclude.map((entry) => String(entry || "").trim()).filter(Boolean)
     : [];
@@ -94,17 +197,22 @@ export async function assembleModulePrisma(
   assertInside(packageRoot, source, "MODULE_PRISMA_SOURCE_OUTSIDE_PACKAGE");
   assertInside(assemblyRoot, target, "MODULE_PRISMA_TARGET_OUTSIDE_ASSEMBLY");
 
-  const sourceStats = await fs.stat(source).catch(() => null);
-  if (!sourceStats?.isDirectory()) {
-    throw Object.assign(new Error("MODULE_PRISMA_SOURCE_NOT_FOUND"), {
+  const [realProjectRoot, packageRootStats] = await Promise.all([
+    fs.realpath(root),
+    fs.lstat(packageRoot).catch(() => null),
+  ]);
+  if (!packageRootStats?.isDirectory() || packageRootStats.isSymbolicLink()) {
+    throw Object.assign(new Error("MODULE_PRISMA_PACKAGE_ROOT_INVALID"), {
       statusCode: 400,
-      details: { key: manifest.key, source: path.relative(root, source) },
+      details: { key: manifest.key },
     });
   }
+  const realPackageRoot = await fs.realpath(packageRoot);
+  assertInside(realProjectRoot, realPackageRoot, "MODULE_PRISMA_PACKAGE_OUTSIDE_PROJECT");
 
-  const files = await countPrismaFiles(source, source, excludes);
-  if (!files) {
-    throw Object.assign(new Error("MODULE_PRISMA_SOURCE_EMPTY"), {
+  const sourceStats = await inspectSourceEntry(source, realPackageRoot);
+  if (!sourceStats || (!sourceStats.isDirectory() && !(sourceStats.isFile() && source.endsWith(".prisma")))) {
+    throw Object.assign(new Error("MODULE_PRISMA_SOURCE_NOT_FOUND"), {
       statusCode: 400,
       details: { key: manifest.key, source: path.relative(root, source) },
     });
@@ -113,18 +221,29 @@ export async function assembleModulePrisma(
   const temporaryTarget = `${target}.installing-${process.pid}-${Date.now()}`;
   await fs.mkdir(path.dirname(target), { recursive: true });
 
+  let files = 0;
   try {
-    await fs.cp(source, temporaryTarget, {
-      recursive: true,
-      force: true,
-      filter: (entry) => {
-        const relative = path.relative(source, entry);
-        return !relative || (
-          !path.basename(entry).startsWith(".")
-          && !isExcluded(relative, excludes)
-        );
-      },
-    });
+    if (sourceStats.isFile()) {
+      await fs.mkdir(temporaryTarget, { recursive: true });
+      if (!isExcluded(path.basename(source), excludes)) {
+        await copySourceFile(source, path.join(temporaryTarget, path.basename(source)));
+        files = 1;
+      }
+    } else {
+      files = await copyPrismaDirectory(
+        source,
+        temporaryTarget,
+        source,
+        realPackageRoot,
+        excludes,
+      );
+    }
+    if (!files) {
+      throw Object.assign(new Error("MODULE_PRISMA_SOURCE_EMPTY"), {
+        statusCode: 400,
+        details: { key: manifest.key, source: path.relative(root, source) },
+      });
+    }
     await fs.rm(target, { recursive: true, force: true });
     await fs.rename(temporaryTarget, target);
   } catch (error) {

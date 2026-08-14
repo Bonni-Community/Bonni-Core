@@ -82,3 +82,50 @@ model DataRetentionRule {
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
 }
+
+enum ProtectedDataDecision {
+  ALLOWED
+  DENIED
+}
+
+model ProtectedDataAccessGrant {
+  id                 String   @id @default(cuid())
+  tokenHash          String   @unique
+  accountId          String
+  moduleKey          String
+  dataDomain         String
+  purpose            String
+  subjectId          String?
+  challengeId        String?
+  grantedByAccountId String?
+  expiresAt          DateTime
+  revokedAt          DateTime?
+  createdAt          DateTime @default(now())
+
+  @@index([accountId, moduleKey, expiresAt])
+  @@index([dataDomain, purpose])
+  @@index([subjectId])
+}
+
+model ProtectedDataAccessLog {
+  id          String                @id @default(cuid())
+  accountId   String?
+  moduleKey   String?
+  dataDomain  String
+  purpose     String
+  operation   String
+  subjectId   String?
+  recordType  String?
+  recordId    String?
+  decision    ProtectedDataDecision
+  reason      String?
+  ipAddress   String?
+  userAgent   String?
+  metadataJson Json?
+  createdAt   DateTime              @default(now())
+
+  @@index([accountId, createdAt])
+  @@index([moduleKey, dataDomain, createdAt])
+  @@index([subjectId, createdAt])
+  @@index([decision, createdAt])
+}

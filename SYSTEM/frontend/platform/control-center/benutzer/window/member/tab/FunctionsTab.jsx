@@ -11,7 +11,7 @@ export default function FunctionsTab({ draft, moduleCatalog, onPermissionToggle 
           <h3>{technicalApp ? "Technische Oberflächen" : "Funktionen und Berechtigungen"}</h3>
           <p>
             {technicalApp
-              ? "Wähle die vom App-Manifest angebotene Oberfläche, zum Beispiel Barkeeper, Member, Terminal oder Küche."
+              ? "Wähle die vom App-Manifest angebotene technische Oberfläche."
               : "Lege für jede ausgewählte App, jedes Add-on oder Plug-in die erlaubten Funktionen fest."}
           </p>
         </div>

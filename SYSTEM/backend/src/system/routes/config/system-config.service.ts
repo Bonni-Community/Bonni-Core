@@ -16,6 +16,10 @@ import {
   markJsonEmergencyDatabaseRecovered,
 } from "../../../core/database/json-emergency-store.js";
 import { getRunSystemRoot, getRunSystemSystemRoot } from "../../boot/run-system/index.js";
+import {
+  getExternalTwoFactorProviderAdminStates,
+  updateExternalTwoFactorProviderAdminState,
+} from "../../../platform/security/two-factor/two-factor-provider-registry.js";
 
 const { Client } = pg;
 
@@ -123,6 +127,13 @@ type OidcSettings = {
   storage?: "database";
 };
 
+type TwoFactorSettings = {
+  provider: string;
+  configured: boolean;
+  externalProviders: Awaited<ReturnType<typeof getExternalTwoFactorProviderAdminStates>>;
+  storage?: "core" | "plugin";
+};
+
 type DatabaseProvider = "postgresql" | "mariadb" | "mysql";
 
 type DatabaseSettings = {
@@ -197,6 +208,7 @@ type SystemSettings = {
   area: "system";
   source: "database";
   oidc: OidcSettings;
+  twoFactor: TwoFactorSettings;
   database: DatabaseSettings;
   json: JsonSettings;
   notlauf: NotlaufSettings;
@@ -546,7 +558,6 @@ function normalizePayload(input: any, current: SystemSettings) {
   const oidcEnabled = toBool(nextOidc.enabled, current.oidc.enabled);
   const authMode = oidcEnabled ? "OIDC" : "LOCAL";
   const clientSecret = text(nextOidc.clientSecret, "").trim();
-
   const values: Record<string, unknown> = {
     [SETTING_KEYS.authMode]: authMode,
     [SETTING_KEYS.oidcEnabled]: oidcEnabled,
@@ -612,11 +623,12 @@ function normalizePayload(input: any, current: SystemSettings) {
 }
 
 export async function getSystemSystemSettings(): Promise<SystemSettings> {
-  const [rows, oidcProvider, currentJson, timecapsuleStorage] = await Promise.all([
+  const [rows, oidcProvider, currentJson, timecapsuleStorage, externalTwoFactorProviders] = await Promise.all([
     readSettingRows(),
     readOidcProvider(),
     readCurrentJson(),
     readTimecapsuleStorageStatus(),
+    getExternalTwoFactorProviderAdminStates(),
   ]);
   const settings = rowsToMap(rows);
 
@@ -626,7 +638,6 @@ export async function getSystemSystemSettings(): Promise<SystemSettings> {
   const clientSecret = textSetting(settings, SETTING_KEYS.oidcClientSecret, "");
   const redirectUri = textSetting(settings, SETTING_KEYS.oidcRedirectUri, "");
   const postLogoutRedirectUri = textSetting(settings, SETTING_KEYS.oidcPostLogoutRedirectUri, "");
-
   const databaseUrl = textSetting(settings, SETTING_KEYS.databaseUrl, env.DATABASE_URL);
   const parsedDatabaseUrl = parseDatabaseUrl(databaseUrl);
   const provider = databaseProvider(textSetting(settings, SETTING_KEYS.databaseProvider, parsedDatabaseUrl.provider || "postgresql"));
@@ -645,6 +656,15 @@ export async function getSystemSystemSettings(): Promise<SystemSettings> {
 
   const authMode = textSetting(settings, SETTING_KEYS.authMode, oidcEnabled ? "OIDC" : "LOCAL");
 
+  const activeExternalTwoFactorProviders = externalTwoFactorProviders.filter((provider) => provider.enabled);
+  if (activeExternalTwoFactorProviders.length > 1) {
+    throw Object.assign(new Error("TWO_FACTOR_MULTIPLE_ACTIVE_PROVIDERS"), {
+      code: "TWO_FACTOR_MULTIPLE_ACTIVE_PROVIDERS",
+      statusCode: 409,
+    });
+  }
+  const activeExternalTwoFactorProvider = activeExternalTwoFactorProviders[0] || null;
+
   return {
     ok: true,
     area: "system",
@@ -659,6 +679,14 @@ export async function getSystemSystemSettings(): Promise<SystemSettings> {
       postLogoutRedirectUri,
       configured: Boolean(oidcEnabled && issuerUrl && clientId && redirectUri),
       storage: "database",
+    },
+    twoFactor: {
+      provider: activeExternalTwoFactorProvider?.id || "local",
+      configured: activeExternalTwoFactorProvider
+        ? activeExternalTwoFactorProvider.configured
+        : true,
+      externalProviders: externalTwoFactorProviders,
+      storage: externalTwoFactorProviders.length ? "plugin" : "core",
     },
     database: {
       operationMode: databaseOperationMode(textSetting(settings, SETTING_KEYS.databaseOperationMode, env.DATABASE_OPERATION_MODE)),
@@ -718,6 +746,36 @@ export async function getSystemSystemSettings(): Promise<SystemSettings> {
 export async function updateSystemSystemSettings(input: unknown): Promise<SystemSettings> {
   const current = await getSystemSystemSettings();
   const { authMode, values } = normalizePayload(input, current);
+  const nextTwoFactor = (input as any)?.twoFactor;
+  const externalProviders = current.twoFactor.externalProviders;
+
+  if (nextTwoFactor && typeof nextTwoFactor === "object") {
+    const requestedProvider = String(nextTwoFactor.provider || "local").trim().toLowerCase();
+    const requestedExternalProvider = externalProviders.find((provider) => provider.id === requestedProvider);
+    if (requestedProvider !== "local" && !requestedExternalProvider) {
+      throw Object.assign(new Error("TWO_FACTOR_PROVIDER_NOT_INSTALLED"), {
+        code: "TWO_FACTOR_PROVIDER_NOT_INSTALLED",
+        statusCode: 409,
+      });
+    }
+    const submittedProviders = Array.isArray(nextTwoFactor.externalProviders)
+      ? nextTwoFactor.externalProviders
+      : nextTwoFactor.externalProvider
+        ? [nextTwoFactor.externalProvider]
+        : [];
+    const orderedProviders = [...externalProviders].sort((left, right) => (
+      left.id === requestedProvider ? -1 : right.id === requestedProvider ? 1 : 0
+    ));
+    for (const external of orderedProviders) {
+      const submitted = submittedProviders.find((provider: any) => provider?.id === external.id);
+      const submittedValues = submitted?.configuration?.values;
+      await updateExternalTwoFactorProviderAdminState(external.id, {
+        ...external.configuration.values,
+        ...(submittedValues && typeof submittedValues === "object" ? submittedValues : {}),
+        enabled: requestedProvider === external.id,
+      });
+    }
+  }
 
   await upsertSettings(values);
   await upsertOidcProvider({

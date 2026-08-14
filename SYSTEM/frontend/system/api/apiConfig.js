@@ -87,19 +87,27 @@ function getEmergencyOrigin() {
   return "";
 }
 
-export const API_ORIGIN_URL = getActiveOrigin();
-export const ACTIVE_API_ORIGIN_URL = API_ORIGIN_URL;
+// Die konfigurierten Backend-Adressen bleiben fuer Diagnose und
+// Runtime-Umschaltung sichtbar. Browser-Anfragen selbst laufen aber immer
+// ueber die Origin der Oberflaeche. So uebernehmen Vite beziehungsweise der
+// Runtime-Proxy das Routing, ohne dass CORS-Preflights zu 4000/4001 entstehen.
+export const ACTIVE_API_ORIGIN_URL = getActiveOrigin();
 export const EMERGENCY_API_ORIGIN_URL = getEmergencyOrigin();
+export const API_ORIGIN_URL = isBrowserRuntime()
+  ? getCurrentOrigin()
+  : ACTIVE_API_ORIGIN_URL;
 export const LOCAL_API_ORIGIN_URL = EMERGENCY_API_ORIGIN_URL || DEFAULT_EMERGENCY_API_ORIGIN;
 
 // Keine Frontend-.env nötig:
 // - installierter Betrieb: gleiche Origin + /api, runtime-proxy übernimmt Failover
 // - VS-Code/Vite-Entwicklung: active 4000, emergency/notlauf 4001
-export const API_ORIGIN_CANDIDATES = unique([
-  getStoredRuntimeOriginCandidate(),
-  ACTIVE_API_ORIGIN_URL,
-  EMERGENCY_API_ORIGIN_URL,
-]);
+export const API_ORIGIN_CANDIDATES = isBrowserRuntime()
+  ? unique([API_ORIGIN_URL])
+  : unique([
+      getStoredRuntimeOriginCandidate(),
+      ACTIVE_API_ORIGIN_URL,
+      EMERGENCY_API_ORIGIN_URL,
+    ]);
 
 export const API_ROOT_URL = `${API_ORIGIN_URL}${API_PREFIX}`;
 export const API_ROOT_CANDIDATES = API_ORIGIN_CANDIDATES.map(

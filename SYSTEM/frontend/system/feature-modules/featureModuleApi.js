@@ -42,3 +42,40 @@ export function featureModuleIntegration(module) {
 export function featureModuleTransport(module) {
   return String(featureModuleFrontend(module)?.transport || "").trim().toLowerCase();
 }
+export function featureModuleRpcContract(module) {
+  const frontend = featureModuleFrontend(module);
+  const contract = frontend?.rpcContract;
+  if (contract && typeof contract === "object" && !Array.isArray(contract)) return contract;
+  const hydrated = module?.rpcContract || module?.manifest?.rpcContract;
+  return hydrated && typeof hydrated === "object" && !Array.isArray(hydrated)
+    ? hydrated
+    : null;
+}
+
+const SANDBOX_CAPABILITY_FLAGS = Object.freeze({
+  downloads: "allow-downloads",
+  forms: "allow-forms",
+  popups: "allow-popups",
+});
+
+const SAFE_SANDBOX_CAPABILITIES = new Set(Object.keys(SANDBOX_CAPABILITY_FLAGS));
+
+function normalizeSandboxCapabilities(configured) {
+  if (!Array.isArray(configured)) return [];
+  return [...new Set(
+    configured
+      .map((entry) => String(entry || "").trim().toLowerCase())
+      .filter((entry) => SAFE_SANDBOX_CAPABILITIES.has(entry)),
+  )];
+}
+
+export function featureModuleSandboxCapabilities(module) {
+  const configured = featureModuleFrontend(module)?.sandboxCapabilities;
+  return normalizeSandboxCapabilities(configured);
+}
+
+export function featureModuleOpaqueSandbox(capabilities) {
+  const optionalFlags = normalizeSandboxCapabilities(capabilities)
+    .map((capability) => SANDBOX_CAPABILITY_FLAGS[capability]);
+  return ["allow-scripts", ...optionalFlags].join(" ");
+}

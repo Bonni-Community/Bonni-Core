@@ -43,18 +43,6 @@ export const CONTROL_CENTER_NAV_ITEMS = [
     targetModule: "explorer",
     description: labels.navigationDescriptions.explorer,
   },
-  {
-    key: "license",
-    label: labels.navigation.license,
-    targetModule: "license",
-    description: labels.navigationDescriptions.license,
-  },
-  {
-    key: "logs",
-    label: labels.navigation.logs,
-    targetModule: "logs",
-    description: labels.navigationDescriptions.logs,
-  },
 ];
 
 function area(key, icon) {
@@ -73,8 +61,6 @@ export const CONTROL_CENTER_SECONDARY_AREAS = [
   area("provider", "☁"),
   area("interfaces", "⇄"),
   area("explorer", "▤"),
-  area("license", "◎"),
-  area("logs", "☰"),
 ];
 
 export const NETWORK_CONTROL_CENTER_NAV_ITEM = {
@@ -87,7 +73,6 @@ export function buildControlCenterNavigation(networkAddonInstalled = false) {
   const items = [...CONTROL_CENTER_NAV_ITEMS];
   if (!networkAddonInstalled) return items;
 
-  const logsIndex = items.findIndex((item) => item.key === "logs");
-  items.splice(logsIndex < 0 ? items.length : logsIndex + 1, 0, NETWORK_CONTROL_CENTER_NAV_ITEM);
+  items.push(NETWORK_CONTROL_CENTER_NAV_ITEM);
   return items;
 }

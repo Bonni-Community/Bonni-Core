@@ -5,46 +5,41 @@ export const OPAQUE_RPC_REQUEST = "bonni:module-rpc-request";
 export const OPAQUE_RPC_RESPONSE = "bonni:module-rpc-response";
 export const OPAQUE_RPC_CANCEL = "bonni:module-rpc-cancel";
 
-const HOCKET_API_BASE = "/api/apps/hocketapp";
+const CONTRACT_SCHEMA = "bonni.module-rpc/v1";
 const REQUEST_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{7,127}$/;
 const IDEMPOTENCY_KEY_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{7,199}$/;
-const MAX_BODY_BYTES = 256 * 1024;
 const SAFE_PATH_SEGMENT = /^[A-Za-z0-9][A-Za-z0-9._:@~-]{0,199}$/;
+const SAFE_QUERY_NAME = /^[A-Za-z0-9][A-Za-z0-9._~-]{0,99}$/;
+const SAFE_FORM_NAME = /^[A-Za-z0-9][A-Za-z0-9._:[\]-]{0,199}$/;
+const SAFE_HEADER_NAME = /^[a-z][a-z0-9-]{0,99}$/;
+const SAFE_CONTENT_TYPE = /^[a-z0-9][a-z0-9!#$&^_.+-]{0,126}\/[a-z0-9][a-z0-9!#$&^_.+-]{0,126}$/;
+const DEFAULT_MAX_BODY_BYTES = 256 * 1024;
+const MAX_CONTRACT_BODY_BYTES = 32 * 1024 * 1024;
+const MAX_QUERY_ENTRIES = 100;
+const MAX_FORM_ENTRIES = 200;
 const CREDENTIAL_KEYS = new Set([
   "authorization",
+  "apikey",
+  "cookie",
+  "credential",
+  "credentials",
+  "password",
+  "secret",
   "accesstoken",
   "refreshtoken",
   "token",
   "jwt",
 ]);
-const RECONCILE_PATH_PATTERN = /^\/api\/apps\/hocketapp\/warehouse\/allocations\/[^/]+\/[^/]+\/reconcile$/;
-const CANCEL_RESERVATION_PATH_PATTERN = /^\/api\/apps\/hocketapp\/events\/[^/]+\/warehouse\/reservations\/[^/]+\/cancel$/;
-const RECONCILE_RESOLUTIONS = new Set([
-  "SOURCE_STOCK_ADJUSTED",
-  "RETURNED_TO_STOCK",
-  "REPLACED",
+const FORBIDDEN_REQUEST_HEADERS = new Set([
+  "authorization",
+  "cookie",
+  "content-length",
+  "host",
+  "origin",
+  "proxy-authorization",
+  "referer",
+  "set-cookie",
 ]);
-
-const ALLOWED_ROUTES = [
-  ["GET", /^\/api\/apps\/hocketapp\/capabilities$/],
-  ["GET", /^\/api\/apps\/hocketapp\/events$/],
-  ["GET", /^\/api\/apps\/hocketapp\/events\/[^/]+$/],
-  ["GET", /^\/api\/apps\/hocketapp\/events\/[^/]+\/warehouse$/],
-  ["GET", /^\/api\/apps\/hocketapp\/events\/[^/]+\/audit$/],
-  ["GET", /^\/api\/apps\/hocketapp\/events\/[^/]+\/organizations\/[^/]+\/warehouse-source$/],
-  ["GET", /^\/api\/apps\/hocketapp\/warehouse\/allocations\/[^/]+\/[^/]+$/],
-  ["POST", /^\/api\/apps\/hocketapp\/events$/],
-  ["POST", /^\/api\/apps\/hocketapp\/events\/[^/]+\/bridge\/invitations$/],
-  ["POST", /^\/api\/apps\/hocketapp\/bridge\/invitations\/accept$/],
-  ["POST", /^\/api\/apps\/hocketapp\/events\/[^/]+\/warehouse\/reservations$/],
-  ["POST", CANCEL_RESERVATION_PATH_PATTERN],
-  ["POST", /^\/api\/apps\/hocketapp\/events\/[^/]+\/warehouse\/issues$/],
-  ["POST", /^\/api\/apps\/hocketapp\/events\/[^/]+\/warehouse\/issues\/[^/]+\/return$/],
-  ["POST", /^\/api\/apps\/hocketapp\/events\/[^/]+\/close$/],
-  ["POST", RECONCILE_PATH_PATTERN],
-  ["PUT", /^\/api\/apps\/hocketapp\/events\/[^/]+\/organizations\/[^/]+\/warehouse-share$/],
-  ["PATCH", /^\/api\/apps\/hocketapp\/events\/[^/]+$/],
-];
 
 export class OpaqueRpcValidationError extends Error {
   constructor(code, message) {
@@ -59,16 +54,242 @@ function invalid(code, message) {
   throw new OpaqueRpcValidationError(code, message);
 }
 
-function sanitizePath(value) {
-  if (typeof value !== "string" || !value.startsWith("/") || value.startsWith("//") || value.length > 2048) {
+function isCredentialKey(value) {
+  return (
+    CREDENTIAL_KEYS.has(value)
+    || value.endsWith("token")
+    || value.endsWith("password")
+    || value.endsWith("secret")
+    || value.endsWith("credential")
+    || value.endsWith("credentials")
+    || value.endsWith("cookie")
+    || value.endsWith("apikey")
+  );
+}
+
+function asObject(value) {
+  return value && typeof value === "object" && !Array.isArray(value) ? value : null;
+}
+
+function normalizeMethod(value) {
+  const method = String(value || "GET").trim().toUpperCase();
+  if (!["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"].includes(method)) {
+    invalid("RPC_METHOD_INVALID", "Die RPC-Methode ist nicht erlaubt.");
+  }
+  return method;
+}
+
+function sanitizeBasePath(value) {
+  const basePath = String(value || "").trim().replace(/\/+$/, "");
+  if (
+    !basePath.startsWith("/api/")
+    || basePath.startsWith("//")
+    || basePath.length > 512
+    || basePath.includes("?")
+    || basePath.includes("#")
+  ) {
+    invalid("RPC_CONTRACT_INVALID", "Der RPC-Vertrag enthält keinen gültigen API-Basispfad.");
+  }
+  return basePath;
+}
+
+function escapeRegex(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function compilePathTemplate(template, basePath) {
+  const rawTemplate = String(template || "").trim();
+  if (!rawTemplate || rawTemplate.includes("?") || rawTemplate.includes("#")) {
+    invalid("RPC_CONTRACT_INVALID", "Der RPC-Vertrag enthält eine ungültige Route.");
+  }
+
+  const fullTemplate = rawTemplate.startsWith("/api/")
+    ? rawTemplate
+    : `${basePath}${rawTemplate.startsWith("/") ? rawTemplate : `/${rawTemplate}`}`;
+  if (!fullTemplate.startsWith("/api/") || fullTemplate.length > 2048) {
+    invalid("RPC_CONTRACT_INVALID", "Der RPC-Vertrag enthält eine Route außerhalb der API.");
+  }
+
+  const parts = fullTemplate.split("/").filter(Boolean);
+  let wildcardSeen = false;
+  const compiled = parts.map((part, index) => {
+    const parameter = part.match(/^\{([A-Za-z][A-Za-z0-9_]*)(\*)?\}$/);
+    if (!parameter) return escapeRegex(part);
+    if (parameter[2]) {
+      if (index !== parts.length - 1 || wildcardSeen) {
+        invalid("RPC_CONTRACT_INVALID", "Ein RPC-Platzhalter mit * muss am Ende der Route stehen.");
+      }
+      wildcardSeen = true;
+      return "(?:[^/?#]+(?:/[^/?#]+)*)?";
+    }
+    return "[^/?#]+";
+  });
+
+  return {
+    template: fullTemplate,
+    pattern: new RegExp(`^/${compiled.join("/")}${fullTemplate.endsWith("/") ? "/" : ""}$`),
+  };
+}
+
+function normalizeBodyPolicy(value, defaultMaxBytes) {
+  if (value == null) {
+    return {
+      type: "json",
+      maxBytes: defaultMaxBytes,
+      schema: null,
+      contentType: null,
+      required: true,
+    };
+  }
+  if (typeof value === "string") {
+    return normalizeBodyPolicy({ type: value }, defaultMaxBytes);
+  }
+  const policy = asObject(value);
+  if (!policy) invalid("RPC_CONTRACT_INVALID", "Der RPC-Vertrag enthält eine ungültige Body-Regel.");
+
+  const type = String(policy.type || "json").trim().toLowerCase();
+  if (!["none", "json", "form-data", "blob"].includes(type)) {
+    invalid("RPC_CONTRACT_INVALID", "Der RPC-Vertrag enthält einen unbekannten Body-Typ.");
+  }
+  const requestedMaxBytes = policy.maxBytes === undefined
+    ? defaultMaxBytes
+    : Number(policy.maxBytes);
+  if (
+    !Number.isInteger(requestedMaxBytes)
+    || requestedMaxBytes < 1
+    || requestedMaxBytes > defaultMaxBytes
+    || requestedMaxBytes > MAX_CONTRACT_BODY_BYTES
+  ) {
+    invalid(
+      "RPC_CONTRACT_INVALID",
+      "Eine RPC-Body-Regel überschreitet die globale Vertragsgrenze.",
+    );
+  }
+  const maxBytes = requestedMaxBytes;
+  const contentType = type === "blob"
+    ? String(policy.contentType || "application/octet-stream").trim().toLowerCase()
+    : null;
+  if (contentType && !SAFE_CONTENT_TYPE.test(contentType)) {
+    invalid("RPC_CONTRACT_INVALID", "Der RPC-Vertrag enthält einen ungültigen Binärdatentyp.");
+  }
+  return {
+    type,
+    maxBytes,
+    schema: asObject(policy.schema),
+    contentType,
+    required: type !== "none" && policy.required !== false,
+  };
+}
+
+function normalizeHeaderPolicy(value) {
+  if (value == null) return [];
+  if (!Array.isArray(value)) {
+    invalid("RPC_CONTRACT_INVALID", "Der RPC-Vertrag enthält eine ungültige Header-Regel.");
+  }
+  const names = value.map((name) => String(name || "").trim().toLowerCase());
+  if (names.some((name) => (
+    !SAFE_HEADER_NAME.test(name)
+    || FORBIDDEN_REQUEST_HEADERS.has(name)
+    || name === "idempotency-key"
+    || name.startsWith("sec-")
+    || name.startsWith("proxy-")
+    || name.startsWith("x-forwarded-")
+  ))) {
+    invalid("RPC_CONTRACT_INVALID", "Der RPC-Vertrag enthält einen nicht erlaubten Header.");
+  }
+  return [...new Set(names)];
+}
+
+function normalizeQueryPolicy(value) {
+  if (value === true || value === "any") return "any";
+  if (value == null || value === false || value === "none") return [];
+  if (!Array.isArray(value)) {
+    invalid("RPC_CONTRACT_INVALID", "Der RPC-Vertrag enthält eine ungültige Query-Regel.");
+  }
+  const names = value.map((name) => String(name || "").trim());
+  if (names.some((name) => !SAFE_QUERY_NAME.test(name))) {
+    invalid("RPC_CONTRACT_INVALID", "Der RPC-Vertrag enthält einen ungültigen Query-Namen.");
+  }
+  return [...new Set(names)];
+}
+
+function normalizeResponseType(value) {
+  const normalized = String(value || "json").trim().toLowerCase();
+  if (!["json", "text", "blob"].includes(normalized)) {
+    invalid("RPC_CONTRACT_INVALID", "Der RPC-Vertrag enthält einen unbekannten Antworttyp.");
+  }
+  return normalized;
+}
+
+export function normalizeOpaqueRpcContract(value, { moduleId } = {}) {
+  const contract = asObject(value);
+  if (!contract || contract.schemaVersion !== CONTRACT_SCHEMA) {
+    invalid("RPC_CONTRACT_INVALID", "Für dieses Modul fehlt ein gültiger RPC-Vertrag.");
+  }
+  if (String(contract.moduleId || "").trim() !== String(moduleId || "").trim()) {
+    invalid("RPC_CONTRACT_MODULE_MISMATCH", "Der RPC-Vertrag gehört zu einem anderen Modul.");
+  }
+
+  const basePath = sanitizeBasePath(contract.basePath);
+  const maxBodyBytes = Math.min(
+    MAX_CONTRACT_BODY_BYTES,
+    Math.max(1, Number(contract.maxBodyBytes || DEFAULT_MAX_BODY_BYTES) || DEFAULT_MAX_BODY_BYTES),
+  );
+  if (!Array.isArray(contract.routes) || !contract.routes.length || contract.routes.length > 1024) {
+    invalid("RPC_CONTRACT_INVALID", "Der RPC-Vertrag enthält keine gültige Routenliste.");
+  }
+
+  const routes = contract.routes.map((rawRoute) => {
+    const route = asObject(rawRoute);
+    if (!route) invalid("RPC_CONTRACT_INVALID", "Der RPC-Vertrag enthält eine ungültige Route.");
+    const method = normalizeMethod(route.method);
+    const compiledPath = compilePathTemplate(route.path, basePath);
+    const idempotency = String(
+      route.idempotency
+      || (["GET", "HEAD"].includes(method) ? "forbidden" : "required"),
+    ).trim().toLowerCase();
+    if (!["required", "optional", "forbidden"].includes(idempotency)) {
+      invalid("RPC_CONTRACT_INVALID", "Der RPC-Vertrag enthält eine ungültige Idempotenzregel.");
+    }
+    const body = normalizeBodyPolicy(
+      route.body ?? (["GET", "HEAD"].includes(method) ? "none" : null),
+      maxBodyBytes,
+    );
+    return {
+      ...compiledPath,
+      method,
+      idempotency,
+      body,
+      headers: normalizeHeaderPolicy(route.headers),
+      query: normalizeQueryPolicy(route.query),
+      responseType: normalizeResponseType(route.responseType),
+    };
+  });
+
+  return {
+    schemaVersion: CONTRACT_SCHEMA,
+    moduleId,
+    basePath,
+    maxBodyBytes,
+    routes,
+  };
+}
+
+function sanitizeRequestUrl(value) {
+  if (typeof value !== "string" || !value.startsWith("/") || value.startsWith("//") || value.length > 4096) {
     invalid("RPC_PATH_INVALID", "Ungültiger RPC-Pfad.");
   }
-  if (value.includes("?") || value.includes("#") || /(?:^|\/)(?:\.{1,2}|%2e(?:%2e)?)(?:\/|$)/i.test(value)) {
+  if (value.includes("#") || /(?:^|\/)(?:\.{1,2}|%2e(?:%2e)?)(?:\/|$)/i.test(value)) {
     invalid("RPC_PATH_INVALID", "RPC-Pfad enthält nicht erlaubte Bestandteile.");
   }
 
-  const parsed = new URL(value, "https://bonni-rpc.invalid");
-  if (parsed.origin !== "https://bonni-rpc.invalid" || parsed.pathname !== value) {
+  let parsed;
+  try {
+    parsed = new URL(value, "https://bonni-rpc.invalid");
+  } catch {
+    invalid("RPC_PATH_INVALID", "RPC-Pfad konnte nicht sicher normalisiert werden.");
+  }
+  if (parsed.origin !== "https://bonni-rpc.invalid") {
     invalid("RPC_PATH_INVALID", "RPC-Pfad konnte nicht sicher normalisiert werden.");
   }
   for (const segment of parsed.pathname.split("/").filter(Boolean)) {
@@ -82,106 +303,230 @@ function sanitizePath(value) {
       invalid("RPC_PATH_INVALID", "RPC-Pfad enthält ein nicht erlaubtes Segment.");
     }
   }
-  if (parsed.pathname !== HOCKET_API_BASE && !parsed.pathname.startsWith(`${HOCKET_API_BASE}/`)) {
-    invalid("RPC_PATH_DENIED", "RPC-Zugriff außerhalb der HocketApp ist nicht erlaubt.");
-  }
-  return parsed.pathname;
+  return parsed;
 }
 
-function sanitizeHeaders(value, method) {
-  if (value == null) {
-    if (method !== "GET") invalid("RPC_IDEMPOTENCY_KEY_REQUIRED", "Idempotency-Key fehlt.");
-    return {};
-  }
-  if (typeof value !== "object" || Array.isArray(value)) invalid("RPC_HEADERS_INVALID", "Ungültige RPC-Header.");
+function selectRoute(parsed, method, contract) {
+  const route = contract.routes.find((candidate) => (
+    candidate.method === method && candidate.pattern.test(parsed.pathname)
+  ));
+  if (!route) invalid("RPC_ROUTE_DENIED", "Diese Modul-API-Route ist nicht freigegeben.");
 
-  const entries = Object.entries(value);
-  if (entries.some(([name]) => name.toLowerCase() !== "idempotency-key")) {
-    invalid("RPC_HEADER_DENIED", "Nur Idempotency-Key darf vom Modul gesetzt werden.");
+  const entries = [...parsed.searchParams.entries()];
+  if (entries.length > MAX_QUERY_ENTRIES) {
+    invalid("RPC_QUERY_INVALID", "Die RPC-Anfrage enthält zu viele Query-Werte.");
   }
-  if (entries.length > 1) {
-    invalid("RPC_HEADER_DENIED", "Idempotency-Key darf nur einmal gesetzt werden.");
+  if (entries.some(([name, value]) => (
+    !SAFE_QUERY_NAME.test(name)
+    || value.length > 1000
+    || (route.query !== "any" && !route.query.includes(name))
+  ))) {
+    invalid("RPC_QUERY_DENIED", "Die RPC-Anfrage enthält nicht freigegebene Query-Werte.");
   }
-  const rawKey = entries.find(([name]) => name.toLowerCase() === "idempotency-key")?.[1];
-  if (method === "GET") {
-    if (rawKey !== undefined) invalid("RPC_HEADER_DENIED", "GET-Anfragen dürfen keinen Idempotency-Key setzen.");
-    return {};
+  return route;
+}
+
+function sanitizeHeaders(value, route) {
+  if (value != null && (typeof value !== "object" || Array.isArray(value))) {
+    invalid("RPC_HEADERS_INVALID", "Ungültige RPC-Header.");
   }
-  if (rawKey === undefined) {
+  const entries = Object.entries(value || {});
+  if (entries.length > route.headers.length + 1) {
+    invalid("RPC_HEADER_DENIED", "Die RPC-Anfrage enthält zu viele Header.");
+  }
+  const normalizedEntries = entries.map(([name, rawValue]) => {
+    const normalizedName = String(name || "").trim().toLowerCase();
+    if (
+      !SAFE_HEADER_NAME.test(normalizedName)
+      || FORBIDDEN_REQUEST_HEADERS.has(normalizedName)
+      || normalizedName.startsWith("sec-")
+      || normalizedName.startsWith("proxy-")
+      || normalizedName.startsWith("x-forwarded-")
+      || (normalizedName !== "idempotency-key" && !route.headers.includes(normalizedName))
+    ) {
+      invalid("RPC_HEADER_DENIED", "Die RPC-Anfrage enthält einen nicht freigegebenen Header.");
+    }
+    if (
+      typeof rawValue !== "string"
+      || rawValue.length > 4096
+      || /[\0\r\n]/.test(rawValue)
+    ) {
+      invalid("RPC_HEADER_INVALID", "Die RPC-Anfrage enthält einen ungültigen Header-Wert.");
+    }
+    return [normalizedName, rawValue];
+  });
+  if (new Set(normalizedEntries.map(([name]) => name)).size !== normalizedEntries.length) {
+    invalid("RPC_HEADER_DENIED", "Die RPC-Anfrage enthält einen Header mehrfach.");
+  }
+  const rawKey = normalizedEntries.find(([name]) => name === "idempotency-key")?.[1];
+  if (route.idempotency === "forbidden" && rawKey !== undefined) {
+    invalid("RPC_HEADER_DENIED", "Diese Anfrage darf keinen Idempotency-Key setzen.");
+  }
+  if (route.idempotency === "required" && rawKey === undefined) {
     invalid("RPC_IDEMPOTENCY_KEY_REQUIRED", "Idempotency-Key fehlt.");
   }
-  if (typeof rawKey !== "string" || !IDEMPOTENCY_KEY_PATTERN.test(rawKey)) {
+  if (rawKey !== undefined && (typeof rawKey !== "string" || !IDEMPOTENCY_KEY_PATTERN.test(rawKey))) {
     invalid("RPC_IDEMPOTENCY_KEY_INVALID", "Ungültiger Idempotency-Key.");
   }
-  return { "Idempotency-Key": rawKey };
+  const headers = Object.fromEntries(
+    normalizedEntries
+      .filter(([name]) => name !== "idempotency-key")
+      .map(([name, headerValue]) => [name, headerValue]),
+  );
+  if (rawKey !== undefined) headers["Idempotency-Key"] = rawKey;
+  if (route.body.type === "blob") headers["Content-Type"] = route.body.contentType;
+  return headers;
 }
 
-function sanitizeBody(value, method) {
-  if (method === "GET") {
-    if (value !== undefined && value !== null) invalid("RPC_BODY_DENIED", "GET-Anfragen dürfen keinen Body enthalten.");
-    return undefined;
-  }
-  if (value === undefined) return undefined;
+function serializedJson(value, maxBytes) {
   let serialized;
   try {
     serialized = JSON.stringify(value);
   } catch {
     invalid("RPC_BODY_INVALID", "RPC-Body ist nicht als JSON serialisierbar.");
   }
-  if (serialized === undefined || new TextEncoder().encode(serialized).byteLength > MAX_BODY_BYTES) {
+  if (serialized === undefined || new TextEncoder().encode(serialized).byteLength > maxBytes) {
     invalid("RPC_BODY_INVALID", "RPC-Body ist ungültig oder zu groß.");
   }
   return JSON.parse(serialized);
 }
 
-function constrainRouteBody(path, method, body) {
-  if (method !== "POST") return body;
-  if (CANCEL_RESERVATION_PATH_PATTERN.test(path)) {
-    if (body == null) return {};
-    if (typeof body !== "object" || Array.isArray(body) || Object.keys(body).length) {
-      invalid("RPC_BODY_DENIED", "Ein Reservierungsstorno akzeptiert keine Browser-Fachdaten.");
+function validateJsonSchema(value, schema, path = "body") {
+  if (!schema) return;
+  const type = schema.type;
+  if (type === "object") {
+    if (!asObject(value)) invalid("RPC_BODY_INVALID", `${path} muss ein Objekt sein.`);
+    const properties = asObject(schema.properties) || {};
+    const required = Array.isArray(schema.required) ? schema.required : [];
+    if (required.some((key) => value[key] === undefined)) {
+      invalid("RPC_BODY_INVALID", `${path} enthält nicht alle Pflichtfelder.`);
     }
-    return {};
+    if (schema.additionalProperties === false && Object.keys(value).some((key) => !(key in properties))) {
+      invalid("RPC_BODY_DENIED", `${path} enthält nicht erlaubte Felder.`);
+    }
+    if (Number.isInteger(schema.maxProperties) && Object.keys(value).length > schema.maxProperties) {
+      invalid("RPC_BODY_DENIED", `${path} enthält zu viele Felder.`);
+    }
+    for (const [key, nestedSchema] of Object.entries(properties)) {
+      if (value[key] !== undefined) validateJsonSchema(value[key], nestedSchema, `${path}.${key}`);
+    }
+    return;
   }
-  if (!RECONCILE_PATH_PATTERN.test(path)) return body;
-  if (!body || typeof body !== "object" || Array.isArray(body)) {
-    invalid("RPC_BODY_INVALID", "Der Reconcile-Body muss ein JSON-Objekt sein.");
+  if (type === "array") {
+    if (!Array.isArray(value)) invalid("RPC_BODY_INVALID", `${path} muss eine Liste sein.`);
+    if (Number.isInteger(schema.minItems) && value.length < schema.minItems) {
+      invalid("RPC_BODY_INVALID", `${path} enthält zu wenige Einträge.`);
+    }
+    if (Number.isInteger(schema.maxItems) && value.length > schema.maxItems) {
+      invalid("RPC_BODY_INVALID", `${path} enthält zu viele Einträge.`);
+    }
+    if (schema.uniqueItems && new Set(value.map((item) => JSON.stringify(item))).size !== value.length) {
+      invalid("RPC_BODY_INVALID", `${path} enthält doppelte Einträge.`);
+    }
+    if (schema.items) value.forEach((item, index) => validateJsonSchema(item, schema.items, `${path}[${index}]`));
+    return;
   }
+  if (type === "string") {
+    if (typeof value !== "string") invalid("RPC_BODY_INVALID", `${path} muss Text sein.`);
+    if (Number.isInteger(schema.minLength) && value.length < schema.minLength) {
+      invalid("RPC_BODY_INVALID", `${path} ist zu kurz.`);
+    }
+    if (Number.isInteger(schema.maxLength) && value.length > schema.maxLength) {
+      invalid("RPC_BODY_INVALID", `${path} ist zu lang.`);
+    }
+    if (schema.pattern) {
+      let pattern;
+      try {
+        pattern = new RegExp(schema.pattern);
+      } catch {
+        invalid("RPC_BODY_INVALID", `${path} enthält eine ungültige Formatregel.`);
+      }
+      if (!pattern.test(value)) {
+        invalid("RPC_BODY_INVALID", `${path} hat ein ungültiges Format.`);
+      }
+    }
+  } else if (type === "number" && (typeof value !== "number" || !Number.isFinite(value))) {
+    invalid("RPC_BODY_INVALID", `${path} muss eine Zahl sein.`);
+  } else if (type === "integer" && !Number.isInteger(value)) {
+    invalid("RPC_BODY_INVALID", `${path} muss eine ganze Zahl sein.`);
+  } else if (type === "boolean" && typeof value !== "boolean") {
+    invalid("RPC_BODY_INVALID", `${path} muss ein Wahrheitswert sein.`);
+  } else if (type === "null" && value !== null) {
+    invalid("RPC_BODY_INVALID", `${path} muss null sein.`);
+  }
+  if (Array.isArray(schema.enum) && !schema.enum.some((candidate) => Object.is(candidate, value))) {
+    invalid("RPC_BODY_INVALID", `${path} enthält keinen erlaubten Wert.`);
+  }
+}
 
-  const allowedKeys = new Set(["claimIds", "resolution", "expectedCurrentRevision", "note"]);
-  if (Object.keys(body).some((key) => !allowedKeys.has(key))) {
-    invalid("RPC_BODY_DENIED", "Der Reconcile-Body enthält nicht erlaubte Bestandsfelder.");
-  }
-  if (
-    !Array.isArray(body.claimIds)
-    || body.claimIds.length < 1
-    || body.claimIds.length > 100
-    || body.claimIds.some((value) => typeof value !== "string" || !SAFE_PATH_SEGMENT.test(value))
-    || new Set(body.claimIds).size !== body.claimIds.length
-  ) {
-    invalid("RPC_BODY_INVALID", "Der Reconcile-Body enthält ungültige Claim-IDs.");
-  }
-  if (!RECONCILE_RESOLUTIONS.has(body.resolution)) {
-    invalid("RPC_BODY_INVALID", "Der Reconcile-Body enthält eine ungültige Auflösung.");
-  }
-  if (typeof body.expectedCurrentRevision !== "string" || !SAFE_PATH_SEGMENT.test(body.expectedCurrentRevision)) {
-    invalid("RPC_BODY_INVALID", "Der erwartete Quellstand ist ungültig.");
-  }
-  if (body.note !== undefined && (typeof body.note !== "string" || !body.note.trim() || body.note.trim().length > 1000)) {
-    invalid("RPC_BODY_INVALID", "Die Reconcile-Notiz ist ungültig.");
-  }
+function formEntrySize(value) {
+  if (typeof value === "string") return new TextEncoder().encode(value).byteLength;
+  if (typeof Blob !== "undefined" && value instanceof Blob) return value.size;
+  return -1;
+}
 
-  return {
-    claimIds: [...body.claimIds],
-    resolution: body.resolution,
-    expectedCurrentRevision: body.expectedCurrentRevision,
-    ...(body.note !== undefined ? { note: body.note.trim() } : {}),
-  };
+function sanitizeFormData(value, policy) {
+  const envelope = asObject(value);
+  if (envelope?.__bonniRpcBody !== "form-data" || !Array.isArray(envelope.entries)) {
+    invalid("RPC_BODY_INVALID", "Der RPC-Body muss Formulardaten enthalten.");
+  }
+  if (envelope.entries.length > MAX_FORM_ENTRIES) {
+    invalid("RPC_BODY_INVALID", "Die Formulardaten enthalten zu viele Einträge.");
+  }
+  let totalBytes = 0;
+  const formData = new FormData();
+  for (const rawEntry of envelope.entries) {
+    const entry = asObject(rawEntry);
+    const name = String(entry?.name || "");
+    if (!SAFE_FORM_NAME.test(name)) invalid("RPC_BODY_INVALID", "Die Formulardaten enthalten einen ungültigen Feldnamen.");
+    const size = formEntrySize(entry.value);
+    if (size < 0) invalid("RPC_BODY_INVALID", "Die Formulardaten enthalten einen ungültigen Wert.");
+    totalBytes += size;
+    if (totalBytes > policy.maxBytes) invalid("RPC_BODY_INVALID", "Die Formulardaten sind zu groß.");
+    if (typeof entry.value === "string") {
+      formData.append(name, entry.value);
+    } else {
+      const filename = typeof entry.filename === "string" && entry.filename.trim()
+        ? entry.filename.trim().replace(/[\\/\0\r\n]/g, "_").slice(0, 255)
+        : "upload";
+      formData.append(name, entry.value, filename);
+    }
+  }
+  return formData;
+}
+
+function sanitizeBlob(value, policy) {
+  if (typeof Blob === "undefined" || !(value instanceof Blob)) {
+    invalid("RPC_BODY_INVALID", "Der RPC-Body muss Binärdaten enthalten.");
+  }
+  if (value.size > policy.maxBytes) {
+    invalid("RPC_BODY_INVALID", "Die Binärdaten sind zu groß.");
+  }
+  return value;
+}
+
+function sanitizeBody(value, route) {
+  const policy = route.body;
+  if (policy.type === "none") {
+    if (value !== undefined && value !== null) invalid("RPC_BODY_DENIED", "Diese Anfrage darf keinen Body enthalten.");
+    return undefined;
+  }
+  if (value === undefined) {
+    if (policy.required) invalid("RPC_BODY_REQUIRED", "Für diese RPC-Anfrage fehlt der Body.");
+    return undefined;
+  }
+  if (policy.type === "form-data") return sanitizeFormData(value, policy);
+  if (policy.type === "blob") return sanitizeBlob(value, policy);
+
+  const body = serializedJson(value, policy.maxBytes);
+  validateJsonSchema(body, policy.schema);
+  return body;
 }
 
 export function validateOpaqueRpcRequest(data, {
   moduleId,
   rpcSessionId,
+  contract: rawContract,
 } = {}) {
   if (!data || data.type !== OPAQUE_RPC_REQUEST) invalid("RPC_MESSAGE_INVALID", "Ungültige RPC-Nachricht.");
   if (data.moduleId !== moduleId || data.rpcSessionId !== rpcSessionId) {
@@ -190,18 +535,18 @@ export function validateOpaqueRpcRequest(data, {
   if (typeof data.requestId !== "string" || !REQUEST_ID_PATTERN.test(data.requestId)) {
     invalid("RPC_REQUEST_ID_INVALID", "Ungültige RPC-Anfrage-ID.");
   }
-  const method = String(data.method || "GET").trim().toUpperCase();
-  const path = sanitizePath(data.path);
-  if (!ALLOWED_ROUTES.some(([allowedMethod, pattern]) => allowedMethod === method && pattern.test(path))) {
-    invalid("RPC_ROUTE_DENIED", "Diese HocketApp-API-Route ist nicht freigegeben.");
-  }
-  const body = constrainRouteBody(path, method, sanitizeBody(data.body, method));
+
+  const contract = normalizeOpaqueRpcContract(rawContract, { moduleId });
+  const method = normalizeMethod(data.method);
+  const parsed = sanitizeRequestUrl(data.path);
+  const route = selectRoute(parsed, method, contract);
   return {
     requestId: data.requestId,
     method,
-    path,
-    headers: sanitizeHeaders(data.headers, method),
-    body,
+    path: `${parsed.pathname}${parsed.search}`,
+    headers: sanitizeHeaders(data.headers, route),
+    body: sanitizeBody(data.body, route),
+    responseType: route.responseType,
   };
 }
 
@@ -231,7 +576,7 @@ export function sanitizeOpaqueModuleContext(value) {
     const result = {};
     for (const [key, nestedValue] of Object.entries(current)) {
       const normalizedKey = key.toLowerCase().replace(/[^a-z]/g, "");
-      if (CREDENTIAL_KEYS.has(normalizedKey)) continue;
+      if (isCredentialKey(normalizedKey)) continue;
       result[key] = sanitize(nestedValue);
     }
     return result;
@@ -268,13 +613,15 @@ export function normalizeSameOriginNavigationUrl(value, origin) {
   }
 }
 
-export async function executeOpaqueHocketRpc(request, { token } = {}) {
+export async function executeOpaqueModuleRpc(request, { token, signal } = {}) {
   try {
     const payload = await apiRequest(request.path, {
       token,
       method: request.method,
       body: request.body,
       headers: request.headers,
+      responseType: request.responseType,
+      signal,
     });
     return { ok: true, status: 200, payload };
   } catch (error) {
@@ -285,7 +632,7 @@ export async function executeOpaqueHocketRpc(request, { token } = {}) {
         ? error.data
         : {
             code: error?.code || "RPC_REQUEST_FAILED",
-            message: error?.message || "HocketApp-Anfrage fehlgeschlagen.",
+            message: error?.message || "Die Modul-Anfrage ist fehlgeschlagen.",
           },
     };
   }

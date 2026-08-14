@@ -236,7 +236,7 @@ model ProductCategoryVisibility {
   id           String          @id @default(cuid())
   categoryId   String
   category     ProductCategory @relation(fields: [categoryId], references: [id])
-  terminalType TerminalType?
+  terminalType String?
   layoutPreset String?
   visible      Boolean         @default(true)
   sortOrder    Int             @default(0)
@@ -248,7 +248,7 @@ model ProductCategoryImage {
   id           String          @id @default(cuid())
   categoryId   String
   category     ProductCategory @relation(fields: [categoryId], references: [id])
-  terminalType TerminalType?
+  terminalType String?
   layoutPreset String?
   mediaFileId  String?
   imageUrl     String?
@@ -394,7 +394,7 @@ model ProductImage {
   id               String         @id @default(cuid())
   productVersionId String
   productVersion   ProductVersion @relation(fields: [productVersionId], references: [id])
-  terminalType     TerminalType?
+  terminalType     String?
   layoutPreset     String?
   mediaFileId      String?
   imageUrl         String?

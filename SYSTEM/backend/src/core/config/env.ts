@@ -76,11 +76,6 @@ const rawEnvSchema = z.object({
   MEDIA_STORAGE_ROOT: optionalString,
   MEDIA_PUBLIC_BASE_PATH: z.string().optional().default("/api/media/files"),
   MEDIA_MAX_UPLOAD_BYTES: z.coerce.number().optional().default(10 * 1024 * 1024),
-
-  LICENSE_PUBLIC_KEY_PATH: optionalString,
-  LICENSE_DEFAULT_KEY_FILE: optionalString,
-  LICENSE_KEY_FILE: optionalString,
-  LICENSE_INSTALLATION_FILE: optionalString,
 });
 
 function normalizeDatabaseUrls(raw: z.infer<typeof rawEnvSchema>) {

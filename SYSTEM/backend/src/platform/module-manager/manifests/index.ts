@@ -4,4 +4,14 @@ export {
   validateModuleManifest,
 } from "./manifest.service.js";
 
-export type { ModuleManifest, ModuleManifestSummary, ModuleKind } from "../types.js";
+export {
+  loadModuleRpcContract,
+  validateModuleRpcContract,
+} from "./module-rpc-contract.js";
+
+export type {
+  ModuleManifest,
+  ModuleManifestSummary,
+  ModuleKind,
+  ModuleRpcContract,
+} from "../types.js";

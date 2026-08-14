@@ -22,10 +22,10 @@ npm run build
 node scripts/update-release/create-release.mjs \
   --archive /release/bonni-core.oci \
   --image registry.example.org/bonni/core@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef \
-  --version 0.1.13 \
+  --version 0.1.19 \
   --private-key /sicher/bonni-core-release-private.pem \
   --key-id bonni-core-release \
-  --output-dir /release/0.1.13
+  --output-dir /release/0.1.19
 ```
 
 Migrationsangaben können für ein späteres, manuelles Wartungsverfahren signiert

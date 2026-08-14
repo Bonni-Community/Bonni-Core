@@ -5,3 +5,7 @@ export {
   getSystemLicensesOverview,
   validateSystemLicense,
 } from "./license.service.js";
+export {
+  installModuleLegalPayload,
+  verifyStoredModuleLegalPayload,
+} from "./module-legal-payload.service.js";

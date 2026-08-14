@@ -6,21 +6,6 @@
 // =====================================================
 
 // =====================================================
-// ENUMS
-// =====================================================
-
-enum TerminalType {
-  BAR
-  KITCHEN
-  TABLE
-  CASHIER
-  ADMIN
-  STORAGE
-  SELF_SERVICE
-  INVENTORY_SCANNER
-}
-
-// =====================================================
 // MODELS
 // =====================================================
 
@@ -28,7 +13,8 @@ model Terminal {
   id           String       @id @default(cuid())
   key          String       @unique
   name         String
-  type         TerminalType
+  // Der Typ ist ein stabiler, vom jeweiligen Modul deklarierter Schlüssel.
+  type         String
   layoutPreset String
   roomId       String?
   localNodeId  String?
@@ -38,7 +24,6 @@ model Terminal {
 
   capabilities TerminalCapability[]
   sessions     TerminalSession[]
-  favorites    TerminalFavoriteProduct[]
   printers     TerminalPrinter[]
 }
 
@@ -50,17 +35,6 @@ model TerminalSession {
   personId   String?
   startedAt  DateTime  @default(now())
   endedAt    DateTime?
-}
-
-model TerminalFavoriteProduct {
-  id         String   @id @default(cuid())
-  terminalId String
-  terminal   Terminal @relation(fields: [terminalId], references: [id])
-  productId  String
-  position   Int
-  label      String?
-
-  @@unique([terminalId, position])
 }
 
 model TerminalPrinter {
@@ -121,11 +95,10 @@ model TerminalGroupTerminal {
 model TerminalLayoutOverride {
   id           String        @id @default(cuid())
   terminalId   String?
-  terminalType TerminalType?
+  terminalType String?
   layoutPreset String?
   configJson   Json
   active       Boolean       @default(true)
   createdAt    DateTime      @default(now())
 }
-
 

@@ -165,9 +165,37 @@
 .cc-monitoring-empty strong { display: block; }
 .cc-monitoring-empty p { margin: 3px 0 0; color: #758078; }
 
+.cc-network-policy-list { display: grid; gap: 12px; }
+.cc-network-policy { display: grid; gap: 14px; border: 1px solid rgba(25, 34, 45, 0.09); border-radius: 14px; padding: 16px; background: #fff; }
+.cc-network-policy__title,
+.cc-network-policy__actions { display: flex; align-items: center; justify-content: space-between; gap: 14px; }
+.cc-network-policy__title strong,
+.cc-network-policy__title small { display: block; }
+.cc-network-policy__title small { margin-top: 3px; color: #78828c; }
+.cc-network-policy__title > span { border-radius: 999px; padding: 5px 9px; color: #8b2932; background: #ffeaec; font-size: .74rem; font-weight: 900; }
+.cc-network-policy__title > span.is-configured { color: #367c52; background: #e4f5eb; }
+.cc-network-policy__fields { display: grid; grid-template-columns: .75fr 1.25fr 1.25fr; gap: 12px; }
+.cc-network-policy__fields label { display: grid; gap: 6px; }
+.cc-network-policy__fields label > span { color: #68737e; font-size: .77rem; font-weight: 800; }
+.cc-network-policy__fields select,
+.cc-network-policy__fields input { min-width: 0; border: 1px solid rgba(25, 34, 45, .14); border-radius: 9px; padding: 10px 11px; color: #202833; background: #fff; font: inherit; }
+.cc-network-policy__actions { justify-content: flex-start; }
+.cc-network-policy__actions label { display: flex; align-items: center; gap: 7px; color: #56616c; font-size: .82rem; }
+.cc-network-policy__actions button { margin-left: auto; border: 0; border-radius: 9px; padding: 10px 13px; color: #fff; background: #f06b35; font: inherit; font-weight: 850; cursor: pointer; }
+.cc-network-policy__actions button:disabled { cursor: wait; opacity: .65; }
+.cc-network-observation-table-wrap { overflow-x: auto; border: 1px solid rgba(25, 34, 45, .09); border-radius: 14px; background: #fff; }
+.cc-network-observation-table { width: 100%; border-collapse: collapse; font-size: .8rem; }
+.cc-network-observation-table th,
+.cc-network-observation-table td { border-bottom: 1px solid rgba(25, 34, 45, .07); padding: 10px 12px; text-align: left; white-space: nowrap; }
+.cc-network-observation-table th { color: #68737e; background: #f7f8f9; font-size: .72rem; text-transform: uppercase; }
+.cc-network-decision { border-radius: 999px; padding: 4px 7px; font-weight: 850; }
+.cc-network-decision.is-allow { color: #367c52; background: #e4f5eb; }
+.cc-network-decision.is-deny { color: #8b2932; background: #ffeaec; }
+
 @media (max-width: 1050px) {
   .cc-monitoring-component-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .cc-monitoring-overall { align-items: flex-start; flex-direction: column; }
+  .cc-network-policy__fields { grid-template-columns: 1fr; }
 }
 
 @media (max-width: 720px) {
@@ -175,4 +203,6 @@
   .cc-monitoring-resource-grid { grid-template-columns: 1fr; }
   .cc-monitoring-overall dl { flex-wrap: wrap; gap: 14px 24px; }
   .cc-monitoring-alert { align-items: flex-start; flex-direction: column; }
+  .cc-network-policy__actions { align-items: flex-start; flex-direction: column; }
+  .cc-network-policy__actions button { margin-left: 0; }
 }

@@ -24,6 +24,103 @@ export type ModuleInstallEventType =
 
 export type ModuleRuntimeStatus = "not_loaded" | "loading" | "loaded" | "error" | "unloaded";
 
+export type ModuleFrontendTransport = "opaque-rpc-v1";
+
+export type ModuleAccessProfile = {
+  key: string;
+  label: string;
+  permission: string;
+  workspace: string;
+  usage: "local" | "technical";
+  accountType: "MEMBER" | "ADMIN" | "TERMINAL" | "SERVICE";
+};
+
+export type ModuleTechnicalAccountDeclaration = {
+  loginName: string;
+  profileKey: string;
+  label: string;
+  legacyRoleKeys: string[];
+};
+
+export type ModuleLegacyAccessMappings = {
+  roles?: Record<string, string>;
+  capabilities?: Record<string, string>;
+};
+
+export type ModuleDatabaseDomain =
+  | "hocket"
+  | "kontor"
+  | "meet"
+  | "stueberl"
+  | "pos";
+
+export type ModuleDatabaseDeclaration =
+  | {
+      /** The module deliberately receives no direct database capability. */
+      mode: "none";
+    }
+  | {
+      mode: "scoped-v1";
+      domain: ModuleDatabaseDomain;
+      delegates: string[];
+      appDelegates?: string[];
+      coreDelegates?: string[];
+    };
+
+export type ModuleRpcBodyPolicy = {
+  type?: "none" | "json" | "form-data" | "blob";
+  maxBytes?: number;
+  schema?: Record<string, unknown>;
+  contentType?: string;
+  required?: boolean;
+};
+
+export type ModuleRpcRoute = {
+  method: "GET" | "HEAD" | "POST" | "PUT" | "PATCH" | "DELETE";
+  path: string;
+  idempotency?: "required" | "optional" | "forbidden";
+  query?: boolean | "any" | "none" | string[];
+  body?: "none" | "json" | "form-data" | "blob" | ModuleRpcBodyPolicy;
+  headers?: string[];
+  responseType?: "json" | "text" | "blob";
+};
+
+export type ModuleRpcContract = {
+  schemaVersion: "bonni.module-rpc/v1";
+  moduleId: string;
+  basePath: string;
+  maxBodyBytes?: number;
+  routes: ModuleRpcRoute[];
+};
+
+export type ModuleManifestFrontend = {
+  entry?: string;
+  runtimeEntry?: string;
+  integration?: "module" | "iframe";
+  transport?: ModuleFrontendTransport;
+  /**
+   * Source manifests declare a package-relative JSON path. Manifest discovery
+   * replaces it with the validated, immutable contract document and preserves
+   * the original value in rpcContractPath.
+   */
+  rpcContract?: string | ModuleRpcContract;
+  rpcContractPath?: string;
+  publicRoot?: string;
+  mountPath?: string;
+  publicEntry?: string;
+  memberEntry?: string;
+  route?: string;
+  sandboxCapabilities?: Array<"downloads" | "forms" | "popups">;
+};
+
+export type ModuleLegalPayloadDeclaration = {
+  schemaVersion: "bonni.module-legal/v1";
+  notices: string;
+  payloadRoots: string[];
+  treeSha256: string;
+  fileCount: number;
+};
+
 export type ModuleManifest = {
   key: string;
   kind: ModuleKind;
@@ -31,14 +128,7 @@ export type ModuleManifest = {
   version: string;
   description?: string;
   backend?: { entry?: string };
-  frontend?: {
-    entry?: string;
-    runtimeEntry?: string;
-    integration?: "module" | "iframe";
-    publicRoot?: string;
-    mountPath?: string;
-    route?: string;
-  };
+  frontend?: ModuleManifestFrontend;
   prisma?: { source?: string; assembled?: string; exclude?: string[] };
   provides?: string[];
   dependsOn?: string[];
@@ -59,7 +149,14 @@ export type ModuleManifest = {
     rollbackSupported?: boolean;
     healthcheckRequired?: boolean;
   };
-  metadata?: Record<string, unknown>;
+  legal?: ModuleLegalPayloadDeclaration;
+  metadata?: Record<string, unknown> & {
+    database?: ModuleDatabaseDeclaration;
+    accessProfiles?: ModuleAccessProfile[];
+    autoAssignMemberAccess?: boolean;
+    technicalAccounts?: ModuleTechnicalAccountDeclaration[];
+    legacyAccessMappings?: ModuleLegacyAccessMappings;
+  };
 };
 
 export type ModuleManifestSummary = ModuleManifest & {

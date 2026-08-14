@@ -19,12 +19,6 @@ function defaultWorkspaceForRoles(roles: string[]) {
   const normalized = roles.map((role) => role.toUpperCase());
 
   if (normalized.includes("ADMIN") || normalized.includes("SYSTEM_ADMIN")) return "admin";
-  if (normalized.includes("MANAGER")) return "manager";
-  if (normalized.includes("WAREHOUSE") || normalized.includes("STOREMAN")) return "warehouse";
-  if (normalized.includes("BAR")) return "bar";
-  if (normalized.includes("KITCHEN")) return "kitchen";
-  if (normalized.includes("CASHIER") || normalized.includes("TREASURER")) return "cashier";
-
   return "member";
 }
 
@@ -69,7 +63,7 @@ export class PlatformPermissionsService {
 
     const defaultWorkspace = defaultWorkspaceForRoles(roles);
     const allowedWorkspaces = permissions.has("*")
-      ? ["admin", "manager", "warehouse", "bar", "kitchen", "cashier", "member"]
+      ? ["admin", "member"]
       : unique([defaultWorkspace, "member"]);
 
     return {

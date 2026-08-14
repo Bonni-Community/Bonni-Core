@@ -87,7 +87,10 @@ function createBaseExpressApp(surface: "platform" | "local" = "platform"): Expre
     next();
   });
 
-  app.use(helmet());
+  // CSP frame-ancestors is the authoritative, modern framing policy. Sending
+  // X-Frame-Options as well is ignored by browsers and creates a misleading
+  // console warning for intentionally embedded opaque feature modules.
+  app.use(helmet({ frameguard: false }));
   app.use(cors({ origin: true, credentials: false, optionsSuccessStatus: 204 }));
   app.use(express.json({ limit: resolveExpressJsonLimit(process.env.EXPRESS_JSON_LIMIT) }));
   app.use((req, res, next) => {

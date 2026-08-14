@@ -12,9 +12,8 @@ enum MemberStatus {
   GUEST
 }
 
-// Fachlicher Vereinsstatus für KontorApp. MemberStatus bleibt daneben als
-// technischer Bonni-Core-Lebenszyklus bestehen, damit vorhandene Accounts und
-// andere Apps weiterhin kompatibel bleiben.
+// Fachlicher Vereinsstatus für zentral verwaltete Mitglieder. MemberStatus
+// bleibt daneben als technischer Bonni-Core-Lebenszyklus bestehen.
 enum ClubMembershipStatus {
   ACTIVE_MEMBER
   PASSIVE_MEMBER
@@ -58,11 +57,6 @@ model MemberProfile {
   membershipStatus ClubMembershipStatus @default(ACTIVE_MEMBER)
   joinedAt         DateTime?
   leftAt           DateTime?
-
-  // KontorApp-Bankdaten werden ausschließlich über den geschützten
-  // Manager-Detailendpunkt ausgegeben, nie über die allgemeine Benutzerliste.
-  iban String?
-  bic  String?
 
   allowNegativeBalance Boolean @default(false)
   notes                String?

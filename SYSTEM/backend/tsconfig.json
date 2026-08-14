@@ -21,9 +21,13 @@
     "src/redundant-server.ts",
     "src/module-manager-server.ts",
     "src/package-manager-server.ts",
+    "src/system/database/seed-system.ts",
     "src/system/server/run-server.ts",
     "src/system/server/redundant-server.ts",
-    "src/platform/module-manager/server/module-manager-server.ts"
+    "src/platform/auth/bootstrap-admin-password.ts",
+    "src/platform/auth/request-identity/index.ts",
+    "src/platform/module-manager/server/module-manager-server.ts",
+    "src/platform/security/two-factor/index.ts"
   ],
   "include": [
     "src/**/*.d.ts"

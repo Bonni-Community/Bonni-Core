@@ -6,3 +6,5 @@ export * from "./symmetric.js";
 export * from "./master-key.js";
 export * from "./derived-keys.js";
 export * from "./personal-data.js";
+export * from "./runtime-secret.js";
+export * from "./module-private-data-runtime.js";

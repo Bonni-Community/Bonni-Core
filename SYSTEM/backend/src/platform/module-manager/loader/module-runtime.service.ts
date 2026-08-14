@@ -1,23 +1,45 @@
-import { Router, type Express } from "express";
+import { Router, type Express, type NextFunction, type Request, type Response } from "express";
 import { existsSync } from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 
 import { findModuleManifest } from "../manifests/index.js";
 import { resolveBonniProjectRoot } from "../project-root.js";
-import { listInstalledModules } from "../registry/index.js";
+import { listInstalledModulesStrict } from "../registry/index.js";
 import type { InstalledModuleSummary, ModuleManifestSummary } from "../types.js";
 import { coreEventBus } from "../../../core/event-bus/event-bus.js";
 import { createModuleDataAdapterRuntime } from "../../../core/data-adapters/index.js";
+import { createModuleMediaRuntime } from "../../../core/media/index.js";
+import { createModuleVideoConferenceRuntime } from "../../../core/video-conferencing/index.js";
+import { createModuleInstanceIdentityRuntime } from "../../../core/instance-identity/index.js";
+import { createModuleDomainMessageRuntime } from "../../../core/domain-messages/index.js";
+import { createModuleProtectedPeopleRuntime } from "../../../core/protected-people/index.js";
+import { createModuleProtectedOrganizationRuntime } from "../../../core/protected-organization/index.js";
+import { createModuleArchiveRuntime } from "../../../core/archive/index.js";
+import { createModuleSettingsRuntime } from "../../../core/module-settings/index.js";
 import { createStagedModuleNetworkRequestRuntime } from "../../../core/network-requests/index.js";
+import { createModuleNetworkPolicyAuthorizer } from "../../../core/network-policy/index.js";
+import { createModuleMembersRuntime } from "../../auth/members/index.js";
+import { createModuleRequestIdentityRuntime } from "../../auth/request-identity/index.js";
 import { createModuleServiceAccountRuntime } from "../../auth/service-accounts/index.js";
+import { createModuleTerminalAccountRuntime } from "../../auth/terminal-accounts/index.js";
 import { registerUsersNetworkDataAdapter } from "../../auth/users/users-network-data-adapter.js";
-import { getPrismaClient } from "../../../core/database/database.js";
+import {
+  getDataDomainPrismaClient,
+  getPrismaClient,
+} from "../../../core/database/database.js";
+import { createModulePrivateDataRuntime } from "../../security/crypto/index.js";
+import { createModuleTwoFactorRuntime } from "../../security/two-factor/index.js";
+import { createStagedModuleTwoFactorProviderRuntime } from "../../security/two-factor/two-factor-provider-registry.js";
 import {
   createDynamicModuleRuntime,
   normalizeRuntimeModuleCleanup,
   type RuntimeModuleCleanup,
 } from "./dynamic-module-runtime.js";
+import {
+  createModuleDatabaseRuntime,
+  moduleDatabaseDomain,
+} from "./module-database-runtime.js";
 import { createModuleLoadGenerations } from "./module-load-generation.js";
 
 export type RegisteredRuntimeModule = {
@@ -97,25 +119,65 @@ export function resolveRuntimeModuleEntry(
   return null;
 }
 
-async function enabledRuntimeModuleKeys() {
-  // listInstalledModules intentionally returns an empty list when the
-  // database cannot be read. That empty set is the fail-closed guard state.
-  const modules = (await listInstalledModules()).filter((module) => module.enabled);
-  const enabledKeys = new Set(modules.map((module) => module.key));
-  await Promise.all(
-    [...managedRuntimeKeys]
-      .filter((key) => !enabledKeys.has(key))
-      .map((key) => deactivateRuntimeModule(key)),
-  );
-  const observed = modules.map((module) => ({ module, generation: loadGenerations.current(module.key) }));
-  await Promise.all(observed.map(({ module, generation }) => ensureModuleLoaded(module, false, generation)));
-  return modules.map((module) => module.key);
+async function activeRuntimeModuleKeys() {
+  // Activation, deactivation and startup already synchronise the registry
+  // with this live set. Re-reading Prisma for every business request made a
+  // transient database/registry failure look like a missing Express route:
+  // all slots were removed and every module request fell through to 404.
+  return [...managedRuntimeKeys];
 }
 
-const dynamicRuntime = createDynamicModuleRuntime(enabledRuntimeModuleKeys);
+const dynamicRuntime = createDynamicModuleRuntime(activeRuntimeModuleKeys);
+
+export function runtimeModuleKeyForApiPath(requestPath: string) {
+  const pathname = String(requestPath || "").split("?", 1)[0];
+  const match = pathname.match(/^\/api\/apps\/([a-z0-9](?:[a-z0-9-]*[a-z0-9])?)(?:\/|$)/i);
+  return match ? `app.${match[1].toLowerCase()}` : null;
+}
+
+async function recoverMissingModuleRoute(
+  request: Request,
+  response: Response,
+  next: NextFunction,
+) {
+  const key = runtimeModuleKeyForApiPath(request.path || request.originalUrl);
+  if (!key || dynamicRuntime.hasRoute(key)) return next();
+
+  try {
+    const module = (await listInstalledModulesStrict()).find((entry) => entry.key === key) || null;
+    if (!module?.enabled) return next();
+
+    const result = await ensureModuleLoaded(module, true);
+    if (result.status === "loaded" && dynamicRuntime.hasRoute(key)) return next();
+
+    console.error(
+      `[module:${key}] Fachroute konnte nicht wiederhergestellt werden: ${result.error || result.status}`,
+    );
+    return response.status(503).json({
+      ok: false,
+      error: "MODULE_RUNTIME_LOAD_FAILED",
+      module: key,
+      message: result.error || "Das Modul konnte nicht vollständig gestartet werden.",
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`[module:${key}] Wiederherstellung der Fachroute fehlgeschlagen.`, error);
+    return response.status(503).json({
+      ok: false,
+      error: "MODULE_RUNTIME_RECOVERY_FAILED",
+      module: key,
+      message,
+    });
+  }
+}
 
 function attachRuntime(app: Express) {
   if (attachedRuntimeApps.has(app)) return;
+  // If an enabled module failed during boot, retry it on its first business
+  // request. Previously the dynamic router simply fell through to the global
+  // 404 handler, hiding the real startup error behind dozens of misleading
+  // "Route not found" messages in the feature UI.
+  app.use(recoverMissingModuleRoute);
   app.use(dynamicRuntime.middleware);
   attachedRuntimeApps.add(app);
 }
@@ -169,25 +231,137 @@ async function loadModule(
     }
     if (!isCurrent()) return cancelledModuleLoad(module);
 
-    const networkRequestRuntime = createStagedModuleNetworkRequestRuntime(module.key);
-    registrationCleanup = normalizeRuntimeModuleCleanup(() => networkRequestRuntime.dispose());
+    const corePrisma = getPrismaClient();
+    const declaredDependencies = new Set(
+      (manifest?.dependsOn || []).map((dependency) => String(dependency).trim()),
+    );
+    const networkRequestRuntime = createStagedModuleNetworkRequestRuntime(
+      module.key,
+      createModuleNetworkPolicyAuthorizer(corePrisma),
+    );
+    const twoFactorProviderRuntime = createStagedModuleTwoFactorProviderRuntime(module.key);
+    // This port resolves the owning application data domain immediately.
+    // A provider plugin such as 2FA owns no application domain, therefore the
+    // runtime must exist only when the manifest explicitly requests it.
+    const domainMessageRuntime = declaredDependencies.has("core.domain-messages")
+      ? createModuleDomainMessageRuntime(module.key, corePrisma)
+      : null;
+    registrationCleanup = normalizeRuntimeModuleCleanup(() => {
+      domainMessageRuntime?.dispose();
+      networkRequestRuntime.dispose();
+      twoFactorProviderRuntime.dispose();
+    });
+    const dataDomain = moduleDatabaseDomain(module.key, manifest);
+    const modulePrisma = dataDomain ? getDataDomainPrismaClient(dataDomain) : null;
+    const database = createModuleDatabaseRuntime(module.key, modulePrisma, manifest);
     const services = Object.freeze({
       eventBus: coreEventBus,
       dataAdapters: createModuleDataAdapterRuntime(module.key),
       networkRequests: networkRequestRuntime.runtime,
+      ...(domainMessageRuntime
+        ? { domainMessages: domainMessageRuntime }
+        : {}),
+      ...(declaredDependencies.has("core.protected-people")
+        ? {
+            protectedPeople: createModuleProtectedPeopleRuntime(
+              module.key,
+              corePrisma,
+              getDataDomainPrismaClient("people"),
+              getDataDomainPrismaClient("privacy"),
+            ),
+          }
+        : {}),
+      ...(declaredDependencies.has("core.protected-organization")
+        ? {
+            protectedOrganization: createModuleProtectedOrganizationRuntime(
+              module.key,
+              getDataDomainPrismaClient("organization"),
+              getDataDomainPrismaClient("privacy"),
+              createModuleInstanceIdentityRuntime(corePrisma),
+            ),
+          }
+        : {}),
       serviceAccounts: createModuleServiceAccountRuntime(module.key),
-      // Fachmodule erhalten den bereits gerouteten Core-Client als Capability.
-      // Zugangsdaten und ein zweiter, unkoordinierter Prisma-Client bleiben
-      // dadurch außerhalb des installierbaren Pakets.
-      prisma: getPrismaClient(),
+      ...(declaredDependencies.has("core.terminal-accounts")
+        ? {
+            terminalAccounts: createModuleTerminalAccountRuntime(
+              module.key,
+              manifest?.name || module.name,
+              manifest?.metadata?.technicalAccounts,
+            ),
+          }
+        : {}),
+      ...(declaredDependencies.has("core.media")
+        ? { media: createModuleMediaRuntime(module.key, corePrisma) }
+        : {}),
+      ...(declaredDependencies.has("core.video-conferencing")
+        ? { videoConferencing: createModuleVideoConferenceRuntime(module.key) }
+        : {}),
+      ...(declaredDependencies.has("core.instance-identity")
+        ? { instanceIdentity: createModuleInstanceIdentityRuntime(corePrisma) }
+        : {}),
+      ...(declaredDependencies.has("core.request-identity")
+        ? {
+            requestIdentity: createModuleRequestIdentityRuntime(
+              module.key,
+              manifest?.metadata?.accessProfiles,
+            ),
+          }
+        : {}),
+      ...(declaredDependencies.has("core.members")
+        ? {
+            members: createModuleMembersRuntime(
+              module.key,
+              manifest?.metadata?.accessProfiles,
+              manifest?.metadata?.legacyAccessMappings,
+              {
+                prisma: corePrisma,
+                moduleLabel: manifest?.name || module.name,
+                autoAssignDefaultProfile: manifest?.metadata?.autoAssignMemberAccess !== false,
+                technicalAccounts: manifest?.metadata?.technicalAccounts,
+              },
+            ),
+          }
+        : {}),
+      ...(declaredDependencies.has("core.archive")
+        ? { archive: createModuleArchiveRuntime(module.key, corePrisma) }
+        : {}),
+      ...(declaredDependencies.has("core.module-settings")
+        ? { moduleSettings: createModuleSettingsRuntime(module.key, corePrisma) }
+        : {}),
+      ...(declaredDependencies.has("core.two-factor")
+        ? { twoFactor: createModuleTwoFactorRuntime(module.key) }
+        : {}),
+      ...(declaredDependencies.has("core.two-factor-provider")
+        ? { twoFactorProvider: twoFactorProviderRuntime.runtime }
+        : {}),
+      ...(declaredDependencies.has("core.private-data")
+        ? { privateData: createModulePrivateDataRuntime(module.key) }
+        : {}),
+      database,
+      // Compatibility alias. It is either the delegate-restricted client or
+      // a fail-closed proxy for explicitly database-less modules.
+      prisma: database.client,
     });
 
     const moduleRouter = Router();
+    const logger = Object.freeze({
+      info(message: string, metadata?: unknown) {
+        console.info(`[module:${module.key}] ${message}`, metadata ?? "");
+      },
+      warn(message: string, metadata?: unknown) {
+        console.warn(`[module:${module.key}] ${message}`, metadata ?? "");
+      },
+      error(message: string, metadata?: unknown) {
+        console.error(`[module:${module.key}] ${message}`, metadata ?? "");
+      },
+    });
     const registrationResult = await register({
       app: moduleRouter as unknown as Express,
       module,
       services,
       prisma: services.prisma,
+      logger,
     });
     const moduleCleanup = normalizeRuntimeModuleCleanup(registrationResult);
     registrationCleanup = normalizeRuntimeModuleCleanup(async () => {
@@ -195,6 +369,7 @@ async function loadModule(
       // awaiting add-on cleanup. A slow disposer must not keep the module
       // remotely reachable.
       networkRequestRuntime.dispose();
+      twoFactorProviderRuntime.dispose();
       let cleanupError: unknown;
       try {
         await moduleCleanup?.();
@@ -209,7 +384,10 @@ async function loadModule(
       moduleRouter,
       registrationCleanup,
       isCurrent,
-      () => networkRequestRuntime.activate(),
+      () => {
+        networkRequestRuntime.activate();
+        twoFactorProviderRuntime.activate();
+      },
     );
     if (!published) return cancelledModuleLoad(module);
 
@@ -235,6 +413,10 @@ async function loadModule(
       route: backendEntry || undefined,
       error: error instanceof Error ? error.message : String(error),
     };
+    console.error(
+      `[module:${module.key}] Laufzeit konnte nicht geladen werden.`,
+      error instanceof Error ? error.stack || error.message : error,
+    );
     return result;
   }
 }
@@ -247,7 +429,6 @@ async function ensureModuleLoaded(
   const deactivation = deactivationBarriers.get(module.key);
   if (deactivation) await deactivation;
   if (loadGenerations.current(module.key) !== observedGeneration) return cancelledModuleLoad(module);
-  managedRuntimeKeys.add(module.key);
 
   const loading = loadingModules.get(module.key);
   if (loading) return loading;
@@ -257,9 +438,11 @@ async function ensureModuleLoaded(
   if (previous?.configuration === configuration) {
     if (previous.result.status === "loaded" && dynamicRuntime.hasRoute(module.key)) {
       dynamicRuntime.activate(module.key);
+      managedRuntimeKeys.add(module.key);
       return recordRuntimeModule(previous.result);
     }
     if (previous.result.status === "skipped" || (!retryFailed && previous.result.status === "error")) {
+      managedRuntimeKeys.delete(module.key);
       return recordRuntimeModule(previous.result);
     }
   }
@@ -279,6 +462,7 @@ async function ensureModuleLoaded(
     };
     moduleAttempts.set(module.key, { configuration, result: restartRequired });
     await dynamicRuntime.deactivate(module.key).catch(() => undefined);
+    managedRuntimeKeys.delete(module.key);
     return recordRuntimeModule(restartRequired);
   }
 
@@ -287,7 +471,10 @@ async function ensureModuleLoaded(
     .then(async (result) => {
       if (result.error === LOAD_CANCELLED) return result;
       moduleAttempts.set(module.key, { configuration, result });
-      if (result.status === "error") {
+      if (result.status === "loaded") {
+        managedRuntimeKeys.add(module.key);
+      } else {
+        managedRuntimeKeys.delete(module.key);
         await dynamicRuntime.deactivate(module.key).catch(() => undefined);
       }
       return recordRuntimeModule(result);
@@ -305,7 +492,7 @@ export async function refreshRuntimeModule(
 ): Promise<RegisteredRuntimeModule> {
   const key = typeof keyOrModule === "string" ? keyOrModule : keyOrModule.key;
   const module = typeof keyOrModule === "string"
-    ? (await listInstalledModules()).find((entry) => entry.key === key) || null
+    ? (await listInstalledModulesStrict()).find((entry) => entry.key === key) || null
     : keyOrModule;
   if (!module || !module.enabled) {
     await deactivateRuntimeModule(key);
@@ -360,11 +547,19 @@ export async function deactivateRuntimeModule(key: string) {
 export async function registerModules(app: Express) {
   registerUsersNetworkDataAdapter();
   attachRuntime(app);
-  const modules = (await listInstalledModules()).filter((module) => module.enabled);
+  // A failed registry read must stop module startup with its real error. The
+  // former empty-list fallback started a partial server and later exposed
+  // every feature route as a misleading 404.
+  const modules = (await listInstalledModulesStrict()).filter((module) => module.enabled);
   lastLoadedModules = [];
 
   for (const module of modules) {
-    await ensureModuleLoaded(module, true);
+    const result = await ensureModuleLoaded(module, true);
+    if (result.status === "error") {
+      console.error(
+        `[module:${module.key}] Modulstart fehlgeschlagen: ${result.error || "Unbekannter Fehler"}`,
+      );
+    }
   }
 
   return lastLoadedModules;

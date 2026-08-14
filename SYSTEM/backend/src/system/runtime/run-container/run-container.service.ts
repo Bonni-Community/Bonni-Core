@@ -69,7 +69,7 @@ function runContainerFilePath(slot: RunContainerSlot) {
 function encodeRunContainerEnvelope(value: unknown) {
   const payload = Buffer.from(JSON.stringify(value, null, 2), "utf8").toString("base64url");
   const checksum = crypto.createHash("sha256").update(payload).digest("hex");
-  return `STUEBERLAPP_RUNCONTAINER_V1\n${payload}\n${checksum}\n`;
+  return `BONNI_RUNCONTAINER_V1\n${payload}\n${checksum}\n`;
 }
 
 async function writeRunContainerFile(slot: RunContainerSlot, identity: RuntimeIdentity, modules: unknown) {

@@ -20,6 +20,11 @@ import type {
   RegenerateRecoveryCodesInput,
   SetupTotpInput,
 } from "../schemas/two-factor.schemas.js";
+import {
+  getActiveExternalTwoFactorProvider,
+  getRegisteredExternalTwoFactorProviderById,
+  type TwoFactorProof,
+} from "../two-factor-provider-registry.js";
 
 const db = prisma as any;
 
@@ -35,7 +40,8 @@ export type TwoFactorPurpose =
   | "DSGVO_SUBJECT_DATA_VIEW"
   | "DSGVO_SUBJECT_DATA_EXPORT"
   | "DSGVO_SUBJECT_DATA_DELETE"
-  | "DSGVO_DELETION_RULE_UPDATE";
+  | "DSGVO_DELETION_RULE_UPDATE"
+  | "MODULE_PRIVATE_DATA_ACCESS";
 
 type ActiveCredential = {
   id: string;
@@ -44,6 +50,13 @@ type ActiveCredential = {
   label?: string | null;
   secretEncrypted?: string | null;
   status: string;
+};
+
+type CodeVerification = {
+  ok: boolean;
+  method: "TOTP" | "RECOVERY_CODE";
+  credentialId?: string;
+  provider: string;
 };
 
 function httpError(code: string, statusCode = 400, details?: Record<string, unknown>) {
@@ -56,9 +69,69 @@ function addMinutes(minutes: number) {
   return date;
 }
 
-const TWO_FACTOR_MAX_ATTEMPTS = 3;
+function addSeconds(seconds: number) {
+  const date = new Date();
+  date.setSeconds(date.getSeconds() + seconds);
+  return date;
+}
+
+const LOCAL_TWO_FACTOR_MAX_ATTEMPTS = 3;
+const LOCAL_CHALLENGE_EXPIRES_SECONDS = 10 * 60;
 const TWO_FACTOR_BASE_LOCK_MINUTES = 3;
 const TWO_FACTOR_MAX_LOCK_MINUTES = 24 * 60;
+// Diese Markierung ist absichtlich dauerhaft. Sobald ein externer
+// Zwei-Faktor-Anbieter einmal eingerichtet war, duerfen geschuetzte Daten
+// durch das spaetere Deaktivieren oder Entfernen des Plugins niemals wieder
+// ungeschuetzt lesbar werden. Es gibt deshalb keinen normalen Reset-Pfad.
+const PRIVATE_DATA_PROTECTION_ENROLLED_EVENT =
+  "TWO_FACTOR_PRIVATE_DATA_PROTECTION_ENROLLED";
+
+const LOCAL_PROOF_FIELDS = Object.freeze([{
+  name: "code" as const,
+  label: "Authenticator-Code",
+  type: "password" as const,
+  autocomplete: "one-time-code" as const,
+}]);
+
+function boundedInteger(value: unknown, fallback: number, min: number, max: number) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? Math.min(Math.max(Math.round(parsed), min), max) : fallback;
+}
+
+async function getProviderContext() {
+  const external = await getActiveExternalTwoFactorProvider();
+  if (external) {
+    return {
+      id: external.provider.id,
+      label: external.provider.label,
+      configured: external.state.configured,
+      externallyManaged: true,
+      details: external.state.details || {},
+      policy: {
+        maxAttempts: boundedInteger(external.state.policy.maxAttempts, 8, 1, 20),
+        challengeExpiresSeconds: boundedInteger(
+          external.state.policy.challengeExpiresSeconds,
+          60,
+          30,
+          600,
+        ),
+        proofFields: external.state.policy.proofFields,
+      },
+    };
+  }
+  return {
+    id: "local",
+    label: "Authenticator-App (TOTP)",
+    configured: true,
+    externallyManaged: false,
+    details: {},
+    policy: {
+      maxAttempts: LOCAL_TWO_FACTOR_MAX_ATTEMPTS,
+      challengeExpiresSeconds: LOCAL_CHALLENGE_EXPIRES_SECONDS,
+      proofFields: LOCAL_PROOF_FIELDS,
+    },
+  };
+}
 
 
 function scopeKey(purpose: TwoFactorPurpose | "TOTP_SETUP" | "SECURITY_SETTINGS") {
@@ -80,16 +153,22 @@ async function getLockout(accountId: string, scope: string) {
   });
 }
 
-function lockoutPayload(lockout: any) {
+function lockoutPayload(lockout: any, maxAttempts = LOCAL_TWO_FACTOR_MAX_ATTEMPTS) {
   return {
     lockedUntil: lockout?.lockedUntil,
     failedAttempts: lockout?.failedAttempts ?? 0,
-    maxAttempts: TWO_FACTOR_MAX_ATTEMPTS,
+    maxAttempts,
     lockLevel: lockout?.lockLevel ?? 0,
   };
 }
 
-async function assertNotLocked(accountId: string, scope: string, meta?: RequestMeta, purpose?: TwoFactorPurpose) {
+async function assertNotLocked(
+  accountId: string,
+  scope: string,
+  meta?: RequestMeta,
+  purpose?: TwoFactorPurpose,
+  maxAttempts = LOCAL_TWO_FACTOR_MAX_ATTEMPTS,
+) {
   const lockout = await getLockout(accountId, scope);
 
   if (lockout?.lockedUntil && lockout.lockedUntil.getTime() > Date.now()) {
@@ -99,10 +178,10 @@ async function assertNotLocked(accountId: string, scope: string, meta?: RequestM
       purpose,
       result: "BLOCKED",
       meta,
-      metadataJson: { scope, ...lockoutPayload(lockout) },
+      metadataJson: { scope, ...lockoutPayload(lockout, maxAttempts) },
     });
 
-    throw httpError("TWO_FACTOR_TEMPORARILY_LOCKED", 423, lockoutPayload(lockout));
+    throw httpError("TWO_FACTOR_TEMPORARILY_LOCKED", 423, lockoutPayload(lockout, maxAttempts));
   }
 }
 
@@ -113,11 +192,18 @@ async function registerFailedAttempt(input: {
   method?: "TOTP" | "RECOVERY_CODE" | "WEBAUTHN";
   meta?: RequestMeta;
   metadataJson?: unknown;
+  maxAttempts?: number;
 }) {
+  const maxAttempts = boundedInteger(
+    input.maxAttempts,
+    LOCAL_TWO_FACTOR_MAX_ATTEMPTS,
+    1,
+    20,
+  );
   const existing = await getLockout(input.accountId, input.scope);
   const failedAttempts = (existing?.failedAttempts ?? 0) + 1;
 
-  if (failedAttempts < TWO_FACTOR_MAX_ATTEMPTS) {
+  if (failedAttempts < maxAttempts) {
     const lockout = await db.securityTwoFactorLockout.upsert({
       where: {
         accountId_scopeKey: {
@@ -140,7 +226,7 @@ async function registerFailedAttempt(input: {
       },
     });
 
-    return { locked: false, ...lockoutPayload(lockout) };
+    return { locked: false, ...lockoutPayload(lockout, maxAttempts) };
   }
 
   const lockLevel = existing?.lockLevel ?? 0;
@@ -182,11 +268,11 @@ async function registerFailedAttempt(input: {
     metadataJson: {
       scope: input.scope,
       lockMinutes,
-      ...lockoutPayload(lockout),
+      ...lockoutPayload(lockout, maxAttempts),
     },
   });
 
-  return { locked: true, lockMinutes, ...lockoutPayload(lockout) };
+  return { locked: true, lockMinutes, ...lockoutPayload(lockout, maxAttempts) };
 }
 
 async function registerSuccessfulAttempt(accountId: string, scope: string) {
@@ -285,12 +371,55 @@ async function getActiveTotpCredential(accountId: string): Promise<ActiveCredent
 }
 
 export async function hasActiveTwoFactor(accountId: string) {
+  const provider = await getProviderContext();
+  if (provider.externallyManaged) return provider.configured;
   const credential = await getActiveTotpCredential(accountId);
   return Boolean(credential);
 }
 
+async function privateDataProtectionEnrollment(
+  accountId: string,
+  provider: Awaited<ReturnType<typeof getProviderContext>>,
+) {
+  const existing = await db.securityTwoFactorAuditLog.findFirst({
+    where: {
+      accountId,
+      event: PRIVATE_DATA_PROTECTION_ENROLLED_EVENT,
+      result: "SUCCESS",
+    },
+    select: { id: true, createdAt: true },
+    orderBy: { createdAt: "asc" },
+  });
+  if (existing) {
+    return { enrolled: true, enrolledAt: existing.createdAt };
+  }
+  if (!(provider.externallyManaged && provider.configured)) {
+    return { enrolled: false, enrolledAt: null };
+  }
+
+  const createdAt = new Date();
+  // Anders als gewoehnliche Telemetrie darf diese Schreiboperation nicht
+  // stillschweigend fehlschlagen: Ohne persistierte Marke duerfte das System
+  // den Schutz spaeter versehentlich wieder als optional behandeln.
+  await db.securityTwoFactorAuditLog.create({
+    data: {
+      accountId,
+      event: PRIVATE_DATA_PROTECTION_ENROLLED_EVENT,
+      purpose: "MODULE_PRIVATE_DATA_ACCESS",
+      result: "SUCCESS",
+      metadataJson: {
+        provider: provider.id,
+        irreversible: true,
+        resetPolicy: "PROTECTED_DATA_DELETION_ONLY",
+      },
+    },
+  });
+  return { enrolled: true, enrolledAt: createdAt };
+}
+
 export async function getStatus(accountId: string) {
-  const [credentials, recoveryCodes, lockouts] = await Promise.all([
+  const [provider, credentials, recoveryCodes, lockouts] = await Promise.all([
+    getProviderContext(),
     db.securityTwoFactorCredential.findMany({
       where: { accountId },
       orderBy: { createdAt: "desc" },
@@ -305,15 +434,31 @@ export async function getStatus(accountId: string) {
   ]);
 
   const activeCredentials = credentials.filter((credential: any) => credential.status === "ACTIVE");
+  const externallyManaged = provider.externallyManaged;
+  const enabled = externallyManaged ? provider.configured : activeCredentials.length > 0;
+  const privateDataProtection = await privateDataProtectionEnrollment(accountId, provider);
 
   return {
-    enabled: activeCredentials.length > 0,
-    methods: activeCredentials.map((credential: any) => credential.method),
+    enabled,
+    provider: {
+      id: provider.id,
+      label: provider.label,
+      configured: provider.configured,
+      externallyManaged,
+      details: provider.details,
+      proofFields: provider.policy.proofFields,
+    },
+    methods: externallyManaged && enabled
+      ? [provider.id.toUpperCase()]
+      : activeCredentials.map((credential: any) => credential.method),
     credentials: credentials.map(publicCredential),
     unusedRecoveryCodeCount: recoveryCodes,
-    maxAttempts: TWO_FACTOR_MAX_ATTEMPTS,
+    maxAttempts: provider.policy.maxAttempts,
+    challengeExpiresSeconds: provider.policy.challengeExpiresSeconds,
+    privateDataProtectionEnrolled: privateDataProtection.enrolled,
+    privateDataProtectionEnrolledAt: privateDataProtection.enrolledAt,
     lockoutPolicy: {
-      maxAttempts: TWO_FACTOR_MAX_ATTEMPTS,
+      maxAttempts: provider.policy.maxAttempts,
       firstLockMinutes: TWO_FACTOR_BASE_LOCK_MINUTES,
       escalation: "DOUBLE_AFTER_EACH_LOCKOUT",
       maxLockMinutes: TWO_FACTOR_MAX_LOCK_MINUTES,
@@ -329,6 +474,9 @@ export async function getStatus(accountId: string) {
 }
 
 export async function setupTotp(accountId: string, input: SetupTotpInput, meta?: RequestMeta) {
+  if ((await getProviderContext()).externallyManaged) {
+    throw httpError("TWO_FACTOR_MANAGED_BY_EXTERNAL_PROVIDER", 409);
+  }
   const active = await getActiveTotpCredential(accountId);
 
   if (active) {
@@ -420,6 +568,9 @@ async function createRecoveryCodes(accountId: string, count = 10) {
 }
 
 export async function confirmTotp(accountId: string, input: ConfirmTotpInput, meta?: RequestMeta) {
+  if ((await getProviderContext()).externallyManaged) {
+    throw httpError("TWO_FACTOR_MANAGED_BY_EXTERNAL_PROVIDER", 409);
+  }
   const credential = await db.securityTwoFactorCredential.findFirst({
     where: {
       id: input.credentialId,
@@ -500,11 +651,17 @@ export async function createChallenge(
 ) {
   const method = input.method || "TOTP";
   const challengeScope = scopeKey(input.purpose);
-  await assertNotLocked(accountId, challengeScope, meta, input.purpose);
+  const provider = await getProviderContext();
+  await assertNotLocked(
+    accountId,
+    challengeScope,
+    meta,
+    input.purpose,
+    provider.policy.maxAttempts,
+  );
+  const credential = provider.externallyManaged ? null : await getActiveTotpCredential(accountId);
 
-  const credential = await getActiveTotpCredential(accountId);
-
-  if (!credential) {
+  if (!provider.configured || (!provider.externallyManaged && !credential)) {
     await writeAudit({
       accountId,
       event: "TWO_FACTOR_CHALLENGE_BLOCKED_NOT_CONFIGURED",
@@ -512,6 +669,7 @@ export async function createChallenge(
       method,
       result: "BLOCKED",
       meta,
+      metadataJson: { provider: provider.id },
     });
 
     throw httpError("TWO_FACTOR_NOT_CONFIGURED", 409);
@@ -522,13 +680,18 @@ export async function createChallenge(
       accountId,
       purpose: input.purpose,
       method,
-      credentialId: credential.id,
+      credentialId: credential?.id,
       status: "PENDING",
-      maxAttempts: TWO_FACTOR_MAX_ATTEMPTS,
-      expiresAt: addMinutes(10),
+      maxAttempts: provider.policy.maxAttempts,
+      expiresAt: addSeconds(provider.policy.challengeExpiresSeconds),
       ipAddress: meta?.ip,
       userAgent: meta?.userAgent,
-      metadataJson: input.metadataJson,
+      metadataJson: {
+        ...(input.metadataJson && typeof input.metadataJson === "object"
+          ? input.metadataJson as Record<string, unknown>
+          : {}),
+        twoFactorProvider: provider.id,
+      },
     },
   });
 
@@ -539,13 +702,16 @@ export async function createChallenge(
     method,
     result: "SUCCESS",
     meta,
-    metadataJson: { challengeId: challenge.id },
+    metadataJson: { challengeId: challenge.id, provider: provider.id },
   });
 
   return {
     id: challenge.id,
     purpose: challenge.purpose,
-    method: challenge.method,
+    method: provider.externallyManaged ? "EXTERNAL" : challenge.method,
+    provider: provider.id,
+    providerLabel: provider.label,
+    proofFields: provider.policy.proofFields,
     status: challenge.status,
     expiresAt: challenge.expiresAt,
     maxAttempts: challenge.maxAttempts,
@@ -570,12 +736,48 @@ async function verifyRecoveryCode(accountId: string, code: string) {
   return true;
 }
 
-async function verifyCodeForAccount(accountId: string, input: { code?: string; recoveryCode?: string }) {
+async function verifyCodeForAccount(
+  accountId: string,
+  input: TwoFactorProof,
+  requiredProvider = "local",
+  purpose = "",
+): Promise<CodeVerification> {
+  if (requiredProvider !== "local") {
+    const provider = getRegisteredExternalTwoFactorProviderById(requiredProvider);
+    if (!provider) throw httpError("TWO_FACTOR_PROVIDER_CHANGED", 409);
+    const state = await provider.getState();
+    if (!state.enabled || !state.configured) throw httpError("TWO_FACTOR_NOT_CONFIGURED", 409);
+    const account = await db.account.findUnique({
+      where: { id: accountId },
+      select: { loginName: true },
+    });
+    if (!account?.loginName) return { ok: false, method: "TOTP", provider: provider.id };
+    let verification: { ok: boolean };
+    try {
+      verification = await provider.verify({
+        accountId,
+        loginName: account.loginName,
+        purpose,
+        proof: input,
+      });
+    } catch (error: any) {
+      if (Number(error?.statusCode || error?.status) === 503) {
+        throw httpError("TWO_FACTOR_PROVIDER_UNAVAILABLE", 503);
+      }
+      if (Number(error?.statusCode || error?.status) >= 400 && Number(error?.statusCode || error?.status) < 500) {
+        throw httpError("TWO_FACTOR_PROVIDER_REJECTED_REQUEST", 400);
+      }
+      throw httpError("TWO_FACTOR_PROVIDER_FAILED", 502);
+    }
+    return { ok: verification.ok, method: "TOTP", provider: provider.id };
+  }
+
   if (input.recoveryCode) {
     const recoveryOk = await verifyRecoveryCode(accountId, input.recoveryCode);
     return {
       ok: recoveryOk,
       method: "RECOVERY_CODE" as const,
+      provider: "local",
     };
   }
 
@@ -583,6 +785,7 @@ async function verifyCodeForAccount(accountId: string, input: { code?: string; r
     return {
       ok: false,
       method: "TOTP" as const,
+      provider: "local",
     };
   }
 
@@ -592,6 +795,7 @@ async function verifyCodeForAccount(accountId: string, input: { code?: string; r
     return {
       ok: false,
       method: "TOTP" as const,
+      provider: "local",
     };
   }
 
@@ -609,13 +813,14 @@ async function verifyCodeForAccount(accountId: string, input: { code?: string; r
     ok,
     method: "TOTP" as const,
     credentialId: credential.id,
+    provider: "local",
   };
 }
 
 export async function verifyChallenge(
   accountId: string,
   challengeId: string,
-  input: { code?: string; recoveryCode?: string },
+  input: TwoFactorProof,
   meta?: RequestMeta,
 ) {
   const challenge = await db.securityTwoFactorChallenge.findUnique({
@@ -627,7 +832,13 @@ export async function verifyChallenge(
   }
 
   const challengeScope = scopeKey(challenge.purpose);
-  await assertNotLocked(accountId, challengeScope, meta, challenge.purpose);
+  const effectiveMaxAttempts = boundedInteger(
+    challenge.maxAttempts,
+    LOCAL_TWO_FACTOR_MAX_ATTEMPTS,
+    1,
+    20,
+  );
+  await assertNotLocked(accountId, challengeScope, meta, challenge.purpose, effectiveMaxAttempts);
 
   if (challenge.status !== "PENDING") {
     throw httpError("TWO_FACTOR_CHALLENGE_NOT_PENDING", 409);
@@ -642,8 +853,6 @@ export async function verifyChallenge(
     throw httpError("TWO_FACTOR_CHALLENGE_EXPIRED", 401);
   }
 
-  const effectiveMaxAttempts = Math.min(challenge.maxAttempts ?? TWO_FACTOR_MAX_ATTEMPTS, TWO_FACTOR_MAX_ATTEMPTS);
-
   if (challenge.attempts >= effectiveMaxAttempts) {
     await db.securityTwoFactorChallenge.update({
       where: { id: challenge.id },
@@ -657,12 +866,22 @@ export async function verifyChallenge(
       method: challenge.method,
       meta,
       metadataJson: { challengeId: challenge.id, reason: "MAX_ATTEMPTS_REACHED" },
+      maxAttempts: effectiveMaxAttempts,
     });
 
     throw httpError(lockout.locked ? "TWO_FACTOR_TEMPORARILY_LOCKED" : "TWO_FACTOR_CHALLENGE_MAX_ATTEMPTS", 423, lockout);
   }
 
-  const verification = await verifyCodeForAccount(accountId, input);
+  const challengeMetadata = challenge.metadataJson && typeof challenge.metadataJson === "object"
+    ? challenge.metadataJson as Record<string, unknown>
+    : {};
+  const challengeProvider = String(challengeMetadata.twoFactorProvider || "local").trim().toLowerCase();
+  const verification = await verifyCodeForAccount(
+    accountId,
+    input,
+    challengeProvider,
+    challenge.purpose,
+  );
 
   if (!verification.ok) {
     const attempts = challenge.attempts + 1;
@@ -672,7 +891,8 @@ export async function verifyChallenge(
       purpose: challenge.purpose,
       method: verification.method,
       meta,
-      metadataJson: { challengeId: challenge.id, attempts },
+      metadataJson: { challengeId: challenge.id, attempts, provider: verification.provider },
+      maxAttempts: effectiveMaxAttempts,
     });
 
     await db.securityTwoFactorChallenge.update({
@@ -690,7 +910,7 @@ export async function verifyChallenge(
       method: verification.method,
       result: lockout.locked ? "BLOCKED" : "FAILURE",
       meta,
-      metadataJson: { challengeId: challenge.id, attempts, ...lockout },
+      metadataJson: { challengeId: challenge.id, attempts, provider: verification.provider, ...lockout },
     });
 
     if (lockout.locked) {
@@ -719,7 +939,7 @@ export async function verifyChallenge(
     method: verification.method,
     result: "SUCCESS",
     meta,
-    metadataJson: { challengeId: challenge.id },
+    metadataJson: { challengeId: challenge.id, provider: verification.provider },
   });
 
   return {
@@ -730,12 +950,13 @@ export async function verifyChallenge(
     status: verified.status,
     verifiedAt: verified.verifiedAt,
     expiresAt: verified.expiresAt,
+    provider: verification.provider,
   };
 }
 
 export async function verifyLoginChallenge(
   challengeId: string,
-  input: { code?: string; recoveryCode?: string },
+  input: TwoFactorProof,
   meta?: RequestMeta,
 ) {
   const challenge = await db.securityTwoFactorChallenge.findUnique({
@@ -754,6 +975,7 @@ export async function consumeVerifiedChallenge(input: {
   challengeId: string;
   purpose: TwoFactorPurpose;
   maxAgeMinutes?: number;
+  metadata?: Record<string, string>;
 }) {
   const challenge = await db.securityTwoFactorChallenge.findUnique({
     where: { id: input.challengeId },
@@ -761,6 +983,18 @@ export async function consumeVerifiedChallenge(input: {
 
   if (!challenge || challenge.accountId !== input.accountId || challenge.purpose !== input.purpose) {
     throw httpError("TWO_FACTOR_AUTHORIZATION_NOT_FOUND", 404);
+  }
+
+  if (input.metadata) {
+    const challengeMetadata = challenge.metadataJson && typeof challenge.metadataJson === "object"
+      ? challenge.metadataJson as Record<string, unknown>
+      : {};
+    const metadataMatches = Object.entries(input.metadata).every(
+      ([key, value]) => String(challengeMetadata[key] ?? "") === value,
+    );
+    if (!metadataMatches) {
+      throw httpError("TWO_FACTOR_AUTHORIZATION_SCOPE_MISMATCH", 403);
+    }
   }
 
   if (challenge.status !== "VERIFIED" || !challenge.verifiedAt || challenge.consumedAt) {
@@ -794,14 +1028,26 @@ async function verifyPassword(accountId: string, password?: string) {
   return Boolean(account?.passwordHash && await bcrypt.compare(password, account.passwordHash));
 }
 
-async function assertSensitiveSettingsProof(accountId: string, input: { code?: string; recoveryCode?: string; password?: string }, meta?: RequestMeta) {
+async function assertSensitiveSettingsProof(accountId: string, input: TwoFactorProof, meta?: RequestMeta) {
   const has2fa = await hasActiveTwoFactor(accountId);
   const settingsScope = scopeKey("SECURITY_SETTINGS");
 
   if (has2fa) {
-    await assertNotLocked(accountId, settingsScope, meta, "SECURITY_SETTINGS");
+    const provider = await getProviderContext();
+    await assertNotLocked(
+      accountId,
+      settingsScope,
+      meta,
+      "SECURITY_SETTINGS",
+      provider.policy.maxAttempts,
+    );
 
-    const verified = await verifyCodeForAccount(accountId, input);
+    const verified = await verifyCodeForAccount(
+      accountId,
+      input,
+      provider.id,
+      "SECURITY_SETTINGS",
+    );
     if (!verified.ok) {
       const lockout = await registerFailedAttempt({
         accountId,
@@ -809,6 +1055,7 @@ async function assertSensitiveSettingsProof(accountId: string, input: { code?: s
         purpose: "SECURITY_SETTINGS",
         method: verified.method,
         meta,
+        maxAttempts: provider.policy.maxAttempts,
       });
 
       if (lockout.locked) {
@@ -830,6 +1077,9 @@ async function assertSensitiveSettingsProof(accountId: string, input: { code?: s
 }
 
 export async function disableTwoFactor(accountId: string, input: DisableTwoFactorInput, meta?: RequestMeta) {
+  if ((await getProviderContext()).externallyManaged) {
+    throw httpError("TWO_FACTOR_MANAGED_BY_EXTERNAL_PROVIDER", 409);
+  }
   const proofMethod = await assertSensitiveSettingsProof(accountId, input, meta);
   const where = input.credentialId
     ? { id: input.credentialId, accountId, method: "TOTP", status: "ACTIVE" }
@@ -862,6 +1112,9 @@ export async function disableTwoFactor(accountId: string, input: DisableTwoFacto
 }
 
 export async function regenerateRecoveryCodes(accountId: string, input: RegenerateRecoveryCodesInput, meta?: RequestMeta) {
+  if ((await getProviderContext()).externallyManaged) {
+    throw httpError("TWO_FACTOR_MANAGED_BY_EXTERNAL_PROVIDER", 409);
+  }
   const proofMethod = await assertSensitiveSettingsProof(accountId, input, meta);
 
   if (!await hasActiveTwoFactor(accountId)) {

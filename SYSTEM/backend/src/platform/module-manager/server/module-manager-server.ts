@@ -8,7 +8,7 @@ const port = Number(process.env.MODULE_MANAGER_PORT || 4201);
 
 export function createModuleManagerServer() {
   const app = express();
-  app.use(helmet());
+  app.use(helmet({ frameguard: false }));
   app.use(cors({ origin: true }));
   app.use(express.json({ limit: "25mb" }));
 

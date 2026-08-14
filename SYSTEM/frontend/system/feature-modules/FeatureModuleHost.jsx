@@ -5,13 +5,16 @@ import {
   fetchFeatureModule,
   featureModuleDisplayName,
   featureModuleIntegration,
+  featureModuleOpaqueSandbox,
+  featureModuleRpcContract,
   featureModuleRuntimeEntry,
+  featureModuleSandboxCapabilities,
   featureModuleTransport,
   isFeatureModuleActive,
 } from "./featureModuleApi.js";
 import {
   createOpaqueRpcSessionId,
-  executeOpaqueHocketRpc,
+  executeOpaqueModuleRpc,
   isTrustedOpaqueModuleMessage,
   normalizeSameOriginNavigationUrl,
   OPAQUE_RPC_CANCEL,
@@ -74,9 +77,14 @@ function FeatureModuleFrame({
   onBack,
   onOpenControlCenter,
   transport,
+  rpcContract,
+  sandboxCapabilities,
 }) {
   const frameRef = useRef(null);
   const activeRequestsRef = useRef(new Map());
+  const contextRef = useRef(null);
+  const actionHandlersRef = useRef(null);
+  const lastContextSignatureRef = useRef("");
   const opaqueRpc = transport === OPAQUE_RPC_TRANSPORT;
   const rpcSessionId = useMemo(() => createOpaqueRpcSessionId(), [entry, moduleId]);
   const entryUrl = useMemo(() => (
@@ -85,19 +93,56 @@ function FeatureModuleFrame({
       : new URL(entry, window.location.href)
   ), [entry, opaqueRpc, rpcSessionId]);
   const opaqueEntryAllowed = !opaqueRpc || entryUrl.origin === window.location.origin;
+  const opaqueSandbox = useMemo(
+    () => featureModuleOpaqueSandbox(sandboxCapabilities),
+    [sandboxCapabilities],
+  );
+
+  contextRef.current = {
+    token,
+    user,
+    shell,
+    activeWorkspace,
+    allowedWorkspaces,
+  };
+  actionHandlersRef.current = {
+    onChangeWorkspace,
+    onLogout,
+    onBack,
+    onOpenControlCenter,
+  };
 
   function postToFrame(message) {
     frameRef.current?.contentWindow?.postMessage(message, opaqueRpc ? "*" : entryUrl.origin);
   }
 
-  function sendContext() {
+  function sendContext({ force = false } = {}) {
+    const current = contextRef.current || {};
+    const payload = opaqueRpc
+      ? sanitizeOpaqueModuleContext({
+          transport: OPAQUE_RPC_TRANSPORT,
+          user: current.user,
+          shell: current.shell,
+          activeWorkspace: current.activeWorkspace,
+          allowedWorkspaces: current.allowedWorkspaces,
+        })
+      : {
+          token: current.token,
+          user: current.user,
+          shell: current.shell,
+          activeWorkspace: current.activeWorkspace,
+          allowedWorkspaces: current.allowedWorkspaces,
+        };
+    const signature = JSON.stringify(payload);
+
+    if (!force && signature === lastContextSignatureRef.current) return;
+    lastContextSignatureRef.current = signature;
+
     postToFrame({
       type: "bonni:module-context",
       moduleId,
       ...(opaqueRpc ? { rpcSessionId } : {}),
-      payload: opaqueRpc
-        ? sanitizeOpaqueModuleContext({ transport: OPAQUE_RPC_TRANSPORT, user, shell, activeWorkspace, allowedWorkspaces })
-        : { token, user, shell, activeWorkspace, allowedWorkspaces },
+      payload,
     });
   }
 
@@ -126,7 +171,11 @@ function FeatureModuleFrame({
     async function handleOpaqueRequest(data) {
       let request;
       try {
-        request = validateOpaqueRpcRequest(data, { moduleId, rpcSessionId });
+        request = validateOpaqueRpcRequest(data, {
+          moduleId,
+          rpcSessionId,
+          contract: rpcContract,
+        });
       } catch (error) {
         if (typeof data?.requestId === "string" && data.requestId.length <= 128) {
           sendOpaqueResponse(data.requestId, {
@@ -134,7 +183,7 @@ function FeatureModuleFrame({
             status: Number(error?.status || 400),
             payload: {
               code: error?.code || "RPC_REQUEST_INVALID",
-              message: error?.message || "Ungültige HocketApp-RPC-Anfrage.",
+              message: error?.message || "Ungültige Modul-RPC-Anfrage.",
             },
           });
         }
@@ -150,9 +199,15 @@ function FeatureModuleFrame({
         return;
       }
 
-      const requestState = { cancelled: false };
+      const requestState = {
+        cancelled: false,
+        controller: new AbortController(),
+      };
       activeRequests.set(request.requestId, requestState);
-      const result = await executeOpaqueHocketRpc(request, { token });
+      const result = await executeOpaqueModuleRpc(request, {
+        token: contextRef.current?.token,
+        signal: requestState.controller.signal,
+      });
       const current = activeRequests.get(request.requestId);
       activeRequests.delete(request.requestId);
       if (current && !current.cancelled) sendOpaqueResponse(request.requestId, result);
@@ -160,10 +215,11 @@ function FeatureModuleFrame({
 
     function handleModuleAction(data) {
       const action = data?.action;
-      if (action === "logout") onLogout?.();
-      if (action === "back") onBack?.();
-      if (action === "open-control-center") onOpenControlCenter?.();
-      if (action === "change-workspace") onChangeWorkspace?.(data?.payload?.workspace);
+      const handlers = actionHandlersRef.current || {};
+      if (action === "logout") handlers.onLogout?.();
+      if (action === "back") handlers.onBack?.();
+      if (action === "open-control-center") handlers.onOpenControlCenter?.();
+      if (action === "change-workspace") handlers.onChangeWorkspace?.(data?.payload?.workspace);
       if (opaqueRpc && action === "navigate") {
         const target = normalizeSameOriginNavigationUrl(data?.payload?.url, window.location.origin);
         if (target) window.location.assign(target);
@@ -179,7 +235,7 @@ function FeatureModuleFrame({
         })) return;
 
         if (event.data?.type === "bonni:module-ready") {
-          sendContext();
+          sendContext({ force: true });
           return;
         }
         if (event.data?.type === OPAQUE_RPC_REQUEST) {
@@ -188,7 +244,10 @@ function FeatureModuleFrame({
         }
         if (event.data?.type === OPAQUE_RPC_CANCEL) {
           const requestState = activeRequests.get(event.data?.requestId);
-          if (requestState) requestState.cancelled = true;
+          if (requestState) {
+            requestState.cancelled = true;
+            requestState.controller.abort();
+          }
           return;
         }
         if (event.data?.type === "bonni:module-action") handleModuleAction(event.data);
@@ -197,19 +256,32 @@ function FeatureModuleFrame({
 
       // Bestehende iframe-Module behalten ihren bisherigen Same-Origin-Vertrag.
       if (event.source !== frameRef.current?.contentWindow || event.origin !== entryUrl.origin) return;
-      if (event.data?.type === "bonni:module-ready") sendContext();
+      if (event.data?.type === "bonni:module-ready") sendContext({ force: true });
       if (event.data?.type === "bonni:module-action") handleModuleAction(event.data);
     }
 
     window.addEventListener("message", receiveMessage);
     if (opaqueRpc) probeOpaqueFrame();
-    else sendContext();
+    else sendContext({ force: true });
     return () => {
       window.removeEventListener("message", receiveMessage);
-      for (const requestState of activeRequests.values()) requestState.cancelled = true;
+      for (const requestState of activeRequests.values()) {
+        requestState.cancelled = true;
+        requestState.controller.abort();
+      }
       activeRequests.clear();
     };
-  }, [entryUrl.origin, moduleId, opaqueRpc, rpcSessionId, token, user, shell, activeWorkspace, allowedWorkspaces]);
+  }, [
+    entryUrl.origin,
+    moduleId,
+    opaqueRpc,
+    rpcContract,
+    rpcSessionId,
+  ]);
+
+  useEffect(() => {
+    sendContext();
+  }, [token, user, shell, activeWorkspace, allowedWorkspaces]);
 
   if (!opaqueEntryAllowed) {
     return <div style={{ padding: 24 }}>Das abgesicherte Modul darf nur aus Bonni Core selbst geladen werden.</div>;
@@ -220,9 +292,9 @@ function FeatureModuleFrame({
       ref={frameRef}
       src={entryUrl.href}
       title={moduleId}
-      onLoad={opaqueRpc ? probeOpaqueFrame : sendContext}
+      onLoad={opaqueRpc ? probeOpaqueFrame : () => sendContext({ force: true })}
       style={{ display: "block", width: "100%", minHeight: "100vh", border: 0 }}
-      sandbox={opaqueRpc ? "allow-scripts" : "allow-scripts allow-same-origin allow-forms allow-downloads"}
+      sandbox={opaqueRpc ? opaqueSandbox : "allow-scripts allow-same-origin allow-forms allow-downloads"}
       referrerPolicy={opaqueRpc ? "same-origin" : undefined}
     />
   );
@@ -267,6 +339,11 @@ export default function FeatureModuleHost({
   const entry = state.module ? featureModuleRuntimeEntry(state.module) : "";
   const integration = state.module ? featureModuleIntegration(state.module) : "module";
   const transport = state.module ? featureModuleTransport(state.module) : "";
+  const rpcContract = state.module ? featureModuleRpcContract(state.module) : null;
+  const sandboxCapabilities = state.module
+    ? featureModuleSandboxCapabilities(state.module)
+    : [];
+  const isDockedApp = String(moduleId || "").startsWith("app.");
   const LazyFeatureModule = useMemo(() => {
     if (!entry || integration === "iframe") return null;
     return createLazyComponent(entry, exportName || "default");
@@ -311,6 +388,25 @@ export default function FeatureModuleHost({
     );
   }
 
+  if (
+    isDockedApp
+    && (
+      integration !== "iframe"
+      || transport !== OPAQUE_RPC_TRANSPORT
+      || !rpcContract
+    )
+  ) {
+    return (
+      <FeatureModuleUnavailable
+        module={state.module}
+        moduleId={moduleId}
+        reason="incompatible-contract"
+        onBack={onBack}
+        onOpenControlCenter={onOpenControlCenter}
+      />
+    );
+  }
+
   if (!LazyFeatureModule) {
     if (integration === "iframe" && entry) {
       return (
@@ -327,6 +423,8 @@ export default function FeatureModuleHost({
           onBack={onBack}
           onOpenControlCenter={onOpenControlCenter}
           transport={transport}
+          rpcContract={rpcContract}
+          sandboxCapabilities={sandboxCapabilities}
         />
       );
     }

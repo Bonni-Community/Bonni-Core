@@ -1,8 +1,8 @@
 import path from "node:path";
 
 export function getProjectRoot() {
-  return process.env.STUEBERLAPP_ROOT
-    ? path.resolve(process.env.STUEBERLAPP_ROOT)
+  return process.env.BONNI_PROJECT_ROOT
+    ? path.resolve(process.env.BONNI_PROJECT_ROOT)
     : path.resolve(process.cwd(), "../..");
 }
 

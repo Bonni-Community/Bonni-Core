@@ -3,8 +3,9 @@ import { AccountType } from "@prisma/client";
 import { prisma } from "../../../../core/database/database.js";
 import { permissionsService } from "../../../permissions/permissions.service.js";
 import { createRefreshToken, hashToken, signAccessToken, verifyAccessToken } from "./token.service.js";
-import type { LoginInput, LogoutInput, RefreshInput } from "../schemas/auth.schemas.js";
+import type { LoginInput, LoginTwoFactorInput, LogoutInput, RefreshInput } from "../schemas/auth.schemas.js";
 import { assertPersonalDataLoginAllowed } from "../../crypto/index.js";
+import * as twoFactorService from "../../two-factor/services/two-factor.service.js";
 
 type RequestMeta = {
   ip?: string;
@@ -164,6 +165,104 @@ export async function login(input: LoginInput, req: RequestMeta) {
       allowedWorkspaces: resolvedPermissions.allowedWorkspaces,
       defaultWorkspace: resolvedPermissions.defaultWorkspace,
     }
+  };
+}
+
+export async function loginWithTwoFactor(input: LoginTwoFactorInput, req: RequestMeta) {
+  const meta = getRequestMeta(req);
+  const verified = await twoFactorService.verifyLoginChallenge(
+    input.challengeId,
+    { code: input.code, recoveryCode: input.recoveryCode },
+    { ip: meta.ipAddress, userAgent: meta.userAgent },
+  );
+  await twoFactorService.consumeVerifiedChallenge({
+    accountId: verified.accountId,
+    challengeId: input.challengeId,
+    purpose: "LOGIN",
+  });
+
+  const account = await prisma.account.findUnique({
+    where: { id: verified.accountId },
+    include: {
+      roles: { include: { role: true } },
+      person: { include: { member: true } },
+    },
+  });
+  if (!account || !account.isActive || account.type === AccountType.SERVICE) {
+    throw Object.assign(new Error("INVALID_CREDENTIALS"), { statusCode: 401 });
+  }
+
+  const roles = account.roles.map((entry) => entry.role.key);
+  assertPersonalDataLoginAllowed({
+    accountId: account.id,
+    loginName: account.loginName,
+    memberId: account.person?.member?.id,
+    roles,
+    isSandbox: (account as any).isSandbox,
+  });
+  const resolvedPermissions = await permissionsService.resolveForIdentity({
+    accountId: account.id,
+    loginName: account.loginName,
+    type: account.type,
+    roles,
+  });
+  const accessToken = signAccessToken({
+    accountId: account.id,
+    loginName: account.loginName,
+    type: account.type,
+  });
+  const refreshToken = createRefreshToken();
+  const expiresAt = new Date();
+  expiresAt.setDate(expiresAt.getDate() + 30);
+
+  await prisma.$transaction([
+    prisma.session.create({
+      data: {
+        accountId: account.id,
+        tokenHash: hashToken(accessToken),
+        ipAddress: meta.ipAddress,
+        userAgent: meta.userAgent,
+        terminalId: input.terminalId,
+      },
+    }),
+    prisma.refreshToken.create({
+      data: {
+        accountId: account.id,
+        tokenHash: hashToken(refreshToken),
+        ipAddress: meta.ipAddress,
+        userAgent: meta.userAgent,
+        expiresAt,
+      },
+    }),
+    prisma.account.update({ where: { id: account.id }, data: { lastLoginAt: new Date() } }),
+  ]);
+  await prisma.auditLog.create({
+    data: {
+      category: "AUTH",
+      event: "LOGIN_TWO_FACTOR_SUCCESS",
+      result: "SUCCESS",
+      accountId: account.id,
+      terminalId: input.terminalId,
+      ipAddress: meta.ipAddress,
+      userAgent: meta.userAgent,
+      severity: "INFO",
+    },
+  }).catch(() => undefined);
+
+  return {
+    accessToken,
+    refreshToken,
+    account: {
+      id: account.id,
+      loginName: account.loginName,
+      email: account.email,
+      type: account.type,
+      roles: resolvedPermissions.roles,
+      permissions: resolvedPermissions.permissions,
+      memberCapabilities: resolvedPermissions.memberCapabilities,
+      allowedWorkspaces: resolvedPermissions.allowedWorkspaces,
+      defaultWorkspace: resolvedPermissions.defaultWorkspace,
+    },
   };
 }
 

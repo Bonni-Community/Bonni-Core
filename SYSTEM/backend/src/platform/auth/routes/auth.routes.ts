@@ -1,15 +1,23 @@
 import { Router } from "express";
-import { AccountType, PrismaClient } from "@prisma/client";
+import { AccountType } from "@prisma/client";
 
+import { getServerPrismaClient } from "../../../core/database/database.js";
 import { LoginError, normalizeLoginError } from "../../../core/errors/login-error.js";
 import { listModuleManifests } from "../../module-manager/manifests/index.js";
-import type { ModuleManifestSummary } from "../../module-manager/types.js";
+import type {
+  ModuleAccessProfile,
+  ModuleManifestSummary,
+} from "../../module-manager/types.js";
 import { ensureLocalBootstrapAdminAccess } from "../bootstrap-admin-access.js";
 import { verifyPasswordRuntime } from "../password-runtime.js";
+import { isForbiddenInteractiveLoginName } from "../system-account-policy.js";
 import { coreTokenService } from "../token/core-token.service.js";
+import * as twoFactorService from "../../security/two-factor/services/two-factor.service.js";
 
 const router = Router();
-const prisma = new PrismaClient();
+// Accounts and sessions belong to Bonni Core. Authentication must therefore
+// never follow a local/app request surface into another database context.
+const prisma = getServerPrismaClient("core");
 
 type AccountWithAuth = Awaited<ReturnType<typeof findAccountForLogin>>;
 
@@ -27,6 +35,7 @@ type ResolvedModuleAccess = ModuleAccessSummary & {
   route: string | null;
   manifestRoute: string | null;
   workspace: string | null;
+  profiles: ModuleAccessProfile[];
 };
 
 function normalizeLoginName(value: unknown) {
@@ -65,6 +74,26 @@ async function findAccountForLogin(loginName: string) {
   });
 
   return account;
+}
+
+async function findAccountForLoginById(accountId: string) {
+  return prisma.account.findUnique({
+    where: { id: accountId },
+    include: {
+      person: { include: { member: true } },
+      roles: {
+        include: {
+          role: {
+            include: {
+              permissions: { include: { permission: true } },
+            },
+          },
+        },
+      },
+      accountMemberCapabilities: { include: { capability: true } },
+      authProvider: true,
+    },
+  });
 }
 
 async function repairBootstrapAdminAccess(account: NonNullable<AccountWithAuth>) {
@@ -241,22 +270,7 @@ function workspaceForPermission(value: unknown) {
   const permission = normalizePermission(value);
 
   if (["ADMIN", "ADMINISTRATOR", "SYSTEM_ADMIN"].includes(permission)) return "ADMIN";
-  if (["BAR", "BARKEEPER", "BARTENDER", "THEKE"].includes(permission)) return "BAR";
-  if (["KITCHEN", "KUECHE", "KUCHE", "KOCH", "COOK"].includes(permission)) return "KITCHEN";
-  if (["TABLE", "TABLES", "TABLEBS", "TISCH", "FENSTER", "TERMINAL"].includes(permission)) return "TABLE";
-  if ([
-    "MEMBER",
-    "MITGLIED",
-    "MANAGER",
-    "STOREMAN",
-    "TREASURER",
-    "HELPER",
-    "WAREHOUSE",
-    "LAGER",
-    "ACCOUNTING",
-    "CASHIER",
-    "KASSE",
-  ].includes(permission)) return "MEMBER";
+  if (["MEMBER", "MITGLIED"].includes(permission)) return "MEMBER";
 
   return null;
 }
@@ -265,13 +279,36 @@ function workspaceForAssignmentPermission(
   assignment: Pick<ModuleAccessSummary, "kind">,
   value: unknown,
 ) {
-  const workspace = workspaceForPermission(value);
+  // App permissions are opaque to Core. Every installed app opens in the
+  // neutral member shell; only the manifest/runtime interprets its role names.
+  if (assignment.kind === "app") return "MEMBER";
+  return workspaceForPermission(value);
+}
 
-  // "Administrator" inside an app is an app function. It must never route a
-  // user into the Bonni Core Control Center workspace.
-  if (assignment.kind === "app" && workspace === "ADMIN") return "MEMBER";
+function accessProfilesForManifest(manifest: ModuleManifestSummary | null) {
+  const profiles = manifest?.metadata?.accessProfiles;
+  return Array.isArray(profiles) ? profiles : [];
+}
 
-  return workspace;
+function profileMatchesPermission(profile: ModuleAccessProfile, value: unknown) {
+  const candidate = accessSlug(value, "");
+  if (!candidate) return false;
+  const permissionParts = profile.permission.split(".");
+  return (
+    accessSlug(profile.key, "") === candidate
+    || accessSlug(profile.label, "") === candidate
+    || accessSlug(profile.permission, "") === candidate
+    || accessSlug(permissionParts[permissionParts.length - 1], "") === candidate
+  );
+}
+
+function profileForPermission(
+  manifest: ModuleManifestSummary | null,
+  value: unknown,
+) {
+  return accessProfilesForManifest(manifest).find((profile) => (
+    profileMatchesPermission(profile, value)
+  )) || null;
 }
 
 function resolveModuleAccess(
@@ -290,6 +327,11 @@ function resolveModuleAccess(
       : assignment.kind === "app"
         ? `#${moduleKey}`
         : null;
+    const profiles = unique(
+      assignment.permissions.map((permission) => profileForPermission(manifest, permission)?.key),
+    ).flatMap((profileKey) => (
+      accessProfilesForManifest(manifest).filter((profile) => profile.key === profileKey)
+    ));
 
     return {
       ...assignment,
@@ -298,9 +340,15 @@ function resolveModuleAccess(
       appRoute,
       route,
       manifestRoute,
-      workspace: unique(
-        assignment.permissions.map((permission) => workspaceForAssignmentPermission(assignment, permission)),
-      )[0] || null,
+      workspace: unique([
+        ...profiles.map((profile) => profile.workspace),
+        ...assignment.permissions.map((permission) => (
+          profileForPermission(manifest, permission)
+            ? null
+            : workspaceForAssignmentPermission(assignment, permission)
+        )),
+      ])[0] || null,
+      profiles,
     };
   });
 }
@@ -316,7 +364,14 @@ function resolveWorkspaceAccess(
   assignments: ResolvedModuleAccess[],
 ) {
   const assignedWorkspaces = assignments.flatMap((assignment) => (
-    assignment.permissions.map((permission) => workspaceForAssignmentPermission(assignment, permission))
+    [
+      ...assignment.profiles.map((profile) => profile.workspace),
+      ...assignment.permissions.map((permission) => (
+        assignment.profiles.some((profile) => profileMatchesPermission(profile, permission))
+          ? null
+          : workspaceForAssignmentPermission(assignment, permission)
+      )),
+    ]
   ));
   const roleWorkspaces = account.roles.map((entry) => workspaceForPermission(entry.role.key));
   const allowedWorkspaces = unique([
@@ -469,6 +524,50 @@ async function createShell(account: NonNullable<AccountWithAuth>) {
   };
 }
 
+function requestMeta(req: any) {
+  return {
+    ip: req.ip || undefined,
+    userAgent: typeof req.headers?.["user-agent"] === "string"
+      ? req.headers["user-agent"]
+      : undefined,
+  };
+}
+
+async function completeInteractiveLogin(
+  account: NonNullable<AccountWithAuth>,
+  req: any,
+) {
+  const authenticatedAccount = await repairBootstrapAdminAccess(account);
+  const token = coreTokenService.issueToken({
+    accountId: authenticatedAccount.id,
+    loginName: authenticatedAccount.loginName,
+    source: "LOCAL",
+  });
+
+  await prisma.account.update({
+    where: { id: authenticatedAccount.id },
+    data: { lastLoginAt: new Date() },
+  });
+  await prisma.session.create({
+    data: {
+      accountId: authenticatedAccount.id,
+      tokenHash: null,
+      ipAddress: req.ip || null,
+      userAgent: req.headers?.["user-agent"] || null,
+    },
+  }).catch(() => null);
+
+  const shell = await createShell(authenticatedAccount);
+  return {
+    ok: true,
+    token,
+    accessToken: token,
+    user: shell.identity,
+    account: shell.identity,
+    shell,
+  };
+}
+
 async function getAccountFromRequest(req: any) {
   const accountId = req.user?.accountId || req.user?.id;
   if (!accountId) {
@@ -526,6 +625,14 @@ router.post("/login", async (req, res) => {
       throw new LoginError("LOGIN_PAYLOAD_INVALID", "Benutzername und Passwort erforderlich", 400);
     }
 
+    if (isForbiddenInteractiveLoginName(loginName)) {
+      throw new LoginError(
+        "LOGIN_NAME_FORBIDDEN",
+        "Dieser Benutzername ist für Systemzwecke gesperrt",
+        403,
+      );
+    }
+
     const account = await findAccountForLogin(loginName);
     if (!account) {
       throw new LoginError("ACCOUNT_NOT_FOUND", "Benutzer existiert nicht", 401);
@@ -553,37 +660,21 @@ router.post("/login", async (req, res) => {
     }
 
     const authenticatedAccount = await repairBootstrapAdminAccess(account);
+    if (await twoFactorService.hasActiveTwoFactor(authenticatedAccount.id)) {
+      const challenge = await twoFactorService.createChallenge(
+        authenticatedAccount.id,
+        { purpose: "LOGIN" },
+        requestMeta(req),
+      );
+      return res.status(202).json({
+        ok: true,
+        requiresTwoFactor: true,
+        challenge,
+        message: `Bitte die Zwei-Faktor-Authentifizierung (2FA) über ${challenge.providerLabel || "Bonni"} abschließen.`,
+      });
+    }
 
-    const token = coreTokenService.issueToken({
-      accountId: authenticatedAccount.id,
-      loginName: authenticatedAccount.loginName,
-      source: "LOCAL",
-    });
-
-    await prisma.account.update({
-      where: { id: authenticatedAccount.id },
-      data: { lastLoginAt: new Date() },
-    });
-
-    await prisma.session.create({
-      data: {
-        accountId: authenticatedAccount.id,
-        tokenHash: null,
-        ipAddress: req.ip || null,
-        userAgent: req.headers?.["user-agent"] || null,
-      },
-    }).catch(() => null);
-
-    const shell = await createShell(authenticatedAccount);
-
-    res.json({
-      ok: true,
-      token,
-      accessToken: token,
-      user: shell.identity,
-      account: shell.identity,
-      shell,
-    });
+    return res.json(await completeInteractiveLogin(authenticatedAccount, req));
   } catch (error: unknown) {
     const normalized = normalizeLoginError(error);
     res.status(normalized.status).json({
@@ -593,11 +684,57 @@ router.post("/login", async (req, res) => {
   }
 });
 
-router.post("/login/2fa", (_req, res) => {
-  res.status(501).json({
-    code: "TWO_FACTOR_NOT_CONFIGURED",
-    message: "2FA ist im Bonni-Core-Basislogin noch nicht aktiv.",
-  });
+router.post("/login/2fa", async (req, res) => {
+  try {
+    const challengeId = String(req.body?.challengeId || "").trim();
+    const code = String(req.body?.code || "").trim();
+    const recoveryCode = String(req.body?.recoveryCode || "").trim();
+    const token = String(req.body?.token || "").trim();
+    const password = String(req.body?.password || "");
+    if (
+      !challengeId
+      || (!code && !recoveryCode && !token)
+      || code.length > 128
+      || recoveryCode.length > 80
+      || token.length > 128
+      || password.length > 256
+      || /[\r\n]/.test(code + token + password)
+    ) {
+      throw Object.assign(new Error("TWO_FACTOR_LOGIN_PAYLOAD_INVALID"), {
+        code: "TWO_FACTOR_LOGIN_PAYLOAD_INVALID",
+        statusCode: 400,
+      });
+    }
+
+    const verified = await twoFactorService.verifyLoginChallenge(
+      challengeId,
+      {
+        code: code || undefined,
+        recoveryCode: recoveryCode || undefined,
+        token: token || undefined,
+        password: password || undefined,
+      },
+      requestMeta(req),
+    );
+    await twoFactorService.consumeVerifiedChallenge({
+      accountId: verified.accountId,
+      challengeId,
+      purpose: "LOGIN",
+    });
+
+    const account = await findAccountForLoginById(verified.accountId);
+    if (!account?.isActive || account.type === AccountType.SERVICE) {
+      throw new LoginError("ACCOUNT_DISABLED", "Benutzer deaktiviert", 403);
+    }
+    return res.json(await completeInteractiveLogin(account, req));
+  } catch (error: unknown) {
+    const normalized = normalizeLoginError(error);
+    return res.status(normalized.status).json({
+      code: normalized.code,
+      message: normalized.message,
+      details: (error as any)?.details,
+    });
+  }
 });
 
 router.post("/logout", (_req, res) => {

@@ -1,0 +1,125 @@
+// Protected organization data. Core and apps reference organizationId only.
+
+model OrganizationProfile {
+  organizationId              String   @id
+  legalNameEncrypted          String
+  shortNameEncrypted          String?
+  registrationNumberEncrypted String?
+  taxNumberEncrypted          String?
+  vatIdEncrypted              String?
+  creditorIdentifierEncrypted String?
+  creditorIdentifierHash      String?
+  emailEncrypted              String?
+  phoneEncrypted              String?
+  encryptionVersion           Int      @default(1)
+  keyVersion                  Int      @default(1)
+  createdAt                   DateTime @default(now())
+  updatedAt                   DateTime @updatedAt
+
+  @@index([creditorIdentifierHash])
+}
+
+model OrganizationAddress {
+  id                    String   @id @default(cuid())
+  organizationId        String
+  type                  String   @default("PRIMARY")
+  recipientEncrypted    String?
+  streetEncrypted       String?
+  houseNumberEncrypted  String?
+  postalCodeEncrypted   String?
+  cityEncrypted         String?
+  regionEncrypted       String?
+  countryEncrypted      String?
+  noteEncrypted         String?
+  validFrom             DateTime?
+  validUntil            DateTime?
+  encryptionVersion     Int      @default(1)
+  keyVersion            Int      @default(1)
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+
+  @@index([organizationId, type])
+}
+
+model OrganizationBankAccount {
+  id                      String   @id @default(cuid())
+  organizationId          String
+  purpose                 String   @default("OPERATING")
+  accountHolderEncrypted  String
+  ibanEncrypted           String
+  bicEncrypted            String?
+  providerReferenceEncrypted String?
+  ibanLast4               String?
+  active                  Boolean  @default(true)
+  verifiedAt              DateTime?
+  encryptionVersion       Int      @default(1)
+  keyVersion              Int      @default(1)
+  createdAt               DateTime @default(now())
+  updatedAt               DateTime @updatedAt
+
+  @@index([organizationId, purpose, active])
+}
+
+model OrganizationContract {
+  id                        String   @id @default(cuid())
+  organizationId            String
+  contractType              String
+  titleEncrypted            String
+  counterpartyEncrypted     String?
+  contractNumberEncrypted   String?
+  billingIntervalEncrypted  String?
+  amountEncrypted           String?
+  paymentMethodEncrypted    String?
+  paymentAccountEncrypted   String?
+  notesEncrypted            String?
+  documentFileNameEncrypted String?
+  documentMimeTypeEncrypted String?
+  documentSizeInBytes       Int?
+  documentChecksum          String?
+  documentDataEncrypted     String?
+  startsAt                  DateTime?
+  endsAt                    DateTime?
+  noticeAt                  DateTime?
+  nextDueAt                 DateTime?
+  status                    String   @default("ACTIVE")
+  encryptionVersion         Int      @default(1)
+  keyVersion                Int      @default(1)
+  createdAt                 DateTime @default(now())
+  updatedAt                 DateTime @updatedAt
+
+  @@index([organizationId, contractType, status])
+  @@index([organizationId, documentChecksum])
+  @@index([endsAt])
+  @@index([noticeAt])
+  @@index([nextDueAt, status])
+}
+
+model OrganizationDocument {
+  id                  String   @id @default(cuid())
+  organizationId      String
+  sourceModuleKey     String?
+  sourceReferenceHash String?
+  categoryEncrypted   String
+  titleEncrypted      String
+  descriptionEncrypted String?
+  fileNameEncrypted   String
+  mimeTypeEncrypted   String
+  sizeInBytes         Int
+  checksum            String
+  objectKey           String   @unique
+  validFrom           DateTime?
+  validUntil          DateTime?
+  archivedAt          DateTime?
+  status              String   @default("ACTIVE")
+  uploadedByAccountId String?
+  encryptionVersion   Int      @default(1)
+  keyVersion          Int      @default(1)
+  storageVersion      Int      @default(1)
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  @@index([organizationId, status, archivedAt])
+  @@index([checksum])
+  @@index([validUntil])
+  @@unique([organizationId, sourceModuleKey, sourceReferenceHash])
+}

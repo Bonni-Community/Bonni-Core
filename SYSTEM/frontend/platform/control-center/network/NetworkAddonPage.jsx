@@ -60,7 +60,7 @@ export default function NetworkAddonPage({
   if (!enabled) {
     return (
       <section className="cc-network-addon-notice" aria-labelledby="cc-network-addon-title">
-        <span>Bonni Core Netzwerk</span>
+        <span>Network</span>
         <h1 id="cc-network-addon-title">Add-on ist installiert, aber deaktiviert</h1>
         <p>Aktiviere das Paket im Store. Danach wird die Netzwerkverwaltung ohne erneute Installation geladen.</p>
         <button type="button" onClick={onOpenStore}>Zum Store</button>
@@ -71,7 +71,7 @@ export default function NetworkAddonPage({
   if (!entryUrl || frontend.integration !== "iframe") {
     return (
       <section className="cc-network-addon-notice" aria-labelledby="cc-network-addon-title">
-        <span>Bonni Core Netzwerk</span>
+        <span>Network</span>
         <h1 id="cc-network-addon-title">Oberfläche nicht verfügbar</h1>
         <p>Das installierte Manifest enthält keinen gültigen iframe-Einstieg für die Netzwerkverwaltung.</p>
         <button type="button" onClick={onOpenStore}>Paket im Store prüfen</button>
@@ -80,12 +80,12 @@ export default function NetworkAddonPage({
   }
 
   return (
-    <section className="cc-network-addon-page" aria-label="Bonni Core Netzwerk">
+    <section className="cc-network-addon-page" aria-label="Network">
       <iframe
         ref={frameRef}
         className="cc-network-addon-frame"
         src={entryUrl.href}
-        title="Bonni Core Netzwerk"
+        title="Network"
         onLoad={sendContext}
         sandbox="allow-scripts allow-same-origin allow-forms allow-downloads"
       />

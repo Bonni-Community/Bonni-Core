@@ -6,6 +6,7 @@ import FunctionsTab from "./tab/FunctionsTab.jsx";
 import SessionsTab from "./tab/SessionsTab.jsx";
 import ProtocolTab from "./tab/ProtocolTab.jsx";
 import { updateControlCenterLocalMemberProfile } from "../../../../../system/api/controlCenterUsersApi.js";
+import { isBootstrapAdminLoginName } from "../../../../../system/auth/systemAccountPolicy.js";
 import {
   ADD_ON_SURFACE,
   APP_SURFACE,
@@ -386,6 +387,7 @@ export default function MemberActionWindow({
   }, [activeTab]);
 
   const loginName = getLoginName(draftMember);
+  const bootstrapAdmin = isBootstrapAdminLoginName(loginName);
   const accessDraft = draftMember?.accessDraft || {};
   const selectedSurfaces = accessDraft.surface ? [accessDraft.surface] : [];
   const selectedUsages = accessDraft.usage ? [accessDraft.usage] : [];
@@ -411,17 +413,19 @@ export default function MemberActionWindow({
   const footerButtonDisabled = actionBusy || Boolean(isAccessFooterActionActive && accessFooterAction?.disabled);
 
   const updateAccessDraft = useCallback((updater) => {
+    if (bootstrapAdmin) return;
     setActionError("");
     setDraftMember((currentMember) => {
       const currentAccessDraft = currentMember?.accessDraft || createAccessDraft(currentMember, moduleCatalog);
       const nextAccessDraft = typeof updater === "function" ? updater(currentAccessDraft) : updater;
       return applyAccessDraftToMember(currentMember, nextAccessDraft, moduleCatalog);
     });
-  }, [moduleCatalog]);
+  }, [bootstrapAdmin, moduleCatalog]);
 
   const handleLoginNameChange = useCallback((nextLoginName) => {
+    if (bootstrapAdmin) return;
     setDraftMember((currentMember) => updatePrimaryLoginName(currentMember, nextLoginName));
-  }, []);
+  }, [bootstrapAdmin]);
 
   const handleDisplayNameChange = useCallback((nextDisplayName) => {
     setDraftMember((currentMember) => ({
@@ -432,11 +436,12 @@ export default function MemberActionWindow({
   }, []);
 
   const handleStatusToggle = useCallback(() => {
+    if (bootstrapAdmin) return;
     setDraftMember((currentMember) => {
       const nextStatus = isActiveStatus(currentMember?.status) ? "Deaktiviert" : "Aktiviert";
       return { ...currentMember, status: nextStatus, statusTone: getStatusTone(nextStatus) };
     });
-  }, []);
+  }, [bootstrapAdmin]);
 
   const handleUsageSelect = useCallback((usage) => {
     updateAccessDraft((currentDraft) => {
@@ -634,6 +639,8 @@ export default function MemberActionWindow({
                 type="button"
                 className={`cc-member-window__status-toggle cc-member-window__status-toggle--${getStatusTone(draftMember?.status)}`}
                 onClick={handleStatusToggle}
+                disabled={bootstrapAdmin}
+                title={bootstrapAdmin ? "Der feste Systembenutzer admin muss aktiv bleiben." : undefined}
                 aria-label={isActiveStatus(draftMember?.status) ? "Benutzer deaktivieren" : "Benutzer aktivieren"}
               >
                 {getStatusActionLabel(draftMember?.status)}
@@ -679,6 +686,7 @@ export default function MemberActionWindow({
                   onModuleToggle={handleModuleToggle}
                   onSurfaceSelect={handleSurfaceSelect}
                   onUsageSelect={handleUsageSelect}
+                  bootstrapAdmin={bootstrapAdmin}
                 />
               ) : null}
               {tab === "zugang" ? (
@@ -689,6 +697,7 @@ export default function MemberActionWindow({
                   onDeleted={handleMemberDeleted}
                   onBusyChange={setActionBusy}
                   onFooterActionChange={setAccessFooterAction}
+                  bootstrapAdmin={bootstrapAdmin}
                 />
               ) : null}
               {tab === "funktionen" ? (

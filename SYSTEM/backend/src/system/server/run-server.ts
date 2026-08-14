@@ -12,6 +12,7 @@ import { getSystemRuntimeConfig } from "../runtime/index.js";
 import { preloadPersonalDataMasterKeyIfConfigured } from "../../platform/security/crypto/index.js";
 import { scheduleEmergencyAutoStart } from "../../platform/security/control/emergency-backend/index.js";
 import { startCoreUpdateScheduler } from "../routes/control-api/update-center/index.js";
+import { seedSystemDatabase } from "../database/seed-system.js";
 
 function errorDetails(error: unknown) {
   if (error instanceof Error) {
@@ -133,6 +134,24 @@ try {
       runtime,
     });
   }
+
+  // `npm start` must never expose the platform login before the central Core
+  // database is actually ready. This idempotent bootstrap uses the very same
+  // routed Core client as /api/identity/auth/login: it creates a missing
+  // `admin` account, repairs its technical role/provider links and verifies
+  // that the login path can read it. Existing passwords and business data are
+  // deliberately preserved.
+  logger.info("Central login bootstrap started", {
+    module: "auth.bootstrap",
+    loginName: "admin",
+    runtime,
+  });
+  await seedSystemDatabase();
+  logger.info("Central login bootstrap completed", {
+    module: "auth.bootstrap",
+    loginName: "admin",
+    runtime,
+  });
 
   const app = await createPlatformApp();
 

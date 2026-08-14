@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 
-import { loginWithPassword } from "../api/accessApi.js";
+import { loginWithPassword, loginWithTwoFactor } from "../api/accessApi.js";
 import {
   fetchShell,
   heartbeatSession,
@@ -8,15 +8,15 @@ import {
 } from "../api/sessionApi.js";
 
 function normalizeWorkspace(workspace, fallback = "MEMBER") {
-  const normalized = String(workspace || fallback).trim().toUpperCase();
-
-  if (normalized === "BARTENDER") return "BAR";
-  if (normalized === "COOK" || normalized === "KUECHE" || normalized === "KÜCHE") return "KITCHEN";
-  if (normalized === "TISCH") return "TABLE";
-  if (["MANAGER", "STOREMAN", "TREASURER", "HELPER", "WAREHOUSE", "ACCOUNTING"].includes(normalized)) {
-    return "MEMBER";
-  }
-
+  const normalized = String(workspace || fallback)
+    .trim()
+    .toUpperCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^A-Z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+  if (["ADMIN", "ADMINISTRATOR", "SYSTEM_ADMIN"].includes(normalized)) return "ADMIN";
+  if (["MEMBER", "MITGLIED"].includes(normalized)) return "MEMBER";
   return normalized || fallback;
 }
 
@@ -33,28 +33,10 @@ function workspaceFromPermission(value) {
     .replace(/[^A-Z0-9]+/g, "_")
     .replace(/^_+|_+$/g, "");
 
-  if (["ADMIN", "ADMINISTRATOR", "SYSTEM_ADMIN"].includes(permission)) return "ADMIN";
-  if (["BAR", "BARKEEPER", "BARTENDER", "THEKE"].includes(permission)) return "BAR";
-  if (["KITCHEN", "KUECHE", "KUCHE", "KOCH", "COOK"].includes(permission)) return "KITCHEN";
-  if (["TABLE", "TABLES", "TISCH", "TERMINAL"].includes(permission)) return "TABLE";
-  if ([
-    "MEMBER",
-    "MITGLIED",
-    "MANAGER",
-    "STOREMAN",
-    "TREASURER",
-    "HELPER",
-    "WAREHOUSE",
-    "LAGER",
-    "ACCOUNTING",
-    "CASHIER",
-    "KASSE",
-  ].includes(permission)) return "MEMBER";
-
-  return null;
+  return permission ? normalizeWorkspace(permission) : null;
 }
 
-function getAssignedWorkspaces(user, shell) {
+export function getAssignedWorkspaces(user, shell) {
   const moduleAccess = [
     ...list(user?.moduleAccess),
     ...list(user?.permissions?.moduleAccess),
@@ -64,10 +46,12 @@ function getAssignedWorkspaces(user, shell) {
   const moduleWorkspaces = moduleAccess.flatMap((entry) => {
     if (!entry || typeof entry !== "object") return [];
 
-    return [
-      ...(entry.workspace ? [normalizeWorkspace(entry.workspace)] : []),
-      ...list(entry.permissions).map(workspaceFromPermission),
-    ].filter(Boolean);
+    const explicitWorkspace = String(entry.workspace || "").trim();
+    if (explicitWorkspace) {
+      return [normalizeWorkspace(explicitWorkspace)].filter(Boolean);
+    }
+
+    return list(entry.permissions).map(workspaceFromPermission).filter(Boolean);
   });
   const roles = [
     ...list(user?.roles),
@@ -90,10 +74,13 @@ function getAssignedWorkspaces(user, shell) {
     return workspace ? [workspace] : [];
   });
 
-  return [...new Set([
-    ...moduleWorkspaces,
-    ...workspaces.map((workspace) => normalizeWorkspace(workspace)),
-  ].filter(Boolean))];
+  if (moduleWorkspaces.length) {
+    return [...new Set(moduleWorkspaces)];
+  }
+
+  return [...new Set(
+    workspaces.map((workspace) => normalizeWorkspace(workspace)).filter(Boolean)
+  )];
 }
 
 function hasAdminMarker(user, shell) {
@@ -163,9 +150,17 @@ function getAllowedWorkspacesFromShell(shell, user) {
 const INACTIVITY_TIMEOUT_MS = 60 * 60 * 1000;
 const HEARTBEAT_INTERVAL_MS = 5 * 60 * 1000;
 const SHELL_REFRESH_INTERVAL_MS = 15 * 60 * 1000;
+const SESSION_MESSAGE_KEY = "bonni.sessionMessage";
 
-const PERSONAL_WORKSPACES = ["MEMBER", "ADMIN"];
-const TERMINAL_WORKSPACES = ["BAR", "KITCHEN", "TABLE"];
+function readSessionMessage() {
+  try {
+    const value = sessionStorage.getItem(SESSION_MESSAGE_KEY) || "";
+    sessionStorage.removeItem(SESSION_MESSAGE_KEY);
+    return value;
+  } catch {
+    return "";
+  }
+}
 
 function readStoredJson(key, fallback = null) {
   try {
@@ -221,18 +216,9 @@ function clearClientAuthStorage() {
   sessionStorage.removeItem("lastActivityAt");
 }
 
-function getWorkspaceMode(workspace) {
-  const normalized = normalizeWorkspace(workspace);
-
-  if (TERMINAL_WORKSPACES.includes(normalized)) {
-    return "TERMINAL";
-  }
-
-  if (PERSONAL_WORKSPACES.includes(normalized)) {
-    return "PERSONAL";
-  }
-
-  return "PERSONAL";
+function getWorkspaceMode(user, shell) {
+  const accountType = String(user?.type || shell?.identity?.type || "").trim().toUpperCase();
+  return accountType === "TERMINAL" ? "TERMINAL" : "PERSONAL";
 }
 
 export default function useSession() {
@@ -242,7 +228,10 @@ export default function useSession() {
 
   const [loginName, setLoginName] = useState("");
   const [password, setPassword] = useState("");
-  const [message, setMessage] = useState("");
+  const [twoFactorChallenge, setTwoFactorChallenge] = useState(null);
+  const [twoFactorCode, setTwoFactorCode] = useState("");
+  const [twoFactorPassword, setTwoFactorPassword] = useState("");
+  const [message, setMessage] = useState(readSessionMessage);
   const [shellLoading, setShellLoading] = useState(false);
 
   const [activeArea, setActiveAreaRaw] = useState(() => {
@@ -262,7 +251,7 @@ export default function useSession() {
 
   const gameActiveRef = useRef(false);
 
-  const workspaceMode = getWorkspaceMode(activeArea);
+  const workspaceMode = getWorkspaceMode(user, shell);
 
   function markActivity() {
     lastActivityRef.current = Date.now();
@@ -322,6 +311,9 @@ export default function useSession() {
     setUser(null);
     setShell(null);
     setPassword("");
+    setTwoFactorChallenge(null);
+    setTwoFactorCode("");
+    setTwoFactorPassword("");
     setMessage("");
     setActiveAreaRaw("MEMBER");
 
@@ -344,6 +336,15 @@ export default function useSession() {
         loginName,
         password,
       });
+
+      if (data?.requiresTwoFactor && data?.challenge?.id) {
+        setTwoFactorChallenge(data.challenge);
+        setTwoFactorCode("");
+        setTwoFactorPassword("");
+        setPassword("");
+        setMessage(data.message || "Bitte die Zwei-Faktor-Authentifizierung (2FA) abschließen.");
+        return;
+      }
 
       const nextToken = extractToken(data);
       const nextUser = extractUser(data);
@@ -382,6 +383,58 @@ export default function useSession() {
     } catch (error) {
       setMessage(error?.message || "Login fehlgeschlagen");
     }
+  }
+
+  async function submitTwoFactor(e) {
+    if (e?.preventDefault) e.preventDefault();
+    if (!twoFactorChallenge?.id) return;
+    setMessage("");
+
+    try {
+      const data = await loginWithTwoFactor({
+        challengeId: twoFactorChallenge.id,
+        code: twoFactorChallenge?.proofFields?.some((field) => field.name === "token")
+          ? undefined
+          : twoFactorCode,
+        token: twoFactorChallenge?.proofFields?.some((field) => field.name === "token")
+          ? twoFactorCode
+          : undefined,
+        password: twoFactorPassword || undefined,
+      });
+      const nextToken = extractToken(data);
+      const nextUser = extractUser(data);
+      const loginShell = extractShell(data);
+      if (!nextToken || !nextUser) throw new Error("Login Antwort ungültig");
+
+      markActivity();
+      setToken(nextToken);
+      setUser(nextUser);
+      setTwoFactorChallenge(null);
+      setTwoFactorCode("");
+      setTwoFactorPassword("");
+      localStorage.setItem("token", nextToken);
+      localStorage.setItem("user", JSON.stringify(nextUser));
+
+      if (loginShell) {
+        setShell(loginShell);
+        localStorage.setItem("shell", JSON.stringify(loginShell));
+        applyWorkspaceFromShell(loginShell, nextUser);
+      } else {
+        await loadShell(nextToken, nextUser);
+      }
+    } catch (error) {
+      setTwoFactorCode("");
+      setTwoFactorPassword("");
+      setMessage(error?.message || "Zwei-Faktor-Authentifizierung (2FA) fehlgeschlagen");
+    }
+  }
+
+  function cancelTwoFactor() {
+    setTwoFactorChallenge(null);
+    setTwoFactorCode("");
+    setTwoFactorPassword("");
+    setPassword("");
+    setMessage("");
   }
 
   function changeArea(nextArea) {
@@ -508,6 +561,9 @@ export default function useSession() {
 
     loginName,
     password,
+    twoFactorChallenge,
+    twoFactorCode,
+    twoFactorPassword,
     message,
     activeArea,
 
@@ -515,8 +571,12 @@ export default function useSession() {
 
     setLoginName,
     setPassword,
+    setTwoFactorCode,
+    setTwoFactorPassword,
 
     login,
+    submitTwoFactor,
+    cancelTwoFactor,
     logout,
     reloadShell: loadShell,
 

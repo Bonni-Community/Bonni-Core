@@ -182,7 +182,7 @@ const FALLBACK_SHELL_LINES = [
   "control-center ~ #",
 ];
 
-export default function ControlCenterStyle({ modules, overview, onOpenModule, onOpenPlaceholder }) {
+export default function ControlCenterStyle({ modules, overview, onOpenModule }) {
   function handleTileClick(tile) {
     const target = tile.targetModule ? findModule(modules, tile.targetModule) : null;
 
@@ -191,7 +191,6 @@ export default function ControlCenterStyle({ modules, overview, onOpenModule, on
       return;
     }
 
-    onOpenPlaceholder?.(tile);
   }
 
   const statusCards = buildStatusCards(overview);
@@ -206,8 +205,8 @@ export default function ControlCenterStyle({ modules, overview, onOpenModule, on
 
       <section className="cc-lower-grid" aria-label="Systemstatus und Shell">
         <div className="cc-status-cluster" aria-label="Status">
-          {statusCards.map((card) => (
-            <MetricCard key={card.key} {...card} />
+          {statusCards.map(({ key, ...cardProps }) => (
+            <MetricCard key={key} {...cardProps} />
           ))}
         </div>
 

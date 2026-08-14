@@ -3,14 +3,27 @@ import {
   AuthProviderType,
   ClubMembershipStatus,
   MemberStatus,
-  type Prisma,
+  Prisma,
 } from "@prisma/client";
 
 import { getPrismaClient } from "../../../core/database/database.js";
 import { hashPassword } from "../authentication/password-hash.helper.js";
+import {
+  BOOTSTRAP_ADMIN_LOGIN_NAME,
+  isBootstrapAdminLoginName,
+  isForbiddenInteractiveLoginName,
+} from "../system-account-policy.js";
 import { createAccountId, createMemberId } from "../../security/crypto/id.js";
 import { provisionAccountArchive } from "../../../system/routes/explorer/archive-account.service.js";
-import { publishUsersNetworkRecords } from "./users-network-data-adapter.js";
+import {
+  publishUserAccountDeletion,
+  publishUsersNetworkRecords,
+} from "./users-network-data-adapter.js";
+import { listModuleManifests } from "../../module-manager/manifests/index.js";
+import type {
+  ModuleAccessProfile,
+  ModuleManifestSummary,
+} from "../../module-manager/types.js";
 
 type CurrentUserContext = {
   accountId?: string | null;
@@ -38,8 +51,6 @@ type CreateLocalMemberInput = {
   joinedAt?: unknown;
   leftAt?: unknown;
   status?: unknown;
-  iban?: unknown;
-  bic?: unknown;
   password?: unknown;
   usage?: unknown;
   surface?: unknown;
@@ -58,6 +69,11 @@ type UpdateLocalMemberProfileInput = {
   moduleAccess?: unknown;
 };
 
+type UpdateLocalMemberAccessInput = {
+  email?: unknown;
+  password?: unknown;
+};
+
 type UpdateMemberByIdInput = {
   displayName?: unknown;
   firstName?: unknown;
@@ -69,8 +85,6 @@ type UpdateMemberByIdInput = {
   joinedAt?: unknown;
   leftAt?: unknown;
   status?: unknown;
-  iban?: unknown;
-  bic?: unknown;
 };
 
 type NormalizedModuleAccess = {
@@ -78,6 +92,7 @@ type NormalizedModuleAccess = {
   moduleKey: string;
   moduleName: string;
   permissions: string[];
+  profiles?: ModuleAccessProfile[];
 };
 
 export class UserMutationError extends Error {
@@ -143,9 +158,82 @@ function normalizeExplicitModuleAccess(value: unknown): NormalizedModuleAccess[]
 
 function normalizeModuleAccess(input: CreateLocalMemberInput): NormalizedModuleAccess[] {
   // Only a concrete module key may grant an app. Legacy fields such as the
-  // generic surface "App" are deliberately ignored because they cannot say
-  // whether StueberlApp, KontorApp, or another app was selected.
+  // generic surface "App" are deliberately ignored because they cannot name
+  // the selected installable module.
   return normalizeExplicitModuleAccess(input.moduleAccess);
+}
+
+function manifestKindForAccess(manifest: ModuleManifestSummary) {
+  if (manifest.kind === "addon") return "add-on";
+  if (manifest.kind === "plugin") return "plug-in";
+  return manifest.kind;
+}
+
+function profileMatchesPermission(profile: ModuleAccessProfile, value: unknown) {
+  const candidate = slug(value, "");
+  const permissionParts = profile.permission.split(".");
+  return Boolean(candidate) && [
+    profile.key,
+    profile.label,
+    profile.permission,
+    permissionParts[permissionParts.length - 1],
+  ].some((entry) => slug(entry, "") === candidate);
+}
+
+async function resolveModuleAccessProfiles(
+  access: NormalizedModuleAccess[],
+): Promise<NormalizedModuleAccess[]> {
+  if (!access.some((assignment) => assignment.kind !== "control-center")) {
+    return access;
+  }
+
+  const manifests = await listModuleManifests({ strict: true });
+  return access.map((assignment) => {
+    if (assignment.kind === "control-center") return assignment;
+    const requestedKey = slug(assignment.moduleKey, "");
+    const requestedName = slug(assignment.moduleName, "");
+    const manifest = manifests.find((candidate) => (
+      manifestKindForAccess(candidate) === assignment.kind
+      && (
+        slug(candidate.key, "") === requestedKey
+        || slug(candidate.name, "") === requestedName
+      )
+    ));
+    if (!manifest) {
+      throw new UserMutationError(
+        "MODULE_ACCESS_MANIFEST_NOT_FOUND",
+        `Das Modul „${assignment.moduleName}“ ist nicht installiert.`,
+        409,
+      );
+    }
+
+    const declaredProfiles = manifest.metadata?.accessProfiles;
+    if (!Array.isArray(declaredProfiles) || !declaredProfiles.length) {
+      throw new UserMutationError(
+        "MODULE_ACCESS_PROFILES_MISSING",
+        `Das Modul „${manifest.name}“ deklariert keine Zugriffsprofile.`,
+        409,
+      );
+    }
+    const profiles = assignment.permissions.map((permission) => {
+      const profile = declaredProfiles.find((entry) => profileMatchesPermission(entry, permission));
+      if (!profile) {
+        throw new UserMutationError(
+          "MODULE_ACCESS_PROFILE_INVALID",
+          `Die Funktion „${permission}“ ist für „${manifest.name}“ nicht deklariert.`,
+        );
+      }
+      return profile;
+    });
+    const uniqueProfiles = [...new Map(profiles.map((profile) => [profile.key, profile])).values()];
+    return {
+      ...assignment,
+      moduleKey: manifest.key,
+      moduleName: manifest.name,
+      permissions: uniqueProfiles.map((profile) => profile.key),
+      profiles: uniqueProfiles,
+    };
+  });
 }
 
 function isValidEmail(value: string) {
@@ -162,7 +250,25 @@ function accountTypeFor(input: CreateLocalMemberInput, access: NormalizedModuleA
     && assignment.permissions.some((permission) => slug(permission) === "administrator")
   ));
 
+  const profiles = access.flatMap((assignment) => assignment.profiles || []);
+  const profileUsages = new Set(profiles.map((profile) => profile.usage));
+  const profileAccountTypes = new Set(profiles.map((profile) => profile.accountType));
+  if (
+    profileUsages.size > 1
+    || profileAccountTypes.size > 1
+    || (hasControlCenterAdmin && profileUsages.has("technical"))
+  ) {
+    throw new UserMutationError(
+      "MODULE_ACCESS_PROFILE_CONFLICT",
+      "Lokale Mitglieds- und technische Zugriffsprofile brauchen getrennte Benutzerzugänge.",
+    );
+  }
   if (hasControlCenterAdmin) return AccountType.ADMIN;
+
+  const declaredAccountType = profiles[0]?.accountType;
+  if (declaredAccountType) {
+    return AccountType[declaredAccountType];
+  }
 
   const technical = isTechnicalUsage(input.usage)
     || access.some((assignment) => assignment.kind === "add-on" || assignment.kind === "plug-in");
@@ -197,16 +303,9 @@ function moduleKindLabel(kind: NormalizedModuleAccess["kind"]) {
   return "App";
 }
 
-function capabilityKey(permission: string) {
-  const normalized = slug(permission).replace(/-/g, "_").toUpperCase();
-  if (["MANAGER", "STOREMAN", "TREASURER", "HELPER"].includes(normalized)) return normalized;
-  return null;
-}
-
 export async function assertCanManageUsers(
   prisma: ReturnType<typeof getPrismaClient>,
   currentUser: CurrentUserContext | null | undefined,
-  { allowKontorManager = false } = {},
 ) {
   const accountId = cleanText(currentUser?.accountId || currentUser?.id, 160);
   const loginName = cleanText(currentUser?.loginName, 160).toLowerCase();
@@ -244,7 +343,6 @@ export async function assertCanManageUsers(
   const allowed = Boolean(account?.isActive) && (
     roleKeys.includes("admin")
     || permissionKeys.some((permission) => ["*", "system.admin", "auth.users.write"].includes(permission))
-    || (allowKontorManager && permissionKeys.includes("module.app-kontorapp.manager"))
   );
 
   if (!allowed) {
@@ -334,48 +432,18 @@ function accountActiveStatus(value: unknown, fallback: boolean) {
   return fallback;
 }
 
-function normalizeIban(value: unknown) {
-  const iban = cleanText(value, 80).replace(/\s+/g, "").toUpperCase();
-  if (!iban) return null;
-
-  if (!/^[A-Z]{2}[0-9]{2}[A-Z0-9]{11,30}$/.test(iban)) {
-    throw new UserMutationError("MEMBER_IBAN_INVALID", "Bitte eine gültige IBAN eingeben.");
-  }
-
-  const rearranged = `${iban.slice(4)}${iban.slice(0, 4)}`;
-  let remainder = 0;
-  for (const character of rearranged) {
-    const digits = /[A-Z]/.test(character)
-      ? String(character.charCodeAt(0) - 55)
-      : character;
-    for (const digit of digits) remainder = (remainder * 10 + Number(digit)) % 97;
-  }
-
-  if (remainder !== 1) {
-    throw new UserMutationError("MEMBER_IBAN_INVALID", "Die Prüfsumme der IBAN ist ungültig.");
-  }
-
-  return iban;
-}
-
-function normalizeBic(value: unknown) {
-  const bic = cleanText(value, 20).replace(/\s+/g, "").toUpperCase();
-  if (!bic) return null;
-  if (!/^[A-Z]{6}[A-Z0-9]{2}([A-Z0-9]{3})?$/.test(bic)) {
-    throw new UserMutationError("MEMBER_BIC_INVALID", "Bitte eine gültige BIC mit 8 oder 11 Zeichen eingeben.");
-  }
-  return bic;
-}
-
 async function assignModuleAccess(
   transaction: Prisma.TransactionClient,
   accountId: string,
   access: NormalizedModuleAccess[],
 ) {
   for (const assignment of access) {
-    for (const permissionLabel of assignment.permissions) {
-      const isAdministrator = assignment.kind === "control-center" && slug(permissionLabel) === "administrator";
-      const roleKey = isAdministrator ? "admin" : accessRoleKey(assignment, permissionLabel);
+    for (const permissionValue of assignment.permissions) {
+      const profile = assignment.profiles?.find((entry) => entry.key === permissionValue);
+      const permissionKeyPart = profile?.key || permissionValue;
+      const permissionLabel = profile?.label || permissionValue;
+      const isAdministrator = assignment.kind === "control-center" && slug(permissionKeyPart) === "administrator";
+      const roleKey = isAdministrator ? "admin" : accessRoleKey(assignment, permissionKeyPart);
       const roleLabel = isAdministrator
         ? "Administrator"
         : `${moduleKindLabel(assignment.kind)}: ${assignment.moduleName} · ${permissionLabel}`;
@@ -392,7 +460,7 @@ async function assignModuleAccess(
       });
 
       if (!isAdministrator) {
-        const permissionKey = accessPermissionKey(assignment, permissionLabel);
+        const permissionKey = profile?.permission || accessPermissionKey(assignment, permissionKeyPart);
         const permission = await transaction.permission.upsert({
           where: { key: permissionKey },
           update: { label: roleLabel },
@@ -411,25 +479,6 @@ async function assignModuleAccess(
         });
       }
 
-      const memberCapabilityKey = capabilityKey(permissionLabel);
-      if (memberCapabilityKey) {
-        const capability = await transaction.memberCapability.upsert({
-          where: { key: memberCapabilityKey as any },
-          update: { label: permissionLabel },
-          create: { key: memberCapabilityKey as any, label: permissionLabel },
-        });
-
-        await transaction.accountMemberCapability.upsert({
-          where: {
-            accountId_capabilityId: {
-              accountId,
-              capabilityId: capability.id,
-            },
-          },
-          update: {},
-          create: { accountId, capabilityId: capability.id },
-        });
-      }
     }
   }
 }
@@ -439,7 +488,7 @@ export async function createLocalMember(
   currentUser?: CurrentUserContext | null,
 ) {
   const prisma = getPrismaClient();
-  await assertCanManageUsers(prisma, currentUser, { allowKontorManager: true });
+  await assertCanManageUsers(prisma, currentUser);
 
   const createAccount = shouldCreateAccount(input.createAccount);
   const loginName = cleanText(input.loginName, 80).toLowerCase();
@@ -461,10 +510,10 @@ export async function createLocalMember(
     ? requestedLeftAt || new Date()
     : null;
   assertMembershipDates(joinedAt, leftAt);
-  const iban = normalizeIban(input.iban);
-  const bic = normalizeBic(input.bic);
   const password = String(input.password || "");
-  const moduleAccess = createAccount ? normalizeModuleAccess(input) : [];
+  const moduleAccess = createAccount
+    ? await resolveModuleAccessProfiles(normalizeModuleAccess(input))
+    : [];
 
   if (createAccount && !loginName) {
     throw new UserMutationError("LOCAL_MEMBER_LOGIN_REQUIRED", "Bitte einen Loginnamen eingeben.");
@@ -473,6 +522,13 @@ export async function createLocalMember(
     throw new UserMutationError(
       "LOCAL_MEMBER_LOGIN_INVALID",
       "Der Loginname darf nur Kleinbuchstaben, Zahlen, Punkt, Minus und Unterstrich enthalten.",
+    );
+  }
+  if (createAccount && isForbiddenInteractiveLoginName(loginName)) {
+    throw new UserMutationError(
+      "LOCAL_MEMBER_LOGIN_FORBIDDEN",
+      "Der Benutzername root ist für Systemzwecke gesperrt.",
+      409,
     );
   }
   if (!displayName) {
@@ -528,8 +584,6 @@ export async function createLocalMember(
               membershipStatus: normalizedClubStatus,
               joinedAt,
               leftAt,
-              iban,
-              bic,
             },
           })
         : null;
@@ -606,7 +660,7 @@ export async function updateMemberById(
   currentUser?: CurrentUserContext | null,
 ) {
   const prisma = getPrismaClient();
-  await assertCanManageUsers(prisma, currentUser, { allowKontorManager: true });
+  await assertCanManageUsers(prisma, currentUser);
 
   const memberId = cleanText(memberIdValue, 160);
   if (!memberId) {
@@ -644,8 +698,6 @@ export async function updateMemberById(
     ? requestedLeftAt || new Date()
     : null;
   assertMembershipDates(joinedAt, leftAt);
-  const iban = input.iban === undefined ? existing.iban : normalizeIban(input.iban);
-  const bic = input.bic === undefined ? existing.bic : normalizeBic(input.bic);
 
   if (!displayName) {
     throw new UserMutationError("MEMBER_DISPLAY_NAME_REQUIRED", "Bitte Vorname oder Nachname eingeben.");
@@ -674,8 +726,6 @@ export async function updateMemberById(
         membershipStatus: normalizedClubStatus,
         joinedAt,
         leftAt,
-        iban,
-        bic,
       },
     });
 
@@ -707,7 +757,7 @@ export async function getMemberDetailsById(
   currentUser?: CurrentUserContext | null,
 ) {
   const prisma = getPrismaClient();
-  await assertCanManageUsers(prisma, currentUser, { allowKontorManager: true });
+  await assertCanManageUsers(prisma, currentUser);
 
   const memberId = cleanText(memberIdValue, 160);
   if (!memberId) {
@@ -758,8 +808,6 @@ export async function getMemberDetailsById(
         : member.membershipStatus,
       joinedAt: member.joinedAt?.toISOString() || null,
       leftAt: member.leftAt?.toISOString() || null,
-      iban: member.iban,
-      bic: member.bic,
       accounts: member.person.accounts.map((account) => ({
         accountId: account.id,
         id: account.id,
@@ -788,22 +836,52 @@ export async function updateLocalMemberProfile(
 
   const existing = await prisma.account.findUnique({
     where: { id: accountId },
-    include: { person: true },
+    include: {
+      person: {
+        include: { member: true },
+      },
+    },
   });
   if (!existing) {
     throw new UserMutationError("LOCAL_MEMBER_NOT_FOUND", "Der Benutzer wurde nicht gefunden.", 404);
   }
 
-  const loginName = cleanText(input.loginName, 80).toLowerCase() || existing.loginName;
+  const requestedLoginName = cleanText(input.loginName, 80).toLowerCase();
+  const bootstrapAdmin = isBootstrapAdminLoginName(existing.loginName);
+  if (bootstrapAdmin && requestedLoginName && requestedLoginName !== BOOTSTRAP_ADMIN_LOGIN_NAME) {
+    throw new UserMutationError(
+      "BOOTSTRAP_ADMIN_LOGIN_IMMUTABLE",
+      "Der feste Systembenutzer admin kann nicht umbenannt werden.",
+      409,
+    );
+  }
+  if (!bootstrapAdmin && isForbiddenInteractiveLoginName(requestedLoginName)) {
+    throw new UserMutationError(
+      "LOCAL_MEMBER_LOGIN_FORBIDDEN",
+      "Der Benutzername root ist für Systemzwecke gesperrt.",
+      409,
+    );
+  }
+  const loginName = bootstrapAdmin
+    ? BOOTSTRAP_ADMIN_LOGIN_NAME
+    : requestedLoginName || existing.loginName;
   const displayName = cleanText(input.displayName, 160) || existing.person?.displayName || loginName;
-  const updatesModuleAccess = Array.isArray(input.moduleAccess);
+  const updatesModuleAccess = !bootstrapAdmin && Array.isArray(input.moduleAccess);
   const moduleAccess = updatesModuleAccess
-    ? normalizeExplicitModuleAccess(input.moduleAccess)
+    ? await resolveModuleAccessProfiles(normalizeExplicitModuleAccess(input.moduleAccess))
     : [];
   const status = cleanText(input.status, 40).toLowerCase();
-  const isActive = typeof input.isActive === "boolean"
+  const requestedIsActive = typeof input.isActive === "boolean"
     ? input.isActive
     : accountActiveStatus(status, existing.isActive);
+  if (bootstrapAdmin && !requestedIsActive) {
+    throw new UserMutationError(
+      "BOOTSTRAP_ADMIN_DEACTIVATION_FORBIDDEN",
+      "Der feste Systembenutzer admin muss aktiv bleiben.",
+      409,
+    );
+  }
+  const isActive = bootstrapAdmin ? true : requestedIsActive;
   const usageLabels = asStringArray(input.usageLabels);
 
   if (!/^[a-z0-9][a-z0-9._-]*$/.test(loginName)) {
@@ -812,9 +890,22 @@ export async function updateLocalMemberProfile(
       "Der Loginname darf nur Kleinbuchstaben, Zahlen, Punkt, Minus und Unterstrich enthalten.",
     );
   }
-  const accountType = updatesModuleAccess
+  const accountType = bootstrapAdmin
+    ? AccountType.ADMIN
+    : updatesModuleAccess
     ? accountTypeFor({ usage: usageLabels.join(" ") }, moduleAccess)
     : existing.type;
+  if (
+    updatesModuleAccess
+    && existing.person?.member
+    && accountType !== AccountType.MEMBER
+  ) {
+    throw new UserMutationError(
+      "TECHNICAL_ACCESS_REQUIRES_SEPARATE_ACCOUNT",
+      "Technische Funktionen benötigen einen getrennten Benutzerzugang und dürfen nicht dem Mitgliedslogin zugewiesen werden.",
+      409,
+    );
+  }
 
   try {
     const result = await prisma.$transaction(async (transaction) => {
@@ -910,4 +1001,204 @@ export async function updateLocalMemberProfile(
     }
     throw error;
   }
+}
+
+export async function updateLocalMemberAccess(
+  accountIdValue: unknown,
+  input: UpdateLocalMemberAccessInput,
+  currentUser?: CurrentUserContext | null,
+) {
+  const prisma = getPrismaClient();
+  await assertCanManageUsers(prisma, currentUser);
+
+  const accountId = cleanText(accountIdValue, 160);
+  if (!accountId) {
+    throw new UserMutationError("LOCAL_MEMBER_ACCOUNT_REQUIRED", "Der Benutzerzugang fehlt.");
+  }
+  const existing = await prisma.account.findUnique({
+    where: { id: accountId },
+    include: { authProvider: true },
+  });
+  if (!existing) {
+    throw new UserMutationError("LOCAL_MEMBER_NOT_FOUND", "Der Benutzer wurde nicht gefunden.", 404);
+  }
+
+  const updatesEmail = Object.prototype.hasOwnProperty.call(input, "email");
+  const updatesPassword = Object.prototype.hasOwnProperty.call(input, "password");
+  if (!updatesEmail && !updatesPassword) {
+    throw new UserMutationError(
+      "LOCAL_MEMBER_ACCESS_UPDATE_EMPTY",
+      "Es wurden keine Zugangsdaten zum Ändern übergeben.",
+    );
+  }
+
+  const email = updatesEmail ? cleanText(input.email, 200).toLowerCase() || null : existing.email;
+  if (email && !isValidEmail(email)) {
+    throw new UserMutationError("LOCAL_MEMBER_EMAIL_INVALID", "Bitte eine gültige E-Mail-Adresse eingeben.");
+  }
+
+  let passwordHash: string | undefined;
+  if (updatesPassword) {
+    if (existing.authProvider.type !== AuthProviderType.LOCAL) {
+      throw new UserMutationError(
+        "LOCAL_MEMBER_PASSWORD_PROVIDER_INVALID",
+        "Das Passwort dieses Zugangs wird vom externen Anmeldeanbieter verwaltet.",
+        409,
+      );
+    }
+    const password = String(input.password || "");
+    if (password.length < 6) {
+      throw new UserMutationError("LOCAL_MEMBER_PASSWORD_TOO_SHORT", "Das Passwort muss mindestens 6 Zeichen haben.");
+    }
+    passwordHash = await hashPassword(password);
+  }
+
+  const account = await prisma.account.update({
+    where: { id: accountId },
+    data: {
+      ...(updatesEmail ? { email } : {}),
+      ...(passwordHash ? { passwordHash } : {}),
+    },
+    select: {
+      id: true,
+      loginName: true,
+      email: true,
+      type: true,
+      isActive: true,
+      personId: true,
+    },
+  });
+
+  await publishUsersNetworkRecords({ accountIds: [account.id] }, {
+    accountId: currentUser?.accountId || currentUser?.id || null,
+    loginName: currentUser?.loginName || null,
+  }).catch((error) => {
+    console.warn("[core.auth.users] Network data adapter could not publish the access update", {
+      error: error instanceof Error ? error.message : String(error),
+    });
+  });
+
+  return {
+    ok: true,
+    updated: true,
+    account: {
+      ...account,
+      accountId: account.id,
+    },
+  };
+}
+
+export async function deleteLocalMemberAccount(
+  accountIdValue: unknown,
+  currentUser?: CurrentUserContext | null,
+) {
+  const prisma = getPrismaClient();
+  await assertCanManageUsers(prisma, currentUser);
+
+  const accountId = cleanText(accountIdValue, 160);
+  if (!accountId) {
+    throw new UserMutationError("LOCAL_MEMBER_ACCOUNT_REQUIRED", "Der Benutzerzugang fehlt.");
+  }
+
+  const actorAccount = await prisma.account.findFirst({
+    where: {
+      OR: [
+        ...(cleanText(currentUser?.accountId || currentUser?.id, 160)
+          ? [{ id: cleanText(currentUser?.accountId || currentUser?.id, 160) }]
+          : []),
+        ...(cleanText(currentUser?.loginName, 160)
+          ? [{ loginName: cleanText(currentUser?.loginName, 160).toLowerCase() }]
+          : []),
+      ],
+    },
+    select: { id: true },
+  });
+  if (actorAccount?.id === accountId) {
+    throw new UserMutationError(
+      "LOCAL_MEMBER_SELF_DELETE_FORBIDDEN",
+      "Der aktuell verwendete Benutzerzugang kann nicht selbst gelöscht werden.",
+      409,
+    );
+  }
+
+  const deleted = await prisma.$transaction(async (transaction) => {
+    const existing = await transaction.account.findUnique({
+      where: { id: accountId },
+      include: {
+        roles: {
+          include: { role: true },
+        },
+      },
+    });
+    if (!existing) {
+      throw new UserMutationError("LOCAL_MEMBER_NOT_FOUND", "Der Benutzer wurde nicht gefunden.", 404);
+    }
+
+    if (isBootstrapAdminLoginName(existing.loginName)) {
+      throw new UserMutationError(
+        "BOOTSTRAP_ADMIN_DELETE_FORBIDDEN",
+        "Der feste Systembenutzer admin kann nicht gelöscht werden.",
+        409,
+      );
+    }
+
+    const isAdministrator = existing.roles.some(({ role }) => role.key === "admin");
+    if (isAdministrator) {
+      const remainingAdministrators = await transaction.account.count({
+        where: {
+          id: { not: accountId },
+          isActive: true,
+          roles: { some: { role: { key: "admin" } } },
+        },
+      });
+      if (remainingAdministrators < 1) {
+        throw new UserMutationError(
+          "LOCAL_MEMBER_LAST_ADMIN_DELETE_FORBIDDEN",
+          "Der letzte aktive Administrator kann nicht gelöscht werden.",
+          409,
+        );
+      }
+    }
+
+    const protectedGrants = await transaction.archiveFolderGrant.count({
+      where: { grantedByAccountId: accountId },
+    });
+    if (protectedGrants > 0) {
+      throw new UserMutationError(
+        "LOCAL_MEMBER_DELETE_BLOCKED_BY_ARCHIVE_GRANTS",
+        "Der Benutzer hat noch nachvollziehbare Archivfreigaben erteilt. Diese müssen zuerst übertragen oder widerrufen werden.",
+        409,
+      );
+    }
+
+    await transaction.accountRole.deleteMany({ where: { accountId } });
+    await transaction.accountMemberCapability.deleteMany({ where: { accountId } });
+    await transaction.session.deleteMany({ where: { accountId } });
+    await transaction.refreshToken.deleteMany({ where: { accountId } });
+    await transaction.externalIdentity.deleteMany({ where: { accountId } });
+    await transaction.account.delete({ where: { id: accountId } });
+
+    return {
+      accountId: existing.id,
+      loginName: existing.loginName,
+      personId: existing.personId,
+    };
+  }, {
+    isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+  });
+
+  await publishUserAccountDeletion(deleted.accountId, {
+    accountId: actorAccount?.id || currentUser?.accountId || currentUser?.id || null,
+    loginName: currentUser?.loginName || null,
+  }).catch((error) => {
+    console.warn("[core.auth.users] Network data adapter could not publish the account deletion", {
+      error: error instanceof Error ? error.message : String(error),
+    });
+  });
+
+  return {
+    ok: true,
+    deleted: true,
+    ...deleted,
+  };
 }

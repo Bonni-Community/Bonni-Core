@@ -73,12 +73,19 @@ function toPrismaEvent(type: ModuleInstallEventType) {
   return type.toUpperCase() as any;
 }
 
+export async function listInstalledModulesStrict(): Promise<InstalledModuleSummary[]> {
+  const prisma = await prismaClient();
+  const rows = await prisma.installedModule.findMany({ orderBy: [{ kind: "asc" }, { name: "asc" }] });
+  return rows.map(normalize);
+}
+
 export async function listInstalledModules(): Promise<InstalledModuleSummary[]> {
   try {
-    const prisma = await prismaClient();
-    const rows = await prisma.installedModule.findMany({ orderBy: [{ kind: "asc" }, { name: "asc" }] });
-    return rows.map(normalize);
-  } catch (error) {
+    return await listInstalledModulesStrict();
+  } catch {
+    // Read-only Control-Center views may remain available in a degraded
+    // state. Runtime startup deliberately uses the strict variant below so a
+    // registry/database problem cannot masquerade as an uninstalled module.
     return [];
   }
 }
@@ -139,7 +146,7 @@ export async function upsertInstalledModuleFromManifest(manifest: any, sourcePat
   const name = String(manifest.name || manifest.label || key);
   const version = String(manifest.version || "0.0.0");
   const backendEntry = manifest.backend?.entry || null;
-  const frontendEntry = manifest.frontend?.entry || null;
+  const frontendEntry = manifest.frontend?.runtimeEntry || manifest.frontend?.entry || null;
   const prismaSourcePath = manifest.prisma?.source || null;
   const assembledPrismaPath = manifest.prisma?.assembled || null;
 
@@ -183,6 +190,37 @@ export async function upsertInstalledModuleFromManifest(manifest: any, sourcePat
     fromVersion: existing?.version,
     toVersion: version,
     message: existing ? "Module package updated from manifest." : "Module package installed from manifest.",
+  });
+
+  return normalize(row);
+}
+
+export async function syncInstalledModuleFromManifest(
+  manifest: any,
+  sourcePath?: string,
+): Promise<InstalledModuleSummary | null> {
+  const prisma = await prismaClient();
+  const key = String(manifest.key || manifest.id || "").trim();
+  if (!key) throw new Error("MODULE_MANIFEST_KEY_REQUIRED");
+
+  const existing = await prisma.installedModule.findUnique({ where: { key } });
+  if (!existing) return null;
+
+  const installPath = sourcePath || existing.sourcePath || existing.installPath || null;
+  const row = await prisma.installedModule.update({
+    where: { key },
+    data: {
+      kind: toPrismaKind(manifest.kind || manifest.type || "app"),
+      name: String(manifest.name || manifest.label || key),
+      version: String(manifest.version || "0.0.0"),
+      sourcePath: sourcePath || existing.sourcePath,
+      installPath,
+      backendEntry: manifest.backend?.entry || null,
+      frontendEntry: manifest.frontend?.runtimeEntry || manifest.frontend?.entry || null,
+      prismaSourcePath: manifest.prisma?.source || null,
+      assembledPrismaPath: manifest.prisma?.assembled || null,
+      manifestJson: manifest,
+    },
   });
 
   return normalize(row);

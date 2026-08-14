@@ -28,6 +28,7 @@ Thumbs.db
 # Prisma / generated local artifacts
 prisma/*.db
 prisma/*.db-journal
+prisma/domains/assembled/
 
 # runtime storage
 storage/

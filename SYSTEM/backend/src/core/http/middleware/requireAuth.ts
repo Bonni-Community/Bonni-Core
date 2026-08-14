@@ -4,6 +4,7 @@ import { verifyAccessToken } from "../../../platform/auth/token/token.service.js
 import type { AuthenticatedRequest } from "../../../platform/auth/session/authContext.js";
 import {
   getDatabaseRoutingStatus,
+  isDatabaseAuthorizationFailure,
   isDatabaseConnectionFailure,
 } from "../../database/database-routing.js";
 import {
@@ -107,6 +108,13 @@ export async function requireAuth(req: AuthenticatedRequest, res: Response, next
       }
     }
     console.error("Authentication service unavailable", error);
+    if (isDatabaseAuthorizationFailure(error)) {
+      return res.status(500).json({
+        error: "DATABASE_SCHEMA_PERMISSION_DENIED",
+        code: "DATABASE_SCHEMA_PERMISSION_DENIED",
+        message: "Die Datenbank ist erreichbar, aber dem Backend fehlen Rechte auf das zugewiesene Schema. Bitte das Backend-Setup erneut ausführen und anschließend neu starten.",
+      });
+    }
     return res.status(503).json({
       error: "AUTH_SERVICE_UNAVAILABLE",
       code: "AUTH_SERVICE_UNAVAILABLE",

@@ -1,3 +1,5 @@
+import type { ModuleNetworkPolicyAuthorizer } from "../network-policy/index.js";
+
 export const CORE_NETWORK_REQUEST_TRANSPORT_MODULE = "addon.bonni-network";
 export const CORE_NETWORK_REQUEST_MAX_PAYLOAD_BYTES = 1024 * 1024;
 export const CORE_NETWORK_REQUEST_MAX_RESPONSE_BYTES = 1024 * 1024;
@@ -120,6 +122,7 @@ type RegisteredHandler = RegistrationLease & {
   sourceModule: string;
   registeredAt: string;
   handler: CoreNetworkRequestHandler;
+  authorize?: ModuleNetworkPolicyAuthorizer;
 };
 
 type RegisteredProvider = RegistrationLease & {
@@ -474,6 +477,7 @@ class CoreNetworkRequestRegistry {
     sourceModuleValue: string,
     runtimeToken: RuntimeToken,
     definition: CoreNetworkRequestHandlerDefinition,
+    authorize?: ModuleNetworkPolicyAuthorizer,
   ) {
     const sourceModule = normalizeModuleId(sourceModuleValue);
     const protocol = normalizeProtocol(definition?.protocol);
@@ -490,6 +494,7 @@ class CoreNetworkRequestRegistry {
       sourceModule,
       runtimeToken,
       handler: definition.handler,
+      authorize,
       registeredAt: new Date().toISOString(),
       active: true,
       controller: new AbortController(),
@@ -599,6 +604,18 @@ class CoreNetworkRequestRegistry {
       ),
     };
     const timeoutMs = normalizeTimeout(input?.timeoutMs);
+    if (owner.authorize) {
+      await owner.authorize({
+        moduleKey: sourceModule,
+        direction: "OUTBOUND",
+        protocol,
+        remoteHost: envelope.recipientOrganizationId,
+        route: envelope.linkId || envelope.recipientBonniSerial || null,
+        secure: true,
+        sameOrganization: envelope.recipientOrganizationId === provider.provider.localIdentity.organizationId,
+        accountId: envelope.actor?.accountId || null,
+      });
+    }
     let response: unknown;
     try {
       response = await runWithTimeout(
@@ -704,6 +721,19 @@ class CoreNetworkRequestRegistry {
       fail("CORE_NETWORK_REQUEST_RECIPIENT_SERIAL_MISMATCH");
     }
 
+    if (handler.authorize) {
+      await handler.authorize({
+        moduleKey: handler.sourceModule,
+        direction: "INBOUND",
+        protocol,
+        remoteHost: peer.sourceOrganizationId,
+        route: peer.sourceBonniSerial,
+        secure: true,
+        sameOrganization: peer.sourceOrganizationId === localIdentity.organizationId,
+        accountId: envelope.actor?.accountId || null,
+      });
+    }
+
     const timeoutMs = normalizeTimeout(options.timeoutMs);
     let response: unknown;
     try {
@@ -744,6 +774,7 @@ const coreNetworkRequestRegistry = new CoreNetworkRequestRegistry();
 
 export function createStagedModuleNetworkRequestRuntime(
   sourceModuleValue: string,
+  authorize?: ModuleNetworkPolicyAuthorizer,
 ): StagedCoreNetworkRequestRuntime {
   const sourceModule = normalizeModuleId(sourceModuleValue);
   const coordinator = sourceModule === CORE_NETWORK_REQUEST_TRANSPORT_MODULE;
@@ -801,6 +832,7 @@ export function createStagedModuleNetworkRequestRuntime(
             sourceModule,
             runtimeToken,
             entry,
+            authorize,
           );
         }
       } catch (error) {
@@ -909,6 +941,7 @@ export function createStagedModuleNetworkRequestRuntime(
             sourceModule,
             runtimeToken,
             entry,
+            authorize,
           );
           activatedHandlers.push(entry);
         }

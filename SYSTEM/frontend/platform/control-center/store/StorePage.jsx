@@ -9,6 +9,14 @@ import {
   installControlCenterRuntimeModule,
   runControlCenterRuntimeModuleLifecycle,
 } from "../../../system/api/controlCenterRuntimeApi.js";
+import {
+  confirmCurrentUserTotpSetup,
+  getControlCenterSystemSettings,
+  getCurrentTwoFactorStatus,
+  saveControlCenterSystemSettings,
+  startCurrentUserTotpSetup,
+} from "../../../system/api/systemSettingsApi.js";
+import { BONNI_CORE_VERSION } from "../../../system/version.js";
 
 import { controlCenterLabels as labels, labelKind, labelStatus } from "../language/index.js";
 import {
@@ -56,6 +64,43 @@ const ICONS = {
   internal: "◇",
 };
 
+const TWO_FACTOR_PLUGIN_KEY = "plugin.privacyidea";
+const STORE_FEEDBACK_DRAFT_PREFIX = "bonni.store.feedback.";
+
+const STORE_FEEDBACK_CATEGORIES = Object.freeze([
+  "Verbesserungsvorschlag",
+  "Fehler melden",
+  "Bedienung und Darstellung",
+  "Installationshilfe und Dokumentation",
+]);
+
+const TWO_FACTOR_INSTALLATION_GUIDE = Object.freeze({
+  de: {
+    title: "Zwei-Faktor-Authentifizierung einrichten",
+    intro: "Diese Installationshilfe führt dich Schritt für Schritt durch die Einrichtung. Token und Passwörter werden von Bonni nicht gespeichert.",
+    steps: [
+      ["Anbieter auswählen", "Wähle unter „Einrichtung“ eine gewöhnliche Authenticator-App oder privacyIDEA als externen Anbieter."],
+      ["Verbindung eintragen", "Bei privacyIDEA trägst du die HTTPS-Adresse deines Servers und – falls verwendet – den Realm ein."],
+      ["Sicherheitsregeln festlegen", "Lege Gültigkeit, erlaubte Versuche sowie die Reihenfolge von Token und Passwort fest. Empfohlen sind 60 Sekunden und 8 Versuche."],
+      ["QR-Code scannen", "Bei einer normalen Authenticator-App erzeugt Bonni den QR-Code für deinen Zugang. Bei privacyIDEA wird der Token zuerst im privacyIDEA-System zugeordnet; der dort angezeigte QR-Code wird anschließend mit der App gescannt."],
+      ["Prüfen und speichern", "Bestätige den ersten Einmalcode und bewahre ausgegebene Wiederherstellungscodes sicher und getrennt vom Gerät auf."],
+    ],
+    privacyIdeaNote: "Wichtig: Bonni darf keinen Ersatz-QR-Code für einen privacyIDEA-Token erfinden. Der geheime Schlüssel und der zugehörige QR-Code werden ausschließlich bei der Tokenausgabe durch privacyIDEA erzeugt.",
+  },
+  en: {
+    title: "Set up two-factor authentication",
+    intro: "This installation guide walks you through the setup step by step. Bonni does not store tokens or passwords.",
+    steps: [
+      ["Choose a provider", "Under “Setup”, select a regular authenticator app or privacyIDEA as an external provider."],
+      ["Enter the connection", "For privacyIDEA, enter the HTTPS address of your server and the realm if one is used."],
+      ["Set the security policy", "Choose the validity period, allowed attempts and the token/password order. The recommended defaults are 60 seconds and 8 attempts."],
+      ["Scan the QR code", "For a regular authenticator app, Bonni creates the QR code for your account. With privacyIDEA, assign the token in privacyIDEA first and scan the QR code shown there."],
+      ["Verify and save", "Confirm the first one-time code and keep the recovery codes in a safe place separate from the device."],
+    ],
+    privacyIdeaNote: "Important: Bonni must not invent a replacement QR code for a privacyIDEA token. The secret and its QR code are created only when privacyIDEA issues the token.",
+  },
+});
+
 function titleOf(module, language = "en") {
   return localizedStoreTitle(module, language);
 }
@@ -82,6 +127,65 @@ function kindOf(module) {
 
 function kindLabel(kind) {
   return labelKind(kind, labels) || kind;
+}
+
+function readStoreFeedbackDraft(moduleKey) {
+  if (typeof window === "undefined") return {};
+  try {
+    return JSON.parse(window.localStorage.getItem(`${STORE_FEEDBACK_DRAFT_PREFIX}${moduleKey}`) || "{}") || {};
+  } catch {
+    return {};
+  }
+}
+
+function buildStoreFeedbackText({ category, title, description, includeTechnicalDetails, module, language }) {
+  const lines = [
+    `## ${title.trim()}`,
+    "",
+    `**Kategorie:** ${category}`,
+    "",
+    "### Beschreibung",
+    description.trim(),
+  ];
+  if (includeTechnicalDetails) {
+    lines.push(
+      "",
+      "### Technische Angaben",
+      `- Paket: ${keyOf(module)}`,
+      `- Plugin-Version: ${versionOf(module)}`,
+      `- Bonni-Core-Version: ${BONNI_CORE_VERSION}`,
+      `- Oberflächensprache: ${language || "—"}`,
+    );
+  }
+  return lines.join("\n");
+}
+
+function buildGithubFeedbackUrl(baseUrl, title, body) {
+  try {
+    const target = new URL(baseUrl);
+    if (target.protocol !== "https:" || target.hostname.toLowerCase() !== "github.com") return "";
+    target.searchParams.set("title", title.trim());
+    target.searchParams.set("body", body);
+    return target.toString();
+  } catch {
+    return "";
+  }
+}
+
+async function copyStoreFeedback(value) {
+  if (navigator?.clipboard?.writeText) {
+    await navigator.clipboard.writeText(value);
+    return;
+  }
+  const field = document.createElement("textarea");
+  field.value = value;
+  field.setAttribute("readonly", "");
+  field.style.position = "fixed";
+  field.style.opacity = "0";
+  document.body.appendChild(field);
+  field.select();
+  document.execCommand("copy");
+  field.remove();
 }
 
 function isInstalled(module) {
@@ -415,7 +519,457 @@ function StoreSettingsModal({ open, sourceUrl, localUpdatePath, onSourceUrlChang
   );
 }
 
-function StoreDetail({ open, module, language, details, plan, result, busy, onClose, onLoadPlan, onInstall, onActivate, onDeactivate, onHealthcheck, onRollback }) {
+function StoreTwoFactorField({ field, value, onChange }) {
+  if (field.type === "select") {
+    return (
+      <label className="store-2fa-field">
+        <span>{field.label}</span>
+        <select value={value ?? ""} onChange={(event) => onChange(event.target.value)}>
+          {(field.options || []).map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+        </select>
+        {field.help ? <small>{field.help}</small> : null}
+      </label>
+    );
+  }
+  if (field.type === "checkbox") {
+    return (
+      <label className="store-2fa-field store-2fa-field--checkbox">
+        <input type="checkbox" checked={Boolean(value)} onChange={(event) => onChange(event.target.checked)} />
+        <span>{field.label}</span>
+        {field.help ? <small>{field.help}</small> : null}
+      </label>
+    );
+  }
+  return (
+    <label className="store-2fa-field">
+      <span>{field.label}</span>
+      <input
+        type={field.type === "number" ? "number" : field.type === "password" ? "password" : "text"}
+        value={value ?? ""}
+        placeholder={field.placeholder || ""}
+        min={field.min}
+        max={field.max}
+        onChange={(event) => onChange(field.type === "number" ? Number(event.target.value) : event.target.value)}
+      />
+      {field.help ? <small>{field.help}</small> : null}
+    </label>
+  );
+}
+
+function normalizeTwoFactorSettings(settings) {
+  const twoFactor = settings?.twoFactor || {};
+  return {
+    provider: twoFactor.provider || "local",
+    configured: twoFactor.configured !== false,
+    externalProviders: Array.isArray(twoFactor.externalProviders) ? twoFactor.externalProviders : [],
+  };
+}
+
+function StoreTwoFactorSetup({ token }) {
+  const [systemSettings, setSystemSettings] = useState(null);
+  const [draft, setDraft] = useState(() => normalizeTwoFactorSettings(null));
+  const [status, setStatus] = useState(null);
+  const [totpSetup, setTotpSetup] = useState(null);
+  const [confirmationCode, setConfirmationCode] = useState("");
+  const [recoveryCodes, setRecoveryCodes] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [message, setMessage] = useState("");
+  const [error, setError] = useState("");
+
+  async function load() {
+    setLoading(true);
+    setError("");
+    try {
+      const [nextSettings, nextStatus] = await Promise.all([
+        getControlCenterSystemSettings(token),
+        getCurrentTwoFactorStatus(token),
+      ]);
+      setSystemSettings(nextSettings);
+      setDraft(normalizeTwoFactorSettings(nextSettings));
+      setStatus(nextStatus);
+    } catch (loadError) {
+      setError(loadError?.message || "Die 2FA-Einstellungen konnten nicht geladen werden.");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    load();
+  }, [token]);
+
+  const externalProviders = draft.externalProviders || [];
+  const selectedExternal = externalProviders.find((provider) => provider.id === draft.provider) || null;
+  const values = selectedExternal?.configuration?.values || {};
+  const savedProvider = systemSettings?.twoFactor?.provider || "local";
+
+  function patchProviderValue(name, value) {
+    if (!selectedExternal) return;
+    setDraft((current) => ({
+      ...current,
+      externalProviders: current.externalProviders.map((provider) => provider.id === selectedExternal.id
+        ? {
+            ...provider,
+            configuration: {
+              ...provider.configuration,
+              values: { ...(provider.configuration?.values || {}), [name]: value },
+            },
+          }
+        : provider),
+    }));
+  }
+
+  async function save() {
+    if (!systemSettings) return;
+    setSaving(true);
+    setMessage("");
+    setError("");
+    try {
+      const result = await saveControlCenterSystemSettings(token, {
+        oidc: systemSettings.oidc || {},
+        twoFactor: draft,
+        database: systemSettings.database || {},
+        json: systemSettings.json || {},
+      });
+      setSystemSettings(result);
+      setDraft(normalizeTwoFactorSettings(result));
+      setStatus(await getCurrentTwoFactorStatus(token));
+      setMessage("Die 2FA-Konfiguration wurde gespeichert.");
+    } catch (saveError) {
+      setError(saveError?.message || "Die 2FA-Konfiguration konnte nicht gespeichert werden.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function createQrCode() {
+    setMessage("");
+    setError("");
+    setRecoveryCodes([]);
+    try {
+      const result = await startCurrentUserTotpSetup(token, {
+        issuer: "Bonni Core",
+        includeManualSecret: true,
+      });
+      setTotpSetup(result);
+    } catch (setupError) {
+      setError(setupError?.message || "Der QR-Code konnte nicht erzeugt werden.");
+    }
+  }
+
+  async function confirmQrCode() {
+    if (!totpSetup?.credentialId || !confirmationCode.trim()) return;
+    setMessage("");
+    setError("");
+    try {
+      const result = await confirmCurrentUserTotpSetup(token, {
+        credentialId: totpSetup.credentialId,
+        code: confirmationCode.trim(),
+      });
+      setRecoveryCodes(result?.recoveryCodes || []);
+      setTotpSetup(null);
+      setConfirmationCode("");
+      setStatus(await getCurrentTwoFactorStatus(token));
+      setMessage("Die Authenticator-App wurde erfolgreich bestätigt.");
+    } catch (confirmError) {
+      setError(confirmError?.message || "Der Einmalcode konnte nicht bestätigt werden.");
+    }
+  }
+
+  if (loading) return <div className="store-detail-block"><p>2FA-Einstellungen werden geladen …</p></div>;
+
+  return (
+    <div className="store-2fa-setup">
+      {message ? <div className="store-alert store-alert--success">{message}</div> : null}
+      {error ? <div className="store-alert store-alert--error">{error}</div> : null}
+
+      <section className="store-detail-block">
+        <div className="store-2fa-section-head">
+          <div>
+            <h3>2FA-Anbieter auswählen</h3>
+            <p>Die Auswahl gilt für die Anmeldung an Bonni Core.</p>
+          </div>
+          <span className={draft.configured ? "store-2fa-ready is-ready" : "store-2fa-ready"}>{draft.configured ? "Bereit" : "Unvollständig"}</span>
+        </div>
+        <div className="store-2fa-provider-grid">
+          <button type="button" className={draft.provider === "local" ? "is-selected" : ""} onClick={() => setDraft((current) => ({ ...current, provider: "local" }))}>
+            <strong>Authenticator-App (TOTP)</strong>
+            <span>Für 2FAS, Aegis, FreeOTP, Google Authenticator, Microsoft Authenticator und andere TOTP-Apps.</span>
+          </button>
+          {externalProviders.map((provider) => (
+            <button key={provider.id} type="button" className={draft.provider === provider.id ? "is-selected" : ""} onClick={() => setDraft((current) => ({ ...current, provider: provider.id }))}>
+              <strong>{provider.label}</strong>
+              <span>Externer 2FA-Anbieter über das installierte Plugin.</span>
+            </button>
+          ))}
+        </div>
+      </section>
+
+      {selectedExternal ? selectedExternal.configuration?.sections?.map((section) => (
+        <section className="store-detail-block" key={section.title}>
+          <h3>{section.title}</h3>
+          {section.description ? <p>{section.description}</p> : null}
+          <div className="store-2fa-form-grid">
+            {(section.fields || []).map((field) => (
+              <StoreTwoFactorField key={field.name} field={field} value={values[field.name]} onChange={(value) => patchProviderValue(field.name, value)} />
+            ))}
+          </div>
+        </section>
+      )) : null}
+
+      <section className="store-detail-block store-2fa-qr-card">
+        <h3>Authenticator-App und QR-Code</h3>
+        {selectedExternal ? (
+          <div className="store-2fa-provider-note">
+            <strong>Der Token wird durch {selectedExternal.label} ausgegeben.</strong>
+            <p>Ordne den Benutzer dort einem Token zu und scanne anschließend den von {selectedExternal.label} angezeigten QR-Code. Bonni erzeugt keinen Ersatzschlüssel und speichert weder Token noch Passwort.</p>
+          </div>
+        ) : savedProvider !== "local" ? (
+          <p>Speichere zuerst „Authenticator-App (TOTP)“ als Anbieter. Danach kann Bonni den persönlichen QR-Code sicher erzeugen.</p>
+        ) : status?.enabled ? (
+          <div className="store-2fa-provider-note is-success"><strong>Für deinen Zugang ist bereits eine Authenticator-App eingerichtet.</strong></div>
+        ) : totpSetup ? (
+          <div className="store-2fa-enrollment">
+            <img src={totpSetup.qrCodeDataUrl} alt="Persönlicher QR-Code für die 2FA-Einrichtung" />
+            <div>
+              <h4>1. QR-Code mit der Authenticator-App scannen</h4>
+              <p>Der QR-Code gehört nur zu deinem Benutzerkonto. Zeige ihn niemandem und speichere ihn nicht als Screenshot.</p>
+              {totpSetup.manualEntrySecret ? <details><summary>Schlüssel manuell eingeben</summary><code>{totpSetup.manualEntrySecret}</code></details> : null}
+              <label className="store-2fa-field">
+                <span>2. Angezeigten Einmalcode bestätigen</span>
+                <input value={confirmationCode} inputMode="numeric" autoComplete="one-time-code" maxLength={8} onChange={(event) => setConfirmationCode(event.target.value.replace(/\D/g, ""))} placeholder="123456" />
+              </label>
+              <button type="button" className="store-2fa-primary" onClick={confirmQrCode} disabled={!confirmationCode.trim()}>Einmalcode bestätigen</button>
+            </div>
+          </div>
+        ) : (
+          <button type="button" className="store-2fa-primary" onClick={createQrCode}>Persönlichen QR-Code erzeugen</button>
+        )}
+        {recoveryCodes.length ? (
+          <div className="store-2fa-recovery">
+            <strong>Wiederherstellungscodes – nur jetzt sichtbar</strong>
+            <p>Bewahre diese Codes sicher und getrennt vom Gerät auf.</p>
+            <pre>{recoveryCodes.join("\n")}</pre>
+          </div>
+        ) : null}
+      </section>
+
+      <div className="store-2fa-footer">
+        <button type="button" onClick={load} disabled={saving}>Neu laden</button>
+        <button type="button" className="store-2fa-primary" onClick={save} disabled={saving}>{saving ? "Speichert …" : "Konfiguration speichern"}</button>
+      </div>
+    </div>
+  );
+}
+
+function StoreTwoFactorGuide({ language, guideLanguage, onGuideLanguageChange }) {
+  const resolvedLanguage = guideLanguage === "auto" ? (language === "de" ? "de" : "en") : guideLanguage;
+  const guide = TWO_FACTOR_INSTALLATION_GUIDE[resolvedLanguage] || TWO_FACTOR_INSTALLATION_GUIDE.en;
+  const illustrations = [
+    "/system/guides/2fa/01-provider.svg",
+    "/system/guides/2fa/02-connection.svg",
+    "/system/guides/2fa/03-policy.svg",
+    "/system/guides/2fa/04-qr-code.svg",
+    "/system/guides/2fa/05-finish.svg",
+  ];
+  return (
+    <div className="store-2fa-guide" lang={resolvedLanguage}>
+      <div className="store-2fa-guide__head">
+        <div><h3>{guide.title}</h3><p>{guide.intro}</p></div>
+        <label className="store-2fa-guide-language">
+          <span>{resolvedLanguage === "de" ? "Sprache" : "Language"}</span>
+          <select value={guideLanguage} onChange={(event) => onGuideLanguageChange(event.target.value)}>
+            <option value="auto">Auto</option>
+            <option value="de">DE</option>
+            <option value="en">EN</option>
+          </select>
+        </label>
+      </div>
+      <ol className="store-2fa-guide__steps">
+        {guide.steps.map(([title, description], index) => (
+          <li key={title}>
+            <img src={illustrations[index]} alt="" aria-hidden="true" />
+            <div><span>{index + 1}</span><h4>{title}</h4><p>{description}</p></div>
+          </li>
+        ))}
+      </ol>
+      <div className="store-2fa-guide__note">{guide.privacyIdeaNote}</div>
+    </div>
+  );
+}
+
+function StorePluginFeedback({ module, language, support }) {
+  const moduleKey = keyOf(module);
+  const initialDraft = useMemo(() => readStoreFeedbackDraft(moduleKey), [moduleKey]);
+  const [category, setCategory] = useState(initialDraft.category || STORE_FEEDBACK_CATEGORIES[0]);
+  const [title, setTitle] = useState(initialDraft.title || "");
+  const [description, setDescription] = useState(initialDraft.description || "");
+  const [includeTechnicalDetails, setIncludeTechnicalDetails] = useState(initialDraft.includeTechnicalDetails === true);
+  const [online, setOnline] = useState(() => typeof navigator === "undefined" || navigator.onLine !== false);
+  const [message, setMessage] = useState("");
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    const updateOnlineStatus = () => setOnline(navigator.onLine !== false);
+    window.addEventListener("online", updateOnlineStatus);
+    window.addEventListener("offline", updateOnlineStatus);
+    return () => {
+      window.removeEventListener("online", updateOnlineStatus);
+      window.removeEventListener("offline", updateOnlineStatus);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!title.trim() && !description.trim() && category === STORE_FEEDBACK_CATEGORIES[0] && !includeTechnicalDetails) {
+      window.localStorage.removeItem(`${STORE_FEEDBACK_DRAFT_PREFIX}${moduleKey}`);
+      return;
+    }
+    window.localStorage.setItem(`${STORE_FEEDBACK_DRAFT_PREFIX}${moduleKey}`, JSON.stringify({
+      category,
+      title,
+      description,
+      includeTechnicalDetails,
+    }));
+  }, [category, description, includeTechnicalDetails, moduleKey, title]);
+
+  const feedbackText = useMemo(() => buildStoreFeedbackText({
+    category,
+    title,
+    description,
+    includeTechnicalDetails,
+    module,
+    language,
+  }), [category, description, includeTechnicalDetails, language, module, title]);
+  const githubUrl = buildGithubFeedbackUrl(support?.url || "", title, feedbackText);
+  const valid = title.trim().length >= 5 && description.trim().length >= 20;
+
+  const clearStatus = () => {
+    setMessage("");
+    setError("");
+  };
+
+  const handleCopy = async () => {
+    clearStatus();
+    if (!valid) {
+      setError("Bitte gib einen kurzen Titel und eine Beschreibung mit mindestens 20 Zeichen ein.");
+      return;
+    }
+    try {
+      await copyStoreFeedback(feedbackText);
+      setMessage("Der Vorschlag wurde in die Zwischenablage kopiert.");
+    } catch {
+      setError("Der Text konnte nicht automatisch kopiert werden. Bitte markiere ihn manuell.");
+    }
+  };
+
+  const handleGithub = () => {
+    clearStatus();
+    if (!valid) {
+      setError("Bitte gib einen kurzen Titel und eine Beschreibung mit mindestens 20 Zeichen ein.");
+      return;
+    }
+    if (!online) {
+      setError("Bonni Core ist derzeit offline. Dein Entwurf bleibt lokal gespeichert und kann später geöffnet werden.");
+      return;
+    }
+    if (!githubUrl) {
+      setError("Für dieses Plugin ist noch keine gültige GitHub-Adresse hinterlegt.");
+      return;
+    }
+    window.open(githubUrl, "_blank", "noopener,noreferrer");
+    setMessage("GitHub wurde geöffnet. Bitte prüfe den Vorschlag dort und bestätige ihn anschließend.");
+  };
+
+  const handleEmail = () => {
+    clearStatus();
+    if (!valid) {
+      setError("Bitte gib einen kurzen Titel und eine Beschreibung mit mindestens 20 Zeichen ein.");
+      return;
+    }
+    if (!online) {
+      setError("Bonni Core ist derzeit offline. Dein Entwurf bleibt lokal gespeichert.");
+      return;
+    }
+    window.location.href = `mailto:${encodeURIComponent(support.email)}?subject=${encodeURIComponent(title.trim())}&body=${encodeURIComponent(feedbackText)}`;
+    setMessage("Das E-Mail-Programm wurde geöffnet. Bitte prüfe die Nachricht und sende sie dort ab.");
+  };
+
+  const handleClear = () => {
+    setCategory(STORE_FEEDBACK_CATEGORIES[0]);
+    setTitle("");
+    setDescription("");
+    setIncludeTechnicalDetails(false);
+    window.localStorage.removeItem(`${STORE_FEEDBACK_DRAFT_PREFIX}${moduleKey}`);
+    setError("");
+    setMessage("Der lokale Entwurf wurde gelöscht.");
+  };
+
+  return (
+    <div className="store-feedback">
+      <div className="store-feedback__head">
+        <div>
+          <h3>Feedback und Verbesserungsvorschläge</h3>
+          <p>Beschreibe hier eine Idee, einen Fehler oder einen Wunsch für dieses Plugin.</p>
+        </div>
+        <span className={`store-feedback__connection${online ? " is-online" : " is-offline"}`}>{online ? "Online" : "Nur lokal"}</span>
+      </div>
+
+      <div className="store-feedback__notice">
+        <strong>Wann wird etwas übertragen?</strong>
+        <p>Bonni Core kann vollständig lokal betrieben werden. Deshalb wird deine Eingabe zunächst nur als Entwurf in diesem Browser gespeichert. Erst bei bestehender Internetverbindung und nach einem Klick auf „Auf GitHub öffnen“ wird eine Übermittlung vorbereitet. GitHub öffnet sich in einem neuen Fenster; dort kannst du den Inhalt nochmals prüfen und endgültig absenden.</p>
+      </div>
+
+      <div className="store-feedback__security">Keine Passwörter, Token, QR-Geheimnisse oder Wiederherstellungscodes eintragen.</div>
+
+      <div className="store-feedback__form">
+        <label>
+          <span>Kategorie</span>
+          <select value={category} onChange={(event) => { setCategory(event.target.value); clearStatus(); }}>
+            {STORE_FEEDBACK_CATEGORIES.map((item) => <option key={item} value={item}>{item}</option>)}
+          </select>
+        </label>
+        <label>
+          <span>Titel</span>
+          <input maxLength={120} value={title} onChange={(event) => { setTitle(event.target.value); clearStatus(); }} placeholder="Was möchtest du verbessern?" />
+          <small>{title.length}/120 Zeichen</small>
+        </label>
+        <label className="store-feedback__description">
+          <span>Beschreibung</span>
+          <textarea maxLength={5000} rows={10} value={description} onChange={(event) => { setDescription(event.target.value); clearStatus(); }} placeholder="Beschreibe deinen Vorschlag möglichst verständlich. Was ist heute schwierig und wie könnte es besser funktionieren?" />
+          <small>{description.length}/5000 Zeichen · Der Entwurf wird nur in diesem Browser gespeichert.</small>
+        </label>
+        <label className="store-feedback__technical">
+          <input type="checkbox" checked={includeTechnicalDetails} onChange={(event) => { setIncludeTechnicalDetails(event.target.checked); clearStatus(); }} />
+          <span><strong>Unpersönliche technische Angaben ergänzen</strong><small>Übernimmt nur Paketname, Plugin-Version, Bonni-Core-Version und Sprache – keine Benutzer-, Server- oder Zugangsdaten.</small></span>
+        </label>
+      </div>
+
+      {error ? <div className="store-feedback__result is-error">{error}</div> : null}
+      {message ? <div className="store-feedback__result is-success">{message}</div> : null}
+
+      <div className="store-feedback__actions">
+        <button type="button" onClick={handleClear}>Entwurf löschen</button>
+        <button type="button" onClick={handleCopy}>Text kopieren</button>
+        {support?.email ? <button type="button" onClick={handleEmail} disabled={!online}>E-Mail vorbereiten</button> : null}
+        <button type="button" className="store-2fa-primary" onClick={handleGithub} disabled={!online || !githubUrl}>Auf GitHub öffnen</button>
+      </div>
+    </div>
+  );
+}
+
+function StoreDetail({ open, module, language, details, plan, result, busy, token, onClose, onLoadPlan, onInstall, onActivate, onDeactivate, onHealthcheck, onRollback }) {
+  const moduleKey = module ? keyOf(module) : "";
+  const [activeTab, setActiveTab] = useState("description");
+  const [guideLanguage, setGuideLanguage] = useState("auto");
+
+  useEffect(() => {
+    if (open) {
+      setActiveTab("description");
+      setGuideLanguage("auto");
+    }
+  }, [open, moduleKey]);
+
   if (!open || !module) return null;
 
   const installed = isInstalled(module);
@@ -424,6 +978,7 @@ function StoreDetail({ open, module, language, details, plan, result, busy, onCl
   const support = storeSupportInfo(module);
   const compatibility = plan?.compatibility || module?.compatibility || null;
   const compatible = compatibility?.ok !== false;
+  const isTwoFactorPlugin = moduleKey === TWO_FACTOR_PLUGIN_KEY;
 
   return (
     <div className="store-settings-backdrop store-detail-backdrop" role="presentation" onMouseDown={onClose}>
@@ -443,6 +998,21 @@ function StoreDetail({ open, module, language, details, plan, result, busy, onCl
           </div>
           <button type="button" className="store-detail__close" onClick={onClose} aria-label="Details schließen">×</button>
         </header>
+
+        {isTwoFactorPlugin ? (
+          <nav className="store-detail-tabs" role="tablist" aria-label="2FA-Plugin">
+            <button type="button" role="tab" aria-selected={activeTab === "description"} className={activeTab === "description" ? "is-active" : ""} onClick={() => setActiveTab("description")}>Beschreibung</button>
+            <button type="button" role="tab" aria-selected={activeTab === "setup"} className={activeTab === "setup" ? "is-active" : ""} onClick={() => setActiveTab("setup")}>Einrichtung</button>
+            <button type="button" role="tab" aria-selected={activeTab === "guide"} className={activeTab === "guide" ? "is-active" : ""} onClick={() => setActiveTab("guide")}>Installationshilfe</button>
+            <button type="button" role="tab" aria-selected={activeTab === "feedback"} className={activeTab === "feedback" ? "is-active" : ""} onClick={() => setActiveTab("feedback")}>Feedback &amp; Vorschläge</button>
+          </nav>
+        ) : null}
+
+        {activeTab === "setup" && isTwoFactorPlugin ? <StoreTwoFactorSetup token={token} /> : null}
+        {activeTab === "guide" && isTwoFactorPlugin ? <StoreTwoFactorGuide language={language} guideLanguage={guideLanguage} onGuideLanguageChange={setGuideLanguage} /> : null}
+        {activeTab === "feedback" && isTwoFactorPlugin ? <StorePluginFeedback module={module} language={language} support={support} /> : null}
+
+        {activeTab === "description" ? <>
 
         <div className="store-package-dialog__content">
           <div className="store-package-dialog__main">
@@ -526,6 +1096,7 @@ function StoreDetail({ open, module, language, details, plan, result, busy, onCl
             <pre>{JSON.stringify(result, null, 2)}</pre>
           </section>
         ) : null}
+        </> : null}
       </section>
     </div>
   );
@@ -731,6 +1302,7 @@ export default function StorePage({ token }) {
             plan={plan}
             result={result}
             busy={busy}
+            token={token}
             onClose={() => setDetailOpen(false)}
             onLoadPlan={() => loadPlan(keyOf(selectedPackage || {}))}
             onInstall={() => runAction(selectedPackage, "Install", (key) => installControlCenterRuntimeModule(token, key))}
