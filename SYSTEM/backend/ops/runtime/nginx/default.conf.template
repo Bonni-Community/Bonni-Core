@@ -39,6 +39,31 @@ server {
     proxy_pass http://${EMERGENCY_BACKEND}:${EMERGENCY_BACKEND_PORT}/api/health/ready;
   }
 
+  # Credentials, one-shot QR/recovery material and privacy grants must never be
+  # replayed to the emergency backend. A failure of the active backend is a
+  # hard failure for these paths; non-sensitive routes retain normal failover.
+  location ~* ^/api/(?:security/(?:2fa|account-recovery)(?:/|$)|(?:identity/)?auth(?:/|$)|apps/kontorapp(?:/|$)|modules/app(?:\.|-)kontorapp(?:/|$)|system/(?:integrations/jitsi|system)(?:/|$)|(?:[^/?]+/)*(?:user|users|members|accounts|password|privacy|dsgvo|protected|private|grant|recovery)(?:/|$)) {
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_set_header X-Runtime-Proxy "true";
+    proxy_set_header Connection "";
+
+    proxy_next_upstream off;
+    proxy_connect_timeout 2s;
+    proxy_read_timeout 60s;
+    proxy_send_timeout 60s;
+
+    add_header X-Runtime-Proxy "true" always;
+    add_header X-Runtime-Backend $upstream_addr always;
+    add_header X-Runtime-Upstream-Status $upstream_status always;
+    add_header Access-Control-Expose-Headers "X-Runtime-Proxy,X-Runtime-Backend,X-Runtime-Upstream-Status" always;
+
+    proxy_pass http://${ACTIVE_BACKEND}:${ACTIVE_BACKEND_PORT};
+  }
+
   location / {
     proxy_http_version 1.1;
     proxy_set_header Host $host;

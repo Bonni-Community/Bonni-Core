@@ -14,6 +14,7 @@ export default function ControlCenterShell({
   onLogout,
   onSyncRegistry,
   onMainMenu,
+  onOpenMySettings,
   children,
 }) {
   return (
@@ -29,6 +30,7 @@ export default function ControlCenterShell({
         onLogout={onLogout}
         onSyncRegistry={onSyncRegistry}
         onMainMenu={onMainMenu}
+        onOpenMySettings={onOpenMySettings}
       />
 
       <main className="control-center-content">

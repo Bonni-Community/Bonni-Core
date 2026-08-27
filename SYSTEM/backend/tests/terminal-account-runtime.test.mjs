@@ -2,16 +2,36 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
-import {
+const {
   createModuleTerminalAccountRuntime,
   describeTerminalAccountIdentity,
   normalizeDeclaredModuleTerminalAccounts,
   reconcileDeclaredModuleTerminalAccounts,
-} from "../dist/platform/auth/terminal-accounts/terminal-account.service.js";
-import { validateModuleManifest } from "../dist/platform/module-manager/manifests/manifest.service.js";
+} = await import(process.env.BONNI_TEST_SOURCE === "1"
+  ? "../src/platform/auth/terminal-accounts/terminal-account.service.ts"
+  : "../dist/platform/auth/terminal-accounts/terminal-account.service.js");
+const { validateModuleManifest } = await import(process.env.BONNI_TEST_SOURCE === "1"
+  ? "../src/platform/module-manager/manifests/manifest.service.ts"
+  : "../dist/platform/module-manager/manifests/manifest.service.js");
 
 function fakeDatabase(initialAccounts = []) {
   const accounts = initialAccounts.map((account) => ({
+    credentialRevision: account.credentialRevision ?? 0,
+    isActive: account.isActive ?? true,
+    passwordHash: account.passwordHash ?? null,
+    twoFactorProviderId: account.twoFactorProviderId ?? null,
+    twoFactorEnrolledAt: account.twoFactorEnrolledAt ?? null,
+    privateDataTwoFactorEnrolledAt: account.privateDataTwoFactorEnrolledAt ?? null,
+    passwordRecoveryLockedAt: account.passwordRecoveryLockedAt ?? null,
+    passwordRecoveryRequestId: account.passwordRecoveryRequestId ?? null,
+    passwordRecoveryRequests: structuredClone(account.passwordRecoveryRequests || []),
+    twoFactorCredentials: structuredClone(account.twoFactorCredentials || []),
+    twoFactorRecoveryCodes: structuredClone(account.twoFactorRecoveryCodes || []),
+    twoFactorEnrollment: structuredClone(account.twoFactorEnrollment || null),
+    twoFactorChallenges: structuredClone(account.twoFactorChallenges || []),
+    twoFactorLockouts: structuredClone(account.twoFactorLockouts || []),
+    sessionIds: [...(account.sessionIds || [])],
+    refreshTokenIds: [...(account.refreshTokenIds || [])],
     ...account,
     roleKeys: new Set(account.roleKeys || []),
   }));
@@ -45,21 +65,46 @@ function fakeDatabase(initialAccounts = []) {
       roles: [...account.roleKeys].map((key) => ({
         role: roles.get(key),
       })),
+      sessions: account.sessionIds.map((id) => ({ id, endedAt: null })),
+      refreshTokens: account.refreshTokenIds.map((id) => ({ id, revokedAt: null })),
+      passwordRecoveryRequests: account.passwordRecoveryRequests.filter((request) => (
+        ["PENDING", "LOCKED", "APPROVED"].includes(request.status)
+      )),
     };
+  }
+
+  function applyData(row, data) {
+    for (const [key, value] of Object.entries(data || {})) {
+      if (value && typeof value === "object" && Object.hasOwn(value, "increment")) {
+        row[key] += value.increment;
+      } else {
+        row[key] = value;
+      }
+    }
+  }
+
+  function accountFor(where) {
+    return accounts.find((account) => account.id === where.accountId);
   }
 
   const transaction = {
     account: {
       async findUnique({ where }) {
-        return accountRow(accounts.find((account) => account.loginName === where.loginName));
+        return accountRow(accounts.find((account) => (
+          where.loginName ? account.loginName === where.loginName : account.id === where.id
+        )));
       },
-      async update({ where, data }) {
-        assert.deepEqual(Object.keys(data), ["type"]);
+      async updateMany({ where, data }) {
         const account = accounts.find((candidate) => candidate.id === where.id);
-        assert.ok(account);
-        account.type = data.type;
+        if (
+          !account
+          || account.credentialRevision !== where.credentialRevision
+          || account.type !== where.type
+          || account.isActive !== where.isActive
+        ) return { count: 0 };
+        applyData(account, data);
         accountUpdates.push({ where, data });
-        return account;
+        return { count: 1 };
       },
       async create({ data }) {
         assert.equal(accounts.some((account) => account.loginName === data.loginName), false);
@@ -69,6 +114,18 @@ function fakeDatabase(initialAccounts = []) {
           roleKeys: new Set(),
           sessionIds: [],
           refreshTokenIds: [],
+          credentialRevision: 0,
+          twoFactorProviderId: null,
+          twoFactorEnrolledAt: null,
+          privateDataTwoFactorEnrolledAt: null,
+          passwordRecoveryLockedAt: null,
+          passwordRecoveryRequestId: null,
+          passwordRecoveryRequests: [],
+          twoFactorCredentials: [],
+          twoFactorRecoveryCodes: [],
+          twoFactorEnrollment: null,
+          twoFactorChallenges: [],
+          twoFactorLockouts: [],
         };
         accounts.push(account);
         accountCreates.push(structuredClone(data));
@@ -120,6 +177,88 @@ function fakeDatabase(initialAccounts = []) {
         assert.ok(role);
         account.roleKeys.add(role.key);
         return create;
+      },
+    },
+    securityTwoFactorCredential: {
+      async updateMany({ where, data }) {
+        const account = accountFor(where);
+        if (!account) return { count: 0 };
+        const rows = account.twoFactorCredentials.filter((row) => (
+          !where.status
+          || typeof where.status === "string" && row.status === where.status
+          || Array.isArray(where.status?.in) && where.status.in.includes(row.status)
+        ));
+        rows.forEach((row) => applyData(row, data));
+        return { count: rows.length };
+      },
+    },
+    securityTwoFactorRecoveryCode: {
+      async deleteMany({ where }) {
+        const account = accountFor(where);
+        if (!account) return { count: 0 };
+        const count = account.twoFactorRecoveryCodes.length;
+        account.twoFactorRecoveryCodes = [];
+        return { count };
+      },
+    },
+    securityTwoFactorEnrollment: {
+      async updateMany({ where, data }) {
+        const account = accountFor(where);
+        const enrollment = account?.twoFactorEnrollment;
+        if (!enrollment) return { count: 0 };
+        if (where.status?.in && !where.status.in.includes(enrollment.status)) return { count: 0 };
+        if (where.enrollmentPasswordHash?.not === null && enrollment.enrollmentPasswordHash == null) return { count: 0 };
+        applyData(enrollment, data);
+        return { count: 1 };
+      },
+    },
+    securityTwoFactorChallenge: {
+      async updateMany({ where, data }) {
+        const account = accountFor(where);
+        if (!account) return { count: 0 };
+        const rows = account.twoFactorChallenges.filter((row) => where.status.in.includes(row.status));
+        rows.forEach((row) => applyData(row, data));
+        return { count: rows.length };
+      },
+    },
+    securityTwoFactorLockout: {
+      async deleteMany({ where }) {
+        const account = accountFor(where);
+        if (!account) return { count: 0 };
+        const count = account.twoFactorLockouts.length;
+        account.twoFactorLockouts = [];
+        return { count };
+      },
+    },
+    securityAccountRecoveryRequest: {
+      async updateMany({ where, data }) {
+        const account = accountFor(where);
+        if (!account) return { count: 0 };
+        const rows = account.passwordRecoveryRequests.filter((row) => (
+          !where.status
+          || typeof where.status === "string" && row.status === where.status
+          || Array.isArray(where.status?.in) && where.status.in.includes(row.status)
+        ));
+        rows.forEach((row) => applyData(row, data));
+        return { count: rows.length };
+      },
+    },
+    session: {
+      async updateMany({ where }) {
+        const account = accountFor(where);
+        if (!account) return { count: 0 };
+        const count = account.sessionIds.length;
+        account.sessionIds = [];
+        return { count };
+      },
+    },
+    refreshToken: {
+      async updateMany({ where }) {
+        const account = accountFor(where);
+        if (!account) return { count: 0 };
+        const count = account.refreshTokenIds.length;
+        account.refreshTokenIds = [];
+        return { count };
       },
     },
   };
@@ -266,7 +405,7 @@ test("manifest validator binds technical declarations to the capability and TERM
   );
 });
 
-test("existing account reconciliation preserves every identity and credential field", async () => {
+test("existing account reconciliation preserves identity but shreds interactive security material", async () => {
   const database = fakeDatabase([{
     id: "account-existing",
     loginName: "counter-terminal",
@@ -277,6 +416,36 @@ test("existing account reconciliation preserves every identity and credential fi
     email: "terminal@example.invalid",
     externalSubject: "legacy-subject",
     isActive: true,
+    credentialRevision: 3,
+    twoFactorProviderId: "local",
+    twoFactorEnrolledAt: "2026-01-01T00:00:00.000Z",
+    privateDataTwoFactorEnrolledAt: "2026-01-01T00:00:00.000Z",
+    twoFactorCredentials: [{
+      id: "totp-existing",
+      status: "ACTIVE",
+      secretEncrypted: "ciphertext",
+      secretFingerprint: "fingerprint",
+      enrollmentSlot: "account-existing",
+      externalCredentialId: null,
+    }],
+    twoFactorRecoveryCodes: [{ id: "recovery-existing" }],
+    twoFactorEnrollment: {
+      status: "CLAIMED",
+      enrollmentPasswordHash: "verifier",
+    },
+    twoFactorChallenges: [{ id: "challenge-existing", status: "VERIFIED" }],
+    passwordRecoveryLockedAt: new Date("2026-08-20T10:00:00.000Z"),
+    passwordRecoveryRequestId: "password-recovery-existing",
+    passwordRecoveryRequests: [{
+      id: "password-recovery-existing",
+      status: "LOCKED",
+      activeSlot: "account-existing",
+      browserTokenHash: "browser-hash",
+      browserTokenExpiresAt: new Date("2026-08-22T10:00:00.000Z"),
+      supportCodeHash: "support-hash",
+      supportCodeExpiresAt: new Date("2026-08-20T10:15:00.000Z"),
+      requestRevision: 2,
+    }],
     sessionIds: ["session-existing"],
     refreshTokenIds: ["refresh-existing"],
     roleKeys: ["legacy-counter", "unrelated-role"],
@@ -285,13 +454,10 @@ test("existing account reconciliation preserves every identity and credential fi
     id: database.accounts[0].id,
     loginName: database.accounts[0].loginName,
     authProviderId: database.accounts[0].authProviderId,
-    passwordHash: database.accounts[0].passwordHash,
     personId: database.accounts[0].personId,
     email: database.accounts[0].email,
     externalSubject: database.accounts[0].externalSubject,
     isActive: database.accounts[0].isActive,
-    sessionIds: database.accounts[0].sessionIds,
-    refreshTokenIds: database.accounts[0].refreshTokenIds,
   });
 
   const first = await reconcileDeclaredModuleTerminalAccounts(
@@ -312,15 +478,47 @@ test("existing account reconciliation preserves every identity and credential fi
     id: database.accounts[0].id,
     loginName: database.accounts[0].loginName,
     authProviderId: database.accounts[0].authProviderId,
-    passwordHash: database.accounts[0].passwordHash,
     personId: database.accounts[0].personId,
     email: database.accounts[0].email,
     externalSubject: database.accounts[0].externalSubject,
     isActive: database.accounts[0].isActive,
-    sessionIds: database.accounts[0].sessionIds,
-    refreshTokenIds: database.accounts[0].refreshTokenIds,
   }, before);
   assert.equal(database.accounts[0].type, "TERMINAL");
+  assert.equal(database.accounts[0].credentialRevision, 4);
+  assert.equal(database.accounts[0].passwordHash, null);
+  assert.equal(database.accounts[0].twoFactorProviderId, null);
+  assert.equal(database.accounts[0].twoFactorEnrolledAt, null);
+  assert.equal(database.accounts[0].privateDataTwoFactorEnrolledAt, null);
+  assert.equal(database.accounts[0].passwordRecoveryLockedAt, null);
+  assert.equal(database.accounts[0].passwordRecoveryRequestId, null);
+  assert.deepEqual(database.accounts[0].passwordRecoveryRequests.map((row) => ({
+    status: row.status,
+    activeSlot: row.activeSlot,
+    browserTokenHash: row.browserTokenHash,
+    supportCodeHash: row.supportCodeHash,
+  })), [{
+    status: "CANCELLED",
+    activeSlot: null,
+    browserTokenHash: null,
+    supportCodeHash: null,
+  }]);
+  assert.deepEqual(database.accounts[0].twoFactorCredentials.map((row) => ({
+    status: row.status,
+    secretEncrypted: row.secretEncrypted,
+    secretFingerprint: row.secretFingerprint,
+    enrollmentSlot: row.enrollmentSlot,
+  })), [{
+    status: "REVOKED",
+    secretEncrypted: null,
+    secretFingerprint: null,
+    enrollmentSlot: null,
+  }]);
+  assert.deepEqual(database.accounts[0].twoFactorRecoveryCodes, []);
+  assert.equal(database.accounts[0].twoFactorEnrollment.status, "REVOKED");
+  assert.equal(database.accounts[0].twoFactorEnrollment.enrollmentPasswordHash, null);
+  assert.equal(database.accounts[0].twoFactorChallenges[0].status, "CANCELLED");
+  assert.deepEqual(database.accounts[0].sessionIds, []);
+  assert.deepEqual(database.accounts[0].refreshTokenIds, []);
   assert.deepEqual([...database.accounts[0].roleKeys].sort(), [
     "access:app:app-example:counter",
     "unrelated-role",

@@ -4,7 +4,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 
 import { assertReleaseArchiveTags } from "./archive-tags.mjs";
-import { validateImageReference, validateTrustedName, validateUpdateRunnerRequest } from "./contract.mjs";
+import { bonniReleaseImageTag, validateImageReference, validateTrustedName, validateUpdateRunnerRequest } from "./contract.mjs";
 import { ensureDirectory, readJson, readJsonIfExists, resolveExistingFileInside, writeJsonAtomic, writeTextAtomic } from "./io.mjs";
 import {
   closeNetworkTransportGate,
@@ -13,8 +13,13 @@ import {
 import { verifyBackup, verifySignedRelease } from "./release-verifier.mjs";
 import { authenticateUpdateRunnerRequest, verifyUpdateRunnerRequestAuth } from "./request-auth.mjs";
 import { verifyCutoverRestoreResult, verifyCutoverSnapshot } from "./snapshot-verifier.mjs";
+import {
+  DEPLOYMENT_LIFECYCLE_PROTOCOL,
+  verifyLifecycleCommand,
+} from "./lifecycle-contract.mjs";
+import { readDockerRuntimeDeactivationIntent } from "../../../scripts/runtime/runtime-mode-exclusion.mjs";
 
-export const UPDATE_RUNNER_VERSION = "0.2.1";
+export const UPDATE_RUNNER_VERSION = "0.3.0";
 const SERVICES = Object.freeze({
   databaseCandidate: "db-candidate",
   candidateBootstrap: "candidate-bootstrap",
@@ -26,6 +31,7 @@ const SERVICES = Object.freeze({
   productionMigrator: "database-migrator",
   snapshotCreate: "update-snapshot-create",
   snapshotRestore: "update-snapshot-restore",
+  snapshotCleanup: "update-snapshot-cleanup",
 });
 const CANDIDATE_VOLUMES = Object.freeze([
   "candidate_postgres_data",
@@ -44,11 +50,20 @@ const TRANSACTION_FENCE_PHASES = new Set([
   "rollback-decided",
   "runtime-releasing",
 ]);
+const MAX_HOLD_CLOCK_STEP_MS = 6 * 60 * 60_000;
+const MAX_HOLD_CLOCK_BACKWARD_MS = 5 * 60_000;
 
 function nowIso(clock) { return clock().toISOString(); }
 function errorMessage(error) { return error instanceof Error ? error.message : String(error); }
 function requestDigest(value) { return crypto.createHash("sha256").update(JSON.stringify(value)).digest("hex"); }
 function nonceDigest(value) { return crypto.createHash("sha256").update(value).digest("hex"); }
+
+function pathsOverlap(left, right) {
+  const relative = path.relative(left, right);
+  const reverse = path.relative(right, left);
+  return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative))
+    || (!reverse.startsWith("..") && !path.isAbsolute(reverse));
+}
 
 function step(key, label) { return { key, label, status: "pending" }; }
 
@@ -87,6 +102,8 @@ function initialProgress(request, clock) {
       dataCommitDecided: false,
       dataRestoreComplete: false,
       rollbackCommitDecided: false,
+      rollbackSnapshotCleanupComplete: false,
+      rollbackLifecycleClosed: false,
       proxyReleased: false,
       writeFenceReleased: false,
     },
@@ -120,11 +137,15 @@ function imageReference(release) {
 }
 
 function imageVersionTag(release) {
-  return `${release.artifact.imageIdentity.repository}:${release.version}`;
+  return `${release.artifact.imageIdentity.repository}:${bonniReleaseImageTag(release.version)}`;
 }
 
 function expectedRollbackImageTag(project) {
   return validateImageReference(`${project}-system:rollback`, "Projektgescopter Rollback-Tag");
+}
+
+function expectedEmergencyImageTag(project) {
+  return validateImageReference(`${project}-system:emergency`, "Projektgescopter Emergency-Tag");
 }
 
 function assertRollbackTagConfiguration(config) {
@@ -139,6 +160,13 @@ function assertRollbackTagConfiguration(config) {
   }
   if (config.rollbackImageTag === config.canonicalActiveImage) {
     throw new Error("Rollback- und Active-Image-Tag müssen verschieden sein.");
+  }
+  const expectedEmergency = expectedEmergencyImageTag(config.project);
+  if (config.emergencyImageTag !== expectedEmergency) {
+    throw new Error(`BONNI_EMERGENCY_IMAGE_TAG muss exakt projektgescopt sein: ${expectedEmergency}`);
+  }
+  if ([config.canonicalActiveImage, config.rollbackImageTag].includes(config.emergencyImageTag)) {
+    throw new Error("Active-, Rollback- und Emergency-Image-Tags müssen verschieden sein.");
   }
 }
 
@@ -171,6 +199,11 @@ export function createUpdateRunnerConfig(env = process.env) {
     env.BONNI_UPDATE_RUNNER_PRIVATE_STATE_ROOT
       || path.join(projectRoot, "runtime", "update-runner-private"),
   );
+  for (const sharedRoot of [storageRoot, updateCenterRoot, ipcRoot]) {
+    if (pathsOverlap(privateRoot, sharedRoot)) {
+      throw new Error("Privater Runner-State muss vollständig von Produktions-Storage und IPC getrennt sein.");
+    }
+  }
   const runtimeEnvironmentPath = env.BONNI_RUNTIME_ENV_FILE
     ? path.resolve(env.BONNI_RUNTIME_ENV_FILE)
     : null;
@@ -202,7 +235,7 @@ export function createUpdateRunnerConfig(env = process.env) {
   if (rollbackResultRoot === rollbackSnapshotRoot) {
     throw new Error("Snapshot- und Restore-Ergebniswurzel müssen getrennt sein.");
   }
-  const composeFile = path.join(projectRoot, "System", "backend", "docker-compose.runtime.yml");
+  const composeFile = path.join(projectRoot, "SYSTEM", "backend", "docker-compose.runtime.yml");
   const project = env.COMPOSE_PROJECT_NAME ? validateTrustedName(env.COMPOSE_PROJECT_NAME, "COMPOSE_PROJECT_NAME") : null;
   const canonicalActiveImage = validateImageReference(
     env.BONNI_ACTIVE_IMAGE_TAG || (project ? `${project}-system:active` : ""),
@@ -211,6 +244,14 @@ export function createUpdateRunnerConfig(env = process.env) {
   const rollbackImageTag = env.BONNI_ROLLBACK_IMAGE_TAG
     ? validateImageReference(env.BONNI_ROLLBACK_IMAGE_TAG, "BONNI_ROLLBACK_IMAGE_TAG")
     : null;
+  const emergencyImageTag = validateImageReference(
+    env.BONNI_EMERGENCY_IMAGE_TAG || (project ? `${project}-system:emergency` : ""),
+    "BONNI_EMERGENCY_IMAGE_TAG",
+  );
+  const configuredHoldDays = Number(env.SYSTEM_EMERGENCY_HOLD_DAYS || 14);
+  if (configuredHoldDays !== 14) {
+    throw new Error("SYSTEM_EMERGENCY_HOLD_DAYS muss für diesen Vertrag exakt 14 sein.");
+  }
   return {
     projectRoot,
     storageRoot,
@@ -219,14 +260,17 @@ export function createUpdateRunnerConfig(env = process.env) {
     ipcRoot,
     privateRoot,
     requestsRoot: path.join(ipcRoot, "requests"),
+    lifecycleRequestsRoot: path.join(ipcRoot, "requests", "lifecycle"),
     progressRoot: path.join(ipcRoot, "progress"),
     resultsRoot: path.join(ipcRoot, "results"),
+    lifecycleStatusPath: path.join(ipcRoot, "deployment-lifecycle.json"),
     heartbeatPath: path.join(ipcRoot, "heartbeat.json"),
     networkTransportGatePath,
     claimedRoot: path.join(privateRoot, "claimed"),
     journalRoot: path.join(privateRoot, "journal"),
     nonceRoot: path.join(privateRoot, "nonces"),
     stagingRoot: path.join(privateRoot, "staging"),
+    lifecycleStatePath: path.join(privateRoot, "deployment-lifecycle.json"),
     runtimeEnvironmentPath,
     activeEnvironmentPath,
     transactionFencePath,
@@ -236,6 +280,8 @@ export function createUpdateRunnerConfig(env = process.env) {
     composeFile,
     canonicalActiveImage,
     rollbackImageTag,
+    emergencyImageTag,
+    emergencyHoldDays: configuredHoldDays,
     project,
     hostname: env.HOSTNAME || null,
     runnerVersion: env.BONNI_UPDATE_RUNNER_VERSION || UPDATE_RUNNER_VERSION,
@@ -249,16 +295,56 @@ export function createUpdateRunnerConfig(env = process.env) {
 }
 
 export class UpdateRunner {
-  constructor({ config, docker, trustedKeys, requestSecret, clock = () => new Date(), sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)) }) {
+  constructor({
+    config,
+    docker,
+    trustedKeys,
+    requestSecret,
+    clock = () => new Date(),
+    monotonicClock = () => performance.now(),
+    sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+  }) {
     this.config = config;
-    this.docker = docker;
+    this.rawDocker = docker;
+    this.activeDockerAbortControllers = new Set();
+    this.docker = new Proxy(docker, {
+      get: (target, property, receiver) => {
+        const value = Reflect.get(target, property, receiver);
+        if (typeof value !== "function") return value;
+        return async (...args) => {
+          const guarded = Boolean(this.lockToken || this.lockLeaseError);
+          if (guarded) await this.assertLockOwnership();
+          const abortController = guarded ? new AbortController() : null;
+          if (abortController) {
+            this.activeDockerAbortControllers.add(abortController);
+            target.setLeaseAbortSignal?.(abortController.signal);
+          }
+          try {
+            const result = await Reflect.apply(value, target, args);
+            if (guarded) await this.assertLockOwnership();
+            return result;
+          } catch (error) {
+            if (guarded) await this.assertLockOwnership();
+            throw error;
+          } finally {
+            if (abortController) {
+              this.activeDockerAbortControllers.delete(abortController);
+              target.setLeaseAbortSignal?.(null);
+            }
+          }
+        };
+      },
+    });
     this.trustedKeys = trustedKeys;
     this.trustedKeyCount = trustedKeyCount(trustedKeys);
     this.requestSecret = requestSecret;
     this.clock = clock;
+    this.monotonicClock = monotonicClock;
+    this.lifecycleObservationMonotonic = new Map();
     this.sleep = sleep;
     this.lockHandle = null;
     this.lockToken = null;
+    this.lockLeaseError = null;
     this.currentRequestId = null;
     this.lastHeartbeat = { status: "idle", message: "Update-Runner ist bereit." };
   }
@@ -266,7 +352,12 @@ export class UpdateRunner {
   async initialize() {
     assertRollbackTagConfiguration(this.config);
     await Promise.all([
+      ensureDirectory(this.config.storageRoot),
+      ensureDirectory(this.config.updateCenterRoot),
+      ensureDirectory(this.config.ipcRoot),
+      ensureDirectory(this.config.privateRoot),
       ensureDirectory(this.config.requestsRoot),
+      ensureDirectory(this.config.lifecycleRequestsRoot),
       ensureDirectory(this.config.progressRoot),
       ensureDirectory(this.config.resultsRoot),
       ensureDirectory(this.config.claimedRoot),
@@ -274,6 +365,27 @@ export class UpdateRunner {
       ensureDirectory(this.config.nonceRoot),
       ensureDirectory(this.config.stagingRoot),
     ]);
+    const trustedRoots = await Promise.all([
+      this.config.storageRoot,
+      this.config.updateCenterRoot,
+      this.config.ipcRoot,
+      this.config.privateRoot,
+    ].map(async (root) => {
+      const direct = await fs.lstat(root);
+      if (!direct.isDirectory() || direct.isSymbolicLink()) {
+        throw new Error("Runner-State-Wurzeln müssen echte Verzeichnisse sein.");
+      }
+      const real = await fs.realpath(root);
+      const stat = await fs.stat(real);
+      return { root, real, dev: String(stat.dev), ino: String(stat.ino) };
+    }));
+    const privateState = trustedRoots.at(-1);
+    for (const shared of trustedRoots.slice(0, -1)) {
+      if (pathsOverlap(privateState.real, shared.real)
+        || (privateState.dev === shared.dev && privateState.ino === shared.ino)) {
+        throw new Error("Privater Runner-State ist real nicht von Produktions-Storage und IPC getrennt.");
+      }
+    }
     const activeEnvironmentExists = await fs.lstat(this.config.activeEnvironmentPath)
       .then((stat) => stat.isFile() && !stat.isSymbolicLink())
       .catch((error) => {
@@ -291,7 +403,210 @@ export class UpdateRunner {
     if (!activeEnvironmentStat.isFile() || activeEnvironmentStat.isSymbolicLink() || (activeEnvironmentStat.mode & 0o077) !== 0) {
       throw new Error("Private Active-Overlay-Umgebungsdatei ist nicht sicher.");
     }
+    await this.publishDeploymentLifecycle();
     await this.heartbeat("idle", "Update-Runner ist bereit.");
+  }
+
+  async readDeploymentLifecycle() {
+    const lifecycle = await readJsonIfExists(this.config.lifecycleStatePath);
+    if (!lifecycle) return null;
+    const allowed = [
+      "protocol", "schemaVersion", "generation", "state", "holdId", "workflowId",
+      "previousVersion", "targetVersion", "previousImageId", "targetImageId",
+      "rollbackImageTag", "emergencyImageTag", "holdDays", "activatedAt", "holdUntil",
+      "observedHoldMs", "lastObservedAt", "clockAnomalyAt", "clockAnomalyCode",
+      "finalizeReason", "finalizeRequestedAt", "finalizedAt", "updatedAt", "mode",
+    ];
+    const unknown = Object.keys(lifecycle).filter((key) => !allowed.includes(key));
+    const identifier = /^[A-Za-z0-9][A-Za-z0-9._-]{7,127}$/;
+    const imageId = /^sha256:[a-f0-9]{64}$/;
+    const timestamp = (value) => typeof value === "string" && Number.isFinite(Date.parse(value));
+    if (unknown.length
+      || lifecycle.protocol !== DEPLOYMENT_LIFECYCLE_PROTOCOL
+      || lifecycle.schemaVersion !== 1
+      || !Number.isSafeInteger(lifecycle.generation) || lifecycle.generation <= 0
+      || !["holding", "finalizing", "finalized"].includes(lifecycle.state)
+      || !identifier.test(String(lifecycle.holdId || ""))
+      || !identifier.test(String(lifecycle.workflowId || ""))
+      || !imageId.test(String(lifecycle.previousImageId || ""))
+      || !imageId.test(String(lifecycle.targetImageId || ""))
+      || lifecycle.rollbackImageTag !== this.config.rollbackImageTag
+      || lifecycle.emergencyImageTag !== this.config.emergencyImageTag
+      || lifecycle.holdDays !== 14
+      || lifecycle.mode !== "single-active-fail-closed-hold"
+      || !timestamp(lifecycle.activatedAt) || !timestamp(lifecycle.holdUntil) || !timestamp(lifecycle.updatedAt)
+      || Date.parse(lifecycle.holdUntil) - Date.parse(lifecycle.activatedAt) !== 14 * 24 * 60 * 60_000
+      || !Number.isSafeInteger(lifecycle.observedHoldMs) || lifecycle.observedHoldMs < 0
+      || lifecycle.observedHoldMs > 14 * 24 * 60 * 60_000
+      || !timestamp(lifecycle.lastObservedAt)
+      || Date.parse(lifecycle.lastObservedAt) < Date.parse(lifecycle.activatedAt) - MAX_HOLD_CLOCK_BACKWARD_MS
+      || (lifecycle.clockAnomalyAt !== null && !timestamp(lifecycle.clockAnomalyAt))
+      || ![null, "CLOCK_FORWARD_JUMP", "CLOCK_BACKWARD_JUMP"].includes(lifecycle.clockAnomalyCode)
+      || ((lifecycle.clockAnomalyAt === null) !== (lifecycle.clockAnomalyCode === null))
+      || (lifecycle.finalizeRequestedAt !== null && !timestamp(lifecycle.finalizeRequestedAt))
+      || (lifecycle.finalizedAt !== null && !timestamp(lifecycle.finalizedAt))) {
+      throw new Error("DEPLOYMENT_LIFECYCLE_STATE_INVALID");
+    }
+    return lifecycle;
+  }
+
+  async writeDeploymentLifecycle(lifecycle) {
+    if (this.lockToken || this.lockLeaseError) await this.assertLockOwnership();
+    lifecycle.updatedAt = nowIso(this.clock);
+    await writeJsonAtomic(this.config.lifecycleStatePath, lifecycle);
+    if (this.lockToken || this.lockLeaseError) await this.assertLockOwnership();
+    await this.publishDeploymentLifecycle(lifecycle);
+    return lifecycle;
+  }
+
+  async publishDeploymentLifecycle(input = undefined) {
+    const lifecycle = input === undefined ? await this.readDeploymentLifecycle() : input;
+    const status = lifecycle ? {
+      protocol: DEPLOYMENT_LIFECYCLE_PROTOCOL,
+      schemaVersion: 1,
+      generation: lifecycle.generation,
+      state: lifecycle.state,
+      holdId: lifecycle.holdId,
+      workflowId: lifecycle.workflowId,
+      previousVersion: lifecycle.previousVersion,
+      targetVersion: lifecycle.targetVersion,
+      holdDays: lifecycle.holdDays,
+      activatedAt: lifecycle.activatedAt,
+      holdUntil: lifecycle.holdUntil,
+      observedHoldMs: lifecycle.observedHoldMs,
+      autoFinalizeBlocked: lifecycle.clockAnomalyCode !== null,
+      blockReason: lifecycle.clockAnomalyCode
+        ? "Automatischer Abschluss ist wegen einer unplausiblen Systemzeit gesperrt. Ein Administrator kann den Hold nach Prüfung signiert abschließen."
+        : null,
+      finalizeReason: lifecycle.finalizeReason,
+      finalizeRequestedAt: lifecycle.finalizeRequestedAt,
+      finalizedAt: lifecycle.finalizedAt,
+      blocksUpdates: lifecycle.state !== "finalized",
+      canFinalize: lifecycle.state === "holding",
+      mode: lifecycle.mode,
+      updatedAt: lifecycle.updatedAt,
+    } : {
+      protocol: DEPLOYMENT_LIFECYCLE_PROTOCOL,
+      schemaVersion: 1,
+      generation: 0,
+      state: "idle",
+      blocksUpdates: false,
+      canFinalize: false,
+      observedHoldMs: 0,
+      autoFinalizeBlocked: false,
+      blockReason: null,
+      mode: "single-active-fail-closed-hold",
+      updatedAt: nowIso(this.clock),
+    };
+    await writeJsonAtomic(this.config.lifecycleStatusPath, status);
+    return status;
+  }
+
+  async createDeploymentHold(request, progress) {
+    const current = await this.readDeploymentLifecycle();
+    if (current && current.state !== "finalized") {
+      if (current.holdId === request.requestId
+        && current.targetImageId === progress.newImageId
+        && current.targetVersion === request.targetVersion) return current;
+      throw new Error(`UPDATE_HOLD_ACTIVE:${current.holdId}`);
+    }
+    if (!/^sha256:[a-f0-9]{64}$/.test(progress.oldImageId || "")
+      || !/^sha256:[a-f0-9]{64}$/.test(progress.newImageId || "")) {
+      throw new Error("DEPLOYMENT_HOLD_IMAGE_ID_MISSING");
+    }
+    const activatedAt = this.clock();
+    const lifecycle = {
+      protocol: DEPLOYMENT_LIFECYCLE_PROTOCOL,
+      schemaVersion: 1,
+      generation: (current?.generation || 0) + 1,
+      state: "holding",
+      holdId: request.requestId,
+      workflowId: request.workflowId,
+      previousVersion: request.currentVersion,
+      targetVersion: request.targetVersion,
+      previousImageId: progress.oldImageId,
+      targetImageId: progress.newImageId,
+      rollbackImageTag: this.config.rollbackImageTag,
+      emergencyImageTag: this.config.emergencyImageTag,
+      holdDays: this.config.emergencyHoldDays,
+      activatedAt: activatedAt.toISOString(),
+      holdUntil: new Date(activatedAt.getTime() + this.config.emergencyHoldDays * 24 * 60 * 60_000).toISOString(),
+      observedHoldMs: 0,
+      lastObservedAt: activatedAt.toISOString(),
+      clockAnomalyAt: null,
+      clockAnomalyCode: null,
+      finalizeReason: null,
+      finalizeRequestedAt: null,
+      finalizedAt: null,
+      updatedAt: activatedAt.toISOString(),
+      mode: "single-active-fail-closed-hold",
+    };
+    await this.writeDeploymentLifecycle(lifecycle);
+    progress.deploymentLifecycle = {
+      generation: lifecycle.generation,
+      state: lifecycle.state,
+      holdId: lifecycle.holdId,
+      holdUntil: lifecycle.holdUntil,
+    };
+    await this.saveProgress(progress, "deployment-hold-created", `Vorheriger Stand bleibt bis ${lifecycle.holdUntil} geschützt.`);
+    return lifecycle;
+  }
+
+  async abortDeploymentHold(request, reason) {
+    const lifecycle = await this.readDeploymentLifecycle();
+    if (!lifecycle || lifecycle.holdId !== request.requestId || lifecycle.state === "finalized") return lifecycle;
+    lifecycle.state = "finalized";
+    lifecycle.finalizeReason = reason;
+    lifecycle.finalizeRequestedAt ||= nowIso(this.clock);
+    lifecycle.finalizedAt = nowIso(this.clock);
+    return this.writeDeploymentLifecycle(lifecycle);
+  }
+
+  async closeRollbackLifecycle(request) {
+    const lifecycle = await this.abortDeploymentHold(request, "rollback");
+    if (lifecycle && (
+      lifecycle.holdId !== request.requestId
+      || lifecycle.state !== "finalized"
+      || lifecycle.finalizeReason !== "rollback"
+    )) {
+      throw new Error("ROLLBACK_DEPLOYMENT_LIFECYCLE_NOT_CLOSED");
+    }
+    return lifecycle;
+  }
+
+  async observeDeploymentHold(lifecycle) {
+    if (!lifecycle || lifecycle.state !== "holding") return lifecycle;
+    const now = this.clock();
+    const wallDelta = now.getTime() - Date.parse(lifecycle.lastObservedAt);
+    const monotonicNow = Number(this.monotonicClock());
+    if (!Number.isFinite(monotonicNow) || monotonicNow < 0) {
+      throw new Error("DEPLOYMENT_HOLD_MONOTONIC_CLOCK_INVALID");
+    }
+    const previousMonotonic = this.lifecycleObservationMonotonic.get(lifecycle.holdId);
+    this.lifecycleObservationMonotonic.set(lifecycle.holdId, monotonicNow);
+    if (previousMonotonic === undefined) return lifecycle;
+    const monotonicDelta = monotonicNow - previousMonotonic;
+    const drift = wallDelta - monotonicDelta;
+    if (monotonicDelta < 0
+      || monotonicDelta > MAX_HOLD_CLOCK_STEP_MS
+      || drift > MAX_HOLD_CLOCK_BACKWARD_MS
+      || drift < -MAX_HOLD_CLOCK_BACKWARD_MS) {
+      if (!lifecycle.clockAnomalyCode) {
+        lifecycle.clockAnomalyAt = now.toISOString();
+        lifecycle.clockAnomalyCode = drift > 0 ? "CLOCK_FORWARD_JUMP" : "CLOCK_BACKWARD_JUMP";
+        await this.writeDeploymentLifecycle(lifecycle);
+      }
+      return lifecycle;
+    }
+    if (monotonicDelta > 0) {
+      lifecycle.observedHoldMs = Math.min(
+        14 * 24 * 60 * 60_000,
+        lifecycle.observedHoldMs + Math.floor(monotonicDelta),
+      );
+      lifecycle.lastObservedAt = now.toISOString();
+      await this.writeDeploymentLifecycle(lifecycle);
+    }
+    return lifecycle;
   }
 
   async closeNetworkTransport(_reason = "update-cutover") {
@@ -314,6 +629,7 @@ export class UpdateRunner {
   }
 
   async heartbeat(status, message) {
+    if (this.lockHandle) await this.refreshLockLease();
     const configured = this.trustedKeyCount > 0;
     const effectiveStatus = configured ? status : "unconfigured";
     const effectiveMessage = configured
@@ -333,7 +649,68 @@ export class UpdateRunner {
       message: effectiveMessage,
       updatedAt: nowIso(this.clock),
     });
-    if (this.lockHandle) await this.lockHandle.utimes(this.clock(), this.clock()).catch(() => undefined);
+  }
+
+  markLockOwnershipLost(error) {
+    const failure = error instanceof Error ? error : new Error(String(error));
+    this.lockLeaseError ||= failure;
+    for (const controller of this.activeDockerAbortControllers) {
+      controller.abort(this.lockLeaseError);
+    }
+    return this.lockLeaseError;
+  }
+
+  async foreignRunnerContainers() {
+    const running = await this.rawDocker.runningServiceContainers(["update-runner"]);
+    const own = String(this.config.hostname || "");
+    return running.filter((container) => !(own && (container.startsWith(own) || own.startsWith(container))));
+  }
+
+  async assertLockOwnership() {
+    if (this.lockLeaseError) throw this.lockLeaseError;
+    if (!this.lockHandle || !this.lockToken) {
+      throw this.markLockOwnershipLost(new Error("UPDATE_RUNNER_LOCK_NOT_OWNED"));
+    }
+    try {
+      const [owner, handleStat, pathStat] = await Promise.all([
+        readJson(this.config.lockPath),
+        this.lockHandle.stat(),
+        fs.stat(this.config.lockPath),
+      ]);
+      if (owner?.token !== this.lockToken
+        || handleStat.dev !== pathStat.dev
+        || handleStat.ino !== pathStat.ino) {
+        throw new Error("UPDATE_RUNNER_LOCK_OWNERSHIP_LOST");
+      }
+      return owner;
+    } catch (error) {
+      throw this.markLockOwnershipLost(error);
+    }
+  }
+
+  async refreshLockLease() {
+    await this.assertLockOwnership();
+    const now = this.clock();
+    try {
+      await this.lockHandle.utimes(now, now);
+      await this.assertLockOwnership();
+    } catch (error) {
+      throw this.markLockOwnershipLost(error);
+    }
+  }
+
+  async lockOwnerIsAlive(owner) {
+    if (Number.isSafeInteger(owner?.pid) && owner.pid > 0
+      && (!owner.hostname || owner.hostname === this.config.hostname)) {
+      try {
+        process.kill(owner.pid, 0);
+        return true;
+      } catch (error) {
+        if (error?.code === "EPERM") return true;
+        if (error?.code !== "ESRCH") throw error;
+      }
+    }
+    return (await this.foreignRunnerContainers()).length > 0;
   }
 
   async acquireLock() {
@@ -348,22 +725,54 @@ export class UpdateRunner {
           if (statError?.code === "ENOENT") continue;
           throw statError;
         }
-        if (this.config.bootRecovery) {
-          const running = await this.docker.runningServiceContainers(["update-runner"]);
-          const own = String(this.config.hostname || "");
-          const others = running.filter((container) => !(own && (container.startsWith(own) || own.startsWith(container))));
-          if (others.length) return false;
-        } else if (this.clock().getTime() - stat.mtimeMs <= this.config.staleLockMs) return false;
-        const stale = `${this.config.lockPath}.stale-${Date.now()}-${crypto.randomBytes(4).toString("hex")}`;
-        try { await fs.rename(this.config.lockPath, stale); } catch (renameError) {
+        const expired = this.clock().getTime() - stat.mtimeMs > this.config.staleLockMs;
+        if (!this.config.bootRecovery && !expired) return false;
+        const owner = await readJsonIfExists(this.config.lockPath).catch(() => null);
+        if (await this.lockOwnerIsAlive(owner)) return false;
+        const stalePath = `${this.config.lockPath}.stale-${Date.now()}-${crypto.randomBytes(4).toString("hex")}`;
+        try { await fs.rename(this.config.lockPath, stalePath); } catch (renameError) {
           if (renameError?.code === "ENOENT") continue;
           throw renameError;
         }
       }
     }
     if (!this.lockHandle) return false;
+    // Even a previously missing path is not sufficient singleton evidence:
+    // another live runner whose lock was externally removed may still have a
+    // long Docker child in flight. Probe twice after wx and before ownership.
+    try {
+      for (let probe = 0; probe < 2; probe += 1) {
+        if ((await this.foreignRunnerContainers()).length) {
+          const handleStat = await this.lockHandle.stat().catch(() => null);
+          const pathStat = await fs.stat(this.config.lockPath).catch(() => null);
+          await this.lockHandle.close().catch(() => undefined);
+          this.lockHandle = null;
+          if (handleStat && pathStat
+            && handleStat.dev === pathStat.dev
+            && handleStat.ino === pathStat.ino) {
+            await fs.unlink(this.config.lockPath).catch(() => undefined);
+          }
+          return false;
+        }
+      }
+    } catch (error) {
+      // A failed liveness probe must never turn an unverified wx acquisition
+      // into ownership. Preserve the fresh lock as a fail-closed diagnostic
+      // barrier and release only this process' file descriptor.
+      await this.lockHandle.close().catch(() => undefined);
+      this.lockHandle = null;
+      throw error;
+    }
     this.lockToken = crypto.randomBytes(24).toString("base64url");
-    await this.lockHandle.writeFile(JSON.stringify({ pid: process.pid, token: this.lockToken, acquiredAt: nowIso(this.clock) }));
+    this.lockLeaseError = null;
+    await this.lockHandle.writeFile(JSON.stringify({
+      pid: process.pid,
+      hostname: this.config.hostname,
+      token: this.lockToken,
+      acquiredAt: nowIso(this.clock),
+    }));
+    await this.lockHandle.sync();
+    await this.refreshLockLease();
     return true;
   }
 
@@ -373,6 +782,7 @@ export class UpdateRunner {
     await this.lockHandle.close().catch(() => undefined);
     this.lockHandle = null;
     this.lockToken = null;
+    this.lockLeaseError = null;
     const owner = await readJsonIfExists(this.config.lockPath).catch(() => null);
     if (owner?.token === token) await fs.unlink(this.config.lockPath).catch(() => undefined);
   }
@@ -383,10 +793,12 @@ export class UpdateRunner {
   resultPath(requestId) { return path.join(this.config.resultsRoot, `${requestId}.json`); }
 
   async saveProgress(progress, phase, message) {
+    if (this.lockToken || this.lockLeaseError) await this.assertLockOwnership();
     progress.phase = phase;
     progress.message = message;
     progress.updatedAt = nowIso(this.clock);
     await writeJsonAtomic(this.journalPath(progress.requestId), progress);
+    if (this.lockToken || this.lockLeaseError) await this.assertLockOwnership();
     await writeJsonAtomic(this.progressPath(progress.workflowId), progress);
     await this.heartbeat("busy", message);
   }
@@ -403,6 +815,94 @@ export class UpdateRunner {
   async claimedRequests() {
     const names = (await fs.readdir(this.config.claimedRoot)).filter((name) => /^[a-zA-Z0-9][a-zA-Z0-9._-]{7,127}\.request\.json$/.test(name)).sort();
     return names;
+  }
+
+  async runtimeDeactivationRequested() {
+    return Boolean(await readDockerRuntimeDeactivationIntent({
+      productRoot: this.config.projectRoot,
+    }));
+  }
+
+  async assertRuntimeDeactivationSafe() {
+    await this.initialize();
+    if (!await this.acquireLock()) throw new Error("UPDATE_RUNNER_DEACTIVATION_BUSY");
+    try {
+      await this.assertLockOwnership();
+      if (!await this.runtimeDeactivationRequested()) {
+        throw new Error("UPDATE_RUNNER_DEACTIVATION_INTENT_MISSING");
+      }
+
+      const fence = await fs.lstat(this.config.transactionFencePath).catch((error) => {
+        if (error?.code === "ENOENT") return null;
+        throw error;
+      });
+      if (fence) throw new Error("UPDATE_RUNNER_DEACTIVATION_TRANSACTION_FENCE_PRESENT");
+
+      const claims = await fs.readdir(this.config.claimedRoot, { withFileTypes: true });
+      for (const entry of claims) {
+        if (entry.isSymbolicLink() || !entry.isFile()) {
+          throw new Error(`UPDATE_RUNNER_DEACTIVATION_CLAIM_STATE_INVALID:${entry.name}`);
+        }
+        if (/^[A-Za-z0-9][A-Za-z0-9._-]{7,127}\.request\.json$/u.test(entry.name)) {
+          throw new Error(`UPDATE_RUNNER_DEACTIVATION_OPEN_CLAIM:${entry.name}`);
+        }
+        if (!/^[A-Za-z0-9][A-Za-z0-9._-]{7,127}\.request\.json\.failed-[0-9]+$/u.test(entry.name)) {
+          throw new Error(`UPDATE_RUNNER_DEACTIVATION_CLAIM_STATE_INVALID:${entry.name}`);
+        }
+      }
+
+      const queued = await fs.readdir(this.config.requestsRoot, { withFileTypes: true });
+      for (const entry of queued) {
+        if (entry.name === path.basename(this.config.lifecycleRequestsRoot)
+          && entry.isDirectory() && !entry.isSymbolicLink()) continue;
+        throw new Error(`UPDATE_RUNNER_DEACTIVATION_QUEUED_REQUEST:${entry.name}`);
+      }
+      const lifecycleCommands = await fs.readdir(this.config.lifecycleRequestsRoot, { withFileTypes: true });
+      if (lifecycleCommands.length) {
+        throw new Error(`UPDATE_RUNNER_DEACTIVATION_LIFECYCLE_COMMAND:${lifecycleCommands[0].name}`);
+      }
+
+      const terminalJournalStatuses = new Set(["completed", "failed", "rolled-back"]);
+      const journals = await fs.readdir(this.config.journalRoot, { withFileTypes: true });
+      for (const entry of journals) {
+        if (entry.isSymbolicLink() || !entry.isFile()
+          || !/^[A-Za-z0-9][A-Za-z0-9._-]{7,127}\.json$/u.test(entry.name)) {
+          throw new Error(`UPDATE_RUNNER_DEACTIVATION_JOURNAL_INVALID:${entry.name}`);
+        }
+        const journal = await readJson(path.join(this.config.journalRoot, entry.name));
+        if (!terminalJournalStatuses.has(journal?.status)) {
+          throw new Error(`UPDATE_RUNNER_DEACTIVATION_JOURNAL_OPEN:${entry.name}`);
+        }
+      }
+
+      const staged = await fs.readdir(this.config.stagingRoot, { withFileTypes: true });
+      if (staged.length) {
+        throw new Error(`UPDATE_RUNNER_DEACTIVATION_STAGING_PRESENT:${staged[0].name}`);
+      }
+
+      const lifecycle = await this.readDeploymentLifecycle();
+      if (lifecycle && lifecycle.state !== "finalized") {
+        throw new Error(`UPDATE_RUNNER_DEACTIVATION_LIFECYCLE_${lifecycle.state.toUpperCase()}`);
+      }
+
+      const updateHelpers = await this.rawDocker.runningServiceContainers([
+        SERVICES.databaseCandidate,
+        SERVICES.candidateBootstrap,
+        SERVICES.candidateMigrator,
+        SERVICES.candidate,
+        SERVICES.productionMigrator,
+        SERVICES.snapshotCreate,
+        SERVICES.snapshotRestore,
+        SERVICES.snapshotCleanup,
+      ]);
+      if (updateHelpers.length) {
+        throw new Error(`UPDATE_RUNNER_DEACTIVATION_HELPER_RUNNING:${updateHelpers[0]}`);
+      }
+      await this.assertLockOwnership();
+      return { ok: true, lifecycleState: lifecycle?.state || null };
+    } finally {
+      await this.releaseLock();
+    }
   }
 
   async claimNextRequest() {
@@ -538,7 +1038,7 @@ export class UpdateRunner {
     throw new Error(`${label} wurde nicht dreimal fehlerfrei bestätigt: ${lastError}`);
   }
 
-  async stageArtifact(request, sourcePath) {
+  async stageArtifact(request, sourcePath, acceptedAt) {
     const finalPath = path.join(this.config.stagingRoot, `${request.requestId}.oci`);
     const temporary = `${finalPath}.${process.pid}.${crypto.randomBytes(4).toString("hex")}.tmp`;
     try {
@@ -549,7 +1049,11 @@ export class UpdateRunner {
         artifactPath: temporary,
         trustedKeys: this.trustedKeys,
         runnerVersion: this.config.runnerVersion,
-        now: this.clock(),
+        // Recovery revalidates signature and artifact bytes, but the signed
+        // validity window remains bound to the durable authenticated claim.
+        // A crash after commit must not become unrecoverable merely because
+        // wall-clock time passed the release expiry while Bonni was down.
+        now: acceptedAt,
       });
       await fs.rename(temporary, finalPath);
       return finalPath;
@@ -597,7 +1101,11 @@ export class UpdateRunner {
   async verifyArchiveTags(request, archivePath, progress) {
     const tags = await this.docker.archiveImageTags(archivePath);
     assertReleaseArchiveTags(
-      { repository: request.release.artifact.imageIdentity.repository, version: request.targetVersion },
+      {
+        repository: request.release.artifact.imageIdentity.repository,
+        version: request.targetVersion,
+        imageTag: bonniReleaseImageTag(request.targetVersion),
+      },
       tags,
       { forbiddenTags: [this.config.canonicalActiveImage, this.config.rollbackImageTag] },
     );
@@ -610,8 +1118,10 @@ export class UpdateRunner {
   }
 
   async persistActiveRelease(request, imageId, version = request.targetVersion) {
+    if (this.lockToken || this.lockLeaseError) await this.assertLockOwnership();
     const activeEnvironment = `SYSTEM_IMAGE=${this.config.canonicalActiveImage}\nSYSTEM_VERSION=${version}\n`;
     await writeTextAtomic(this.config.activeEnvironmentPath, activeEnvironment);
+    if (this.lockToken || this.lockLeaseError) await this.assertLockOwnership();
   }
 
   snapshotEnvironment(request) {
@@ -668,6 +1178,7 @@ export class UpdateRunner {
   }
 
   async writeTransactionFence(request, phase) {
+    if (this.lockToken || this.lockLeaseError) await this.assertLockOwnership();
     if (!TRANSACTION_FENCE_PHASES.has(phase)) throw new Error("UPDATE_TRANSACTION_FENCE_PHASE_INVALID");
     const existing = await this.readTransactionFence(request).catch((error) => {
       if (error?.message === "UPDATE_TRANSACTION_FENCE_MISSING") return null;
@@ -694,6 +1205,7 @@ export class UpdateRunner {
       createdAt: existing?.createdAt || timestamp,
       updatedAt: timestamp,
     });
+    if (this.lockToken || this.lockLeaseError) await this.assertLockOwnership();
   }
 
   async reconcileTransactionDecision(request, progress) {
@@ -718,6 +1230,7 @@ export class UpdateRunner {
   }
 
   async removeTransactionFence(request, progress) {
+    if (this.lockToken || this.lockLeaseError) await this.assertLockOwnership();
     const existing = await this.readTransactionFence(request);
     progress.flags.writeFenceReleased = true;
     await this.saveProgress(progress, "fence-release-ready", "Transaktionsentscheidung ist dauerhaft; der Startzaun darf entfernt werden.");
@@ -727,6 +1240,7 @@ export class UpdateRunner {
       await directory.sync();
       await directory.close();
     }
+    if (this.lockToken || this.lockLeaseError) await this.assertLockOwnership();
   }
 
   async assertProductionWritersStopped() {
@@ -849,6 +1363,15 @@ export class UpdateRunner {
     await this.saveProgress(progress, "data-restored", "Alle drei Produktionsdatenebenen wurden vollständig wiederhergestellt und geprüft.");
   }
 
+  async cleanupCutoverSnapshot(snapshotId) {
+    await this.docker.compose([
+      "--profile", "update", "run", "--rm", "--no-deps", SERVICES.snapshotCleanup,
+    ], {
+      env: { BONNI_UPDATE_SNAPSHOT_ID: snapshotId },
+      timeoutMs: 10 * 60_000,
+    });
+  }
+
   async startCanonicalActive(version) {
     await this.docker.compose([
       "up", "-d", "--no-deps", "--force-recreate", "--no-build", SERVICES.active,
@@ -865,6 +1388,150 @@ export class UpdateRunner {
       "emergency",
       "Emergency direkt",
     );
+  }
+
+  async verifyCanonicalActiveTarget(lifecycle, label) {
+    await this.waitForHealth(
+      () => this.docker.health(SERVICES.active),
+      "active",
+      lifecycle.targetVersion,
+      label,
+    );
+    const activeContainer = await this.docker.serviceContainer(SERVICES.active);
+    const activeImageId = await this.docker.containerImageId(activeContainer);
+    if (activeImageId !== lifecycle.targetImageId) {
+      throw new Error("DEPLOYMENT_FINALIZE_ACTIVE_IMAGE_MISMATCH");
+    }
+  }
+
+  async finalizeDeploymentHold({ holdId, generation, reason }) {
+    const lifecycle = await this.readDeploymentLifecycle();
+    if (!lifecycle) throw new Error("DEPLOYMENT_HOLD_NOT_FOUND");
+    if (lifecycle.holdId !== holdId || lifecycle.generation !== generation) {
+      throw new Error("DEPLOYMENT_HOLD_GENERATION_MISMATCH");
+    }
+    if (lifecycle.state === "finalized") return { lifecycle, idempotent: true };
+
+    if (lifecycle.state === "holding") {
+      lifecycle.state = "finalizing";
+      lifecycle.finalizeReason = reason;
+      lifecycle.finalizeRequestedAt = nowIso(this.clock);
+      await this.writeDeploymentLifecycle(lifecycle);
+    } else if (lifecycle.state !== "finalizing") {
+      throw new Error(`DEPLOYMENT_HOLD_STATE_INVALID:${lifecycle.state}`);
+    }
+
+    const fencePresent = await fs.lstat(this.config.transactionFencePath)
+      .then(() => true)
+      .catch((error) => {
+        if (error?.code === "ENOENT") return false;
+        throw error;
+      });
+    if (fencePresent) throw new Error("DEPLOYMENT_FINALIZE_TRANSACTION_FENCE_PRESENT");
+
+    await this.verifyCanonicalActiveTarget(lifecycle, "Active vor Hold-Abschluss");
+
+    // Emergency remains on the deliberately delayed image throughout the hold.
+    // Only the runner may advance it after re-verifying the productive target.
+    await this.docker.tagImage(lifecycle.targetImageId, this.config.emergencyImageTag);
+    if (await this.docker.imageId(this.config.emergencyImageTag) !== lifecycle.targetImageId) {
+      throw new Error("DEPLOYMENT_FINALIZE_EMERGENCY_TAG_MISMATCH");
+    }
+    await this.startEmergency();
+    const emergencyContainer = await this.docker.serviceContainer(SERVICES.emergency);
+    const emergencyImageId = await this.docker.containerImageId(emergencyContainer);
+    if (emergencyImageId !== lifecycle.targetImageId) throw new Error("DEPLOYMENT_FINALIZE_EMERGENCY_IMAGE_MISMATCH");
+
+    // Emergency recreation may take minutes. Re-prove the canonical target at
+    // the final irreversible boundary so a failure during that window can
+    // never advance the rollback pin or delete the only cutover snapshot.
+    await this.verifyCanonicalActiveTarget(lifecycle, "Active unmittelbar vor Hold-Freigabe");
+
+    // Advancing the rollback pin releases the previous image without guessing
+    // an image name or deleting unrelated Docker data. The exact old image ID
+    // stays only if another explicitly managed tag still owns it.
+    await this.docker.tagImage(lifecycle.targetImageId, this.config.rollbackImageTag);
+    if (await this.docker.imageId(this.config.rollbackImageTag) !== lifecycle.targetImageId) {
+      throw new Error("DEPLOYMENT_FINALIZE_ROLLBACK_TAG_MISMATCH");
+    }
+    await this.cleanupCutoverSnapshot(lifecycle.holdId);
+
+    lifecycle.state = "finalized";
+    lifecycle.finalizeReason ||= reason;
+    lifecycle.finalizeRequestedAt ||= nowIso(this.clock);
+    lifecycle.finalizedAt = nowIso(this.clock);
+    await this.writeDeploymentLifecycle(lifecycle);
+    return { lifecycle, idempotent: false };
+  }
+
+  lifecycleCommandResultPath(commandId) {
+    return path.join(this.config.resultsRoot, `lifecycle-${commandId}.json`);
+  }
+
+  async processLifecycleCommands() {
+    let lifecycle = await this.readDeploymentLifecycle();
+    if (lifecycle?.state === "finalizing") {
+      await this.finalizeDeploymentHold({
+        holdId: lifecycle.holdId,
+        generation: lifecycle.generation,
+        reason: lifecycle.finalizeReason || "recovery",
+      });
+      lifecycle = await this.readDeploymentLifecycle();
+    } else if (lifecycle?.state === "holding") {
+      lifecycle = await this.observeDeploymentHold(lifecycle);
+      const fullHoldObserved = lifecycle.observedHoldMs >= 14 * 24 * 60 * 60_000;
+      if (!lifecycle.clockAnomalyCode
+        && fullHoldObserved
+        && this.clock().getTime() >= Date.parse(lifecycle.holdUntil)) {
+        await this.finalizeDeploymentHold({
+          holdId: lifecycle.holdId,
+          generation: lifecycle.generation,
+          reason: "hold-expired",
+        });
+        lifecycle = await this.readDeploymentLifecycle();
+      }
+    }
+
+    const names = (await fs.readdir(this.config.lifecycleRequestsRoot))
+      .filter((name) => /^[A-Za-z0-9][A-Za-z0-9._-]{7,127}\.json$/.test(name))
+      .sort();
+    for (const name of names) {
+      const file = path.join(this.config.lifecycleRequestsRoot, name);
+      let commandId = name.slice(0, -5);
+      try {
+        const command = verifyLifecycleCommand(await readJson(file), this.requestSecret, { now: this.clock() });
+        commandId = command.commandId;
+        if (`${command.commandId}.json` !== name) throw new Error("Lifecycle-Dateiname und commandId stimmen nicht überein.");
+        const result = await this.finalizeDeploymentHold({
+          holdId: command.holdId,
+          generation: command.generation,
+          reason: "developer-requested",
+        });
+        await writeJsonAtomic(this.lifecycleCommandResultPath(command.commandId), {
+          schemaVersion: 1,
+          commandId: command.commandId,
+          ok: true,
+          state: result.lifecycle.state,
+          holdId: result.lifecycle.holdId,
+          generation: result.lifecycle.generation,
+          idempotent: result.idempotent,
+          finishedAt: nowIso(this.clock),
+        });
+      } catch (error) {
+        await writeJsonAtomic(this.lifecycleCommandResultPath(commandId), {
+          schemaVersion: 1,
+          commandId,
+          ok: false,
+          error: errorMessage(error),
+          finishedAt: nowIso(this.clock),
+        });
+      } finally {
+        await fs.unlink(file).catch(() => undefined);
+      }
+    }
+    lifecycle = await this.readDeploymentLifecycle();
+    await this.publishDeploymentLifecycle(lifecycle);
+    return lifecycle;
   }
 
   async releaseRuntimeAfterDecision(request, progress, version) {
@@ -976,6 +1643,14 @@ export class UpdateRunner {
     await this.waitForHealth(() => this.docker.health(SERVICES.active), "active", request.targetVersion, "Wiederaufgenommener Active");
     progress.flags.activePromoted = true;
     await this.saveProgress(progress, "active-healthy", "Dauerhaft entschiedener Active ist nach Wiederanlauf vollständig bestätigt.");
+    const lifecycle = await this.readDeploymentLifecycle();
+    if (!lifecycle
+      || lifecycle.holdId !== request.requestId
+      || lifecycle.targetImageId !== progress.newImageId
+      || lifecycle.targetVersion !== request.targetVersion
+      || lifecycle.state === "finalized") {
+      throw new Error("COMMITTED_TARGET_DEPLOYMENT_HOLD_MISSING");
+    }
     await this.releaseRuntimeAfterDecision(request, progress, request.targetVersion);
     if (progress.flags.candidateResourcesStarted) progress.cleanup = await this.stopCandidate(request);
     progress.status = "completed";
@@ -1011,6 +1686,11 @@ export class UpdateRunner {
       await this.startCanonicalActive(request.currentVersion);
       await this.waitForHealth(() => this.docker.health(SERVICES.active), "active", request.currentVersion, "Rollback-Active");
       await this.releaseRuntimeAfterDecision(request, progress, request.currentVersion);
+      await this.cleanupCutoverSnapshot(request.requestId);
+      progress.flags.rollbackSnapshotCleanupComplete = true;
+      await this.saveProgress(progress, "rollback-snapshot-cleaned", "Request-eigener Cutover-Snapshot wurde nach bestätigtem Rollback sicher entfernt.");
+      await this.closeRollbackLifecycle(request);
+      progress.flags.rollbackLifecycleClosed = true;
       progress.rollback.ok = true;
       progress.status = "rolled-back";
       progress.error = errorMessage(originalError);
@@ -1049,6 +1729,20 @@ export class UpdateRunner {
     this.currentRequestId = request.requestId;
     await this.saveProgress(progress, progress.phase || "accepted", progress.message || "Update wird verarbeitet.");
 
+    if (progress.flags.rollbackCommitDecided && progress.flags.writeFenceReleased) {
+      if (!progress.flags.rollbackSnapshotCleanupComplete) {
+        await this.cleanupCutoverSnapshot(request.requestId);
+        progress.flags.rollbackSnapshotCleanupComplete = true;
+      }
+      await this.closeRollbackLifecycle(request);
+      progress.flags.rollbackLifecycleClosed = true;
+      progress.rollback.attempted = true;
+      progress.rollback.ok = true;
+      progress.status = "rolled-back";
+      await this.saveProgress(progress, "rolled-back-cleanup-complete", "Bestätigter Rollback und request-eigene Snapshot-Bereinigung sind abgeschlossen.");
+      return progress;
+    }
+
     try {
       const fencePresent = await fs.lstat(this.config.transactionFencePath)
         .then(() => true)
@@ -1078,7 +1772,10 @@ export class UpdateRunner {
         artifactPath: artifact.path,
         trustedKeys: this.trustedKeys,
         runnerVersion: this.config.runnerVersion,
-        now: this.clock(),
+        // Keep the validity decision bound to the authenticated durable claim
+        // on both first execution and crash recovery. Signature and bytes are
+        // still rechecked on every attempt.
+        now: claimedAt,
       });
       if (request.release.artifact.type !== "oci-image-archive") {
         throw new Error("BONNI_RELEASE_BUNDLE_NOT_SUPPORTED_BY_RUNNER");
@@ -1115,7 +1812,7 @@ export class UpdateRunner {
       }
       if (await this.finishRecoveredPromotion(request, progress)) return progress;
 
-      const stagedArtifactPath = await this.stageArtifact(request, artifact.path);
+      const stagedArtifactPath = await this.stageArtifact(request, artifact.path, claimedAt);
       progress.stagedArtifactPath = stagedArtifactPath;
       await this.saveProgress(progress, "artifact-staged", "Geprüftes Artefakt wurde in den exklusiven Runner-Speicher kopiert.");
       await this.verifyArchiveTags(request, stagedArtifactPath, progress);
@@ -1131,7 +1828,9 @@ export class UpdateRunner {
       const signedReference = imageReference(request.release);
       const loaded = await this.docker.imageIdentity(imageVersionTag(request.release));
       const expected = request.release.artifact.imageIdentity;
-      if ((loaded.repoDigests.length > 0 && !loaded.repoDigests.includes(signedReference))
+      if ((loaded.repoDigests.length > 0
+        ? !loaded.repoDigests.includes(signedReference)
+        : loaded.id !== expected.digest)
         || loaded.os !== expected.platform.os
         || loaded.architecture !== expected.platform.architecture
         || (loaded.variant || null) !== (expected.platform.variant || null)) {
@@ -1170,19 +1869,26 @@ export class UpdateRunner {
       progress.flags.candidateHealthy = true;
       await this.stepStatus(progress, "health", "completed", "Rolle, Zielversion und Datenbank dreimal bestätigt.");
 
+      if (request.release.migration.required) {
+        if (request.release.migration.strategy !== "expand-contract"
+          || request.release.migration.backwardCompatible !== true) {
+          throw new Error("PRODUCTION_MIGRATION_NOT_ONLINE_EXPAND_CONTRACT");
+        }
+        await this.saveProgress(progress, "production-expand-migration", "Rückwärtskompatible Expand-Migration läuft, während der bisherige Active online bleibt.");
+        await this.docker.compose([
+          "--profile", "update", "run", "--rm", "--no-deps", SERVICES.productionMigrator,
+        ], { env: candidateEnv, timeoutMs: 30 * 60_000 });
+        progress.flags.productionMigrationComplete = true;
+        await this.saveProgress(progress, "production-expand-migrated", "Expand-Migration ist abgeschlossen; Contract/Löschungen bleiben bis nach dem Hold verboten.");
+        await this.waitForHealth(() => this.docker.health(SERVICES.active), "active", request.currentVersion, "Bisheriger Active nach Expand-Migration");
+      }
+
       await this.closeProductionWriters(request, progress);
       await this.createCutoverDataSnapshot(request, progress);
       await this.stepStatus(progress, "switch", "running", "Produktionsdaten sind versiegelt; Migration und Active-Wechsel erfolgen ohne erreichbaren Schreiber.");
       progress.flags.activePromoteStarted = true;
       await this.saveProgress(progress, "production-mutation-intent", "Produktionsmutation wurde vor Migration und Containerstart dauerhaft im Journal markiert.");
       await this.writeTransactionFence(request, "promoting");
-      if (request.release.migration.required) {
-        await this.docker.compose([
-          "--profile", "update", "run", "--rm", "--no-deps", SERVICES.productionMigrator,
-        ], { env: candidateEnv, timeoutMs: 30 * 60_000 });
-        progress.flags.productionMigrationComplete = true;
-        await this.saveProgress(progress, "production-migrated", "Getestete, rückwärtskompatible Produktionsmigration wurde unter geschlossenem Schreibzaun ausgeführt.");
-      }
       await this.saveProgress(progress, "promote-active", "Signiertes Image wird auf den kanonischen Active-Tag übernommen.");
       await this.docker.tagImage(progress.newImageId, this.config.canonicalActiveImage);
       if (await this.docker.imageId(this.config.canonicalActiveImage) !== progress.newImageId) {
@@ -1193,6 +1899,8 @@ export class UpdateRunner {
       await this.waitForHealth(() => this.docker.health(SERVICES.active), "active", request.targetVersion, "Neuer Active");
       progress.flags.activePromoted = true;
       await this.saveProgress(progress, "active-healthy", "Neuer Active ist vollständig bereit.");
+
+      await this.createDeploymentHold(request, progress);
 
       await this.writeTransactionFence(request, "commit-decided");
       progress.flags.dataCommitDecided = true;
@@ -1274,13 +1982,51 @@ export class UpdateRunner {
   }
 
   async processNext() {
+    if (await this.runtimeDeactivationRequested()) {
+      return { ok: false, processed: false, deactivating: true };
+    }
     await this.initialize();
     if (!await this.acquireLock()) return { ok: false, busy: true };
     const heartbeatTimer = setInterval(() => {
-      void this.heartbeat(this.lastHeartbeat.status, this.lastHeartbeat.message).catch(() => undefined);
+      void this.heartbeat(this.lastHeartbeat.status, this.lastHeartbeat.message)
+        .catch((error) => { this.markLockOwnershipLost(error); });
     }, 5_000);
     heartbeatTimer.unref();
     try {
+      // The stop intent can be created after the optimistic pre-check. It is
+      // re-read while holding the singleton lock, before lifecycle commands,
+      // claims or Docker mutations, so runtime:stop can quiesce the daemon.
+      if (await this.runtimeDeactivationRequested()) {
+        return { ok: false, processed: false, deactivating: true };
+      }
+      const claimedBeforeLifecycle = await this.claimedRequests();
+      if (claimedBeforeLifecycle.length === 0) {
+        let lifecycle;
+        try {
+          if (this.config.bootRecovery) {
+            // Active and Emergency are deliberately down during the boot gate.
+            // Hold finalization requires a healthy confirmed Active, so boot
+            // only validates/publishes the private state and defers every
+            // destructive or administrator-requested finalize command to the
+            // normal daemon after Active has passed its startup health gate.
+            lifecycle = await this.readDeploymentLifecycle();
+            await this.publishDeploymentLifecycle(lifecycle);
+          } else {
+            lifecycle = await this.processLifecycleCommands();
+          }
+        } catch (error) {
+          await this.heartbeat("error", `Deployment-Hold konnte nicht sicher abgeschlossen werden: ${errorMessage(error)}`);
+          return { ok: false, processed: false, lifecycleError: errorMessage(error) };
+        }
+        if (lifecycle && lifecycle.state !== "finalized") {
+          await this.heartbeat("holding", `Vorheriger Stand bleibt bis ${lifecycle.holdUntil} geschützt; Folgeupdates sind gesperrt.`);
+          return {
+            ok: true,
+            processed: false,
+            lifecycle: await this.publishDeploymentLifecycle(lifecycle),
+          };
+        }
+      }
       const claimedFile = await this.claimNextRequest();
       if (!claimedFile) {
         await this.heartbeat("idle", "Keine Update-Anfrage wartet.");
@@ -1309,9 +2055,12 @@ export class UpdateRunner {
           message: `Runner konnte den authentifizierten Claim nicht fortsetzen: ${errorMessage(error)}`,
           updatedAt: nowIso(this.clock),
         };
+        await this.assertLockOwnership();
         await writeJsonAtomic(this.journalPath(requestId), final);
+        await this.assertLockOwnership();
         await writeJsonAtomic(this.progressPath(rawRequest.workflowId), final);
       }
+      await this.assertLockOwnership();
       await writeJsonAtomic(this.resultPath(requestId), {
         schemaVersion: 1,
         requestId,
@@ -1326,6 +2075,7 @@ export class UpdateRunner {
         steps: final.steps,
         finishedAt: nowIso(this.clock),
       });
+      await this.assertLockOwnership();
       const fenceRemaining = await fs.lstat(this.config.transactionFencePath)
         .then(() => true)
         .catch((error) => {
@@ -1333,8 +2083,13 @@ export class UpdateRunner {
           throw error;
         });
       const transactionResolved = !fenceRemaining
-        && (!final.flags?.writeFenceStarted || final.flags?.writeFenceReleased === true);
+        && (!final.flags?.writeFenceStarted || final.flags?.writeFenceReleased === true)
+        && (!final.flags?.rollbackCommitDecided || (
+          final.flags?.rollbackSnapshotCleanupComplete === true
+          && final.flags?.rollbackLifecycleClosed === true
+        ));
       if (transactionResolved) {
+        await this.assertLockOwnership();
         await fs.unlink(claimedFile).catch(() => undefined);
         await fs.unlink(path.join(this.config.requestsRoot, `${requestId}.json`)).catch(() => undefined);
         if (final.stagedArtifactPath) await fs.unlink(final.stagedArtifactPath).catch(() => undefined);

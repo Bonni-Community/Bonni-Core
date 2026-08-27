@@ -12,7 +12,11 @@ process.env.SYSTEM_VERSION ||= "0.1.10";
 const root = await fs.mkdtemp(path.join(os.tmpdir(), "bonni-backup-test-"));
 process.env.BONNI_BACKUP_ROOT = root;
 
-const { validateSystemBackup } = await import("../dist/system/routes/control-api/backup/backup.service.js");
+const {
+  getSystemBackupOverview,
+  listSystemBackups,
+  validateSystemBackup,
+} = await import("../dist/system/routes/control-api/backup/backup.service.js");
 
 test.after(async () => {
   await fs.rm(root, { recursive: true, force: true });
@@ -56,4 +60,18 @@ test("backup validation detects complete and changed files", async () => {
   const invalid = await validateSystemBackup(id);
   assert.equal(invalid.ok, false);
   assert.ok(invalid.errors.length > 0);
+});
+
+test("backup overview ignores a damaged manifest instead of breaking update status polling", async () => {
+  const damagedId = "backup-damaged-overview";
+  const damagedDirectory = path.join(root, damagedId);
+  await fs.mkdir(damagedDirectory, { recursive: true });
+  await fs.writeFile(path.join(damagedDirectory, "manifest.json"), "{not-valid-json");
+
+  const backups = await listSystemBackups();
+  assert.equal(backups.some((backup) => backup.id === damagedId), false);
+
+  const overview = await getSystemBackupOverview();
+  assert.equal(overview.ok, true);
+  assert.equal(overview.backups.some((backup) => backup.id === damagedId), false);
 });

@@ -51,6 +51,7 @@ export default function AccessTab({ draft, onDraftChange, onGeneratePassword, on
             label="Startpasswort"
             value={draft.password}
             type="password"
+            exactSecret
             onChange={(password) => updateDraft({ password })}
             placeholder="Passwort eingeben oder generieren"
           />
@@ -58,6 +59,7 @@ export default function AccessTab({ draft, onDraftChange, onGeneratePassword, on
             label="Passwort wiederholen"
             value={draft.passwordRepeat}
             type="password"
+            exactSecret
             onChange={(passwordRepeat) => updateDraft({ passwordRepeat })}
             placeholder="Passwort erneut eingeben"
           />

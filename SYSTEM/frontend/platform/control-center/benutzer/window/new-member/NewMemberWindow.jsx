@@ -21,6 +21,10 @@ import {
   isTechnicalOnlySurface,
   isValidEmail,
 } from "./newMemberWindowUtils.js";
+import {
+  countUnicodeCodePoints,
+  validateExactSecret,
+} from "../../../../../core/modules/security/two-factor/model/exactSecretPolicy.js";
 
 const NEW_MEMBER_TABS = [
   { key: "uebersicht", label: "Übersicht" },
@@ -172,7 +176,7 @@ export default function NewMemberWindow({
 
   const handlePrepareMail = useCallback(() => {
     const email = String(draft.email || "").trim();
-    const password = String(draft.password || "");
+    const password = draft.password;
 
     if (!email) {
       alert("Bitte zuerst eine E-Mail-Adresse eingeben.");
@@ -189,7 +193,13 @@ export default function NewMemberWindow({
       return;
     }
 
-    if (password !== String(draft.passwordRepeat || "")) {
+    const passwordError = validateExactSecret(password, { label: "Das Passwort" });
+    if (passwordError || countUnicodeCodePoints(password) < 6) {
+      alert(passwordError || "Das Passwort muss mindestens 6 Zeichen haben.");
+      return;
+    }
+
+    if (password !== draft.passwordRepeat) {
       alert("Die Passwort-Wiederholung stimmt nicht überein.");
       return;
     }

@@ -7,6 +7,7 @@ import { fetchModulePackages } from "../../system/feature-modules/featureModuleA
 import { fetchControlCenterOverview } from "../../system/api/controlCenterOverviewApi.js";
 import ControlCenterShell from "./layout/ControlCenterShell.jsx";
 import ChangelogPage from "./changelog/ChangelogPage.jsx";
+import CoreUpdatePage from "./update/CoreUpdatePage.jsx";
 import UpdateSettingsPage from "./update/UpdateSettingsPage.jsx";
 import ControlCenterStyle from "./layout/ControlCenterStyle.jsx";
 import { buildControlCenterNavigation } from "./layout/controlCenterNavigation.js";
@@ -36,6 +37,7 @@ export default function ControlCenter({
   onChangeWorkspace,
   onLogout,
   onMainMenu,
+  onOpenMySettings,
 }) {
   const [databaseModules, setDatabaseModules] = useState([]);
   const [networkAddon, setNetworkAddon] = useState(null);
@@ -156,6 +158,14 @@ export default function ControlCenter({
       return;
     }
 
+    if (item.key === "update") {
+      setActiveModuleKey("");
+      setActiveNavigationKey("update");
+      setMessage("");
+      window.history.replaceState(null, "", "/control-center/update");
+      return;
+    }
+
     if (item.key === NETWORK_NAVIGATION_KEY) {
       if (!networkAddon) return;
       setActiveModuleKey("");
@@ -227,10 +237,13 @@ export default function ControlCenter({
       onNavigate={handleNavigate}
       onLogout={onLogout}
       onSyncRegistry={handleSyncRegistry}
-      onMainMenu={onMainMenu}
+        onMainMenu={onMainMenu}
+        onOpenMySettings={onOpenMySettings}
     >
       {activeNavigationKey === "changelog" ? (
         <ChangelogPage token={token} onBack={backToLauncher} />
+      ) : activeNavigationKey === "update" ? (
+        <CoreUpdatePage token={token} onBack={backToLauncher} />
       ) : activeNavigationKey === "update-settings" ? (
         <UpdateSettingsPage token={token} onBack={backToLauncher} />
       ) : activeNavigationKey === NETWORK_NAVIGATION_KEY ? (

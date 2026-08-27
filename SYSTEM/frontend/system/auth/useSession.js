@@ -1,11 +1,16 @@
 import { useEffect, useRef, useState } from "react";
 
 import { loginWithPassword, loginWithTwoFactor } from "../api/accessApi.js";
+import { normalizeProofFields } from "../../core/modules/security/two-factor/api/twoFactorDto.js";
+import { buildProviderProof } from "../../core/modules/security/two-factor/model/twoFactorPayload.js";
 import {
   fetchShell,
   heartbeatSession,
   logoutSession,
 } from "../api/sessionApi.js";
+import { clearClientAuthStorage } from "./clientAuthStorage.js";
+
+export { clearClientAuthStorage };
 
 function normalizeWorkspace(workspace, fallback = "MEMBER") {
   const normalized = String(workspace || fallback)
@@ -202,20 +207,6 @@ function extractShell(data) {
   return data?.shell || data?.data?.shell || null;
 }
 
-function clearClientAuthStorage() {
-  localStorage.removeItem("token");
-  localStorage.removeItem("user");
-  localStorage.removeItem("shell");
-  localStorage.removeItem("activeArea");
-  localStorage.removeItem("lastActivityAt");
-
-  sessionStorage.removeItem("token");
-  sessionStorage.removeItem("user");
-  sessionStorage.removeItem("shell");
-  sessionStorage.removeItem("activeArea");
-  sessionStorage.removeItem("lastActivityAt");
-}
-
 function getWorkspaceMode(user, shell) {
   const accountType = String(user?.type || shell?.identity?.type || "").trim().toUpperCase();
   return accountType === "TERMINAL" ? "TERMINAL" : "PERSONAL";
@@ -229,8 +220,9 @@ export default function useSession() {
   const [loginName, setLoginName] = useState("");
   const [password, setPassword] = useState("");
   const [twoFactorChallenge, setTwoFactorChallenge] = useState(null);
-  const [twoFactorCode, setTwoFactorCode] = useState("");
-  const [twoFactorPassword, setTwoFactorPassword] = useState("");
+  const [twoFactorProofValues, setTwoFactorProofValues] = useState({});
+  const twoFactorProofRef = useRef({});
+  const [twoFactorRecoveryMode, setTwoFactorRecoveryModeRaw] = useState(false);
   const [message, setMessage] = useState(readSessionMessage);
   const [shellLoading, setShellLoading] = useState(false);
 
@@ -250,10 +242,51 @@ export default function useSession() {
   );
 
   const gameActiveRef = useRef(false);
+  const sessionNetworkSuspendedRef = useRef(false);
+  const sessionRequestControllersRef = useRef(new Set());
 
   const workspaceMode = getWorkspaceMode(user, shell);
 
+  function beginSessionRequest() {
+    if (sessionNetworkSuspendedRef.current) return null;
+    const controller = new AbortController();
+    sessionRequestControllersRef.current.add(controller);
+    return controller;
+  }
+
+  function finishSessionRequest(controller) {
+    if (controller) sessionRequestControllersRef.current.delete(controller);
+  }
+
+  function suspendRevokedSession() {
+    sessionNetworkSuspendedRef.current = true;
+    for (const controller of sessionRequestControllersRef.current) controller.abort();
+    sessionRequestControllersRef.current.clear();
+    clearClientAuthStorage();
+  }
+
+  function replaceTwoFactorProof(next) {
+    twoFactorProofRef.current = next;
+    setTwoFactorProofValues(next);
+  }
+
+  function purgeTwoFactorProof() {
+    replaceTwoFactorProof({});
+  }
+
+  function setTwoFactorProofValue(name, value) {
+    const published = twoFactorRecoveryMode
+      ? ["recoveryCode"]
+      : list(twoFactorChallenge?.proofFields).map((field) => field?.name);
+    if (!published.includes(name) || typeof value !== "string") {
+      purgeTwoFactorProof();
+      return;
+    }
+    replaceTwoFactorProof({ ...twoFactorProofRef.current, [name]: value });
+  }
+
   function markActivity() {
+    if (sessionNetworkSuspendedRef.current) return;
     lastActivityRef.current = Date.now();
     localStorage.setItem("lastActivityAt", String(lastActivityRef.current));
   }
@@ -273,25 +306,31 @@ export default function useSession() {
   }
 
   async function loadShell(currentToken = token, currentUser = user) {
+    if (sessionNetworkSuspendedRef.current) return shell;
     if (!currentToken) {
       setShell(null);
       localStorage.removeItem("shell");
       return null;
     }
 
+    const controller = beginSessionRequest();
+    if (!controller) return shell;
     setShellLoading(true);
 
     try {
-      const nextShell = await fetchShell(currentToken);
+      const nextShell = await fetchShell(currentToken, { signal: controller.signal });
+      if (sessionNetworkSuspendedRef.current || controller.signal.aborted) return shell;
       setShell(nextShell);
       localStorage.setItem("shell", JSON.stringify(nextShell));
       applyWorkspaceFromShell(nextShell, currentUser);
 
       return nextShell;
     } catch (error) {
+      if (error?.name === "AbortError") return shell;
       console.error("Shell konnte nicht geladen werden", error);
       return null;
     } finally {
+      finishSessionRequest(controller);
       setShellLoading(false);
     }
   }
@@ -300,8 +339,12 @@ export default function useSession() {
     const currentToken = token;
 
     try {
-      if (currentToken) {
-        await logoutSession(currentToken);
+      if (currentToken && !sessionNetworkSuspendedRef.current) {
+        const controller = beginSessionRequest();
+        if (controller) {
+          try { await logoutSession(currentToken, { signal: controller.signal }); }
+          finally { finishSessionRequest(controller); }
+        }
       }
     } catch (error) {
       console.warn("Backend logout konnte nicht bestätigt werden", error);
@@ -312,12 +355,13 @@ export default function useSession() {
     setShell(null);
     setPassword("");
     setTwoFactorChallenge(null);
-    setTwoFactorCode("");
-    setTwoFactorPassword("");
+    purgeTwoFactorProof();
+    setTwoFactorRecoveryModeRaw(false);
     setMessage("");
     setActiveAreaRaw("MEMBER");
 
     clearClientAuthStorage();
+    sessionNetworkSuspendedRef.current = false;
 
     if (options.reason === "INACTIVITY") {
       setMessage("Du wurdest wegen Inaktivität ausgeloggt.");
@@ -330,17 +374,24 @@ export default function useSession() {
     }
 
     setMessage("");
+    sessionNetworkSuspendedRef.current = false;
 
     try {
+      const passwordProof = password;
+      setPassword("");
       const data = await loginWithPassword({
         loginName,
-        password,
+        password: passwordProof,
       });
 
       if (data?.requiresTwoFactor && data?.challenge?.id) {
-        setTwoFactorChallenge(data.challenge);
-        setTwoFactorCode("");
-        setTwoFactorPassword("");
+        const proofFields = normalizeProofFields(data.challenge.proofFields);
+        if (!proofFields.length || proofFields.some((field) => field.name === "recoveryCode")) {
+          throw new Error("Der 2FA-Anbieter hat keinen gueltigen Pruefvertrag geliefert.");
+        }
+        purgeTwoFactorProof();
+        setTwoFactorChallenge({ ...data.challenge, proofFields });
+        setTwoFactorRecoveryModeRaw(false);
         setPassword("");
         setMessage(data.message || "Bitte die Zwei-Faktor-Authentifizierung (2FA) abschließen.");
         return;
@@ -389,17 +440,21 @@ export default function useSession() {
     if (e?.preventDefault) e.preventDefault();
     if (!twoFactorChallenge?.id) return;
     setMessage("");
+    sessionNetworkSuspendedRef.current = false;
 
     try {
+      const challenge = twoFactorChallenge;
+      const proof = buildProviderProof(
+        twoFactorProofRef.current,
+        challenge.proofFields,
+        { recovery: twoFactorRecoveryMode },
+      );
+      // Kein Sicherheitsnachweis bleibt waehrend des Requests in React-State
+      // oder in einem Eingabefeld erhalten.
+      purgeTwoFactorProof();
       const data = await loginWithTwoFactor({
-        challengeId: twoFactorChallenge.id,
-        code: twoFactorChallenge?.proofFields?.some((field) => field.name === "token")
-          ? undefined
-          : twoFactorCode,
-        token: twoFactorChallenge?.proofFields?.some((field) => field.name === "token")
-          ? twoFactorCode
-          : undefined,
-        password: twoFactorPassword || undefined,
+        challengeId: challenge.id,
+        proof,
       });
       const nextToken = extractToken(data);
       const nextUser = extractUser(data);
@@ -410,8 +465,8 @@ export default function useSession() {
       setToken(nextToken);
       setUser(nextUser);
       setTwoFactorChallenge(null);
-      setTwoFactorCode("");
-      setTwoFactorPassword("");
+      purgeTwoFactorProof();
+      setTwoFactorRecoveryModeRaw(false);
       localStorage.setItem("token", nextToken);
       localStorage.setItem("user", JSON.stringify(nextUser));
 
@@ -423,18 +478,36 @@ export default function useSession() {
         await loadShell(nextToken, nextUser);
       }
     } catch (error) {
-      setTwoFactorCode("");
-      setTwoFactorPassword("");
+      purgeTwoFactorProof();
       setMessage(error?.message || "Zwei-Faktor-Authentifizierung (2FA) fehlgeschlagen");
     }
   }
 
   function cancelTwoFactor() {
     setTwoFactorChallenge(null);
-    setTwoFactorCode("");
-    setTwoFactorPassword("");
+    purgeTwoFactorProof();
+    setTwoFactorRecoveryModeRaw(false);
     setPassword("");
     setMessage("");
+  }
+
+  function setTwoFactorRecoveryMode(nextMode) {
+    purgeTwoFactorProof();
+    setTwoFactorRecoveryModeRaw(Boolean(nextMode));
+  }
+
+  function endRevokedSession(reason) {
+    setToken("");
+    setUser(null);
+    setShell(null);
+    setPassword("");
+    setTwoFactorChallenge(null);
+    purgeTwoFactorProof();
+    setTwoFactorRecoveryModeRaw(false);
+    setActiveAreaRaw("MEMBER");
+    clearClientAuthStorage();
+    sessionNetworkSuspendedRef.current = false;
+    setMessage(reason || "Deine Sitzung wurde nach der Sicherheitsaenderung beendet. Bitte melde dich erneut an.");
   }
 
   function changeArea(nextArea) {
@@ -461,6 +534,19 @@ export default function useSession() {
       loadShell(token, user);
     }
   }, [token]);
+
+  useEffect(() => {
+    function purgeOnPageHide() {
+      twoFactorProofRef.current = {};
+      setTwoFactorProofValues({});
+      setPassword("");
+    }
+    window.addEventListener("pagehide", purgeOnPageHide);
+    return () => {
+      window.removeEventListener("pagehide", purgeOnPageHide);
+      twoFactorProofRef.current = {};
+    };
+  }, []);
 
   useEffect(() => {
     if (!token) return;
@@ -492,11 +578,18 @@ export default function useSession() {
     if (!token) return;
 
     const interval = window.setInterval(async () => {
+      if (sessionNetworkSuspendedRef.current) return;
+      const controller = beginSessionRequest();
+      if (!controller) return;
       try {
-        await heartbeatSession(token);
+        await heartbeatSession(token, { signal: controller.signal });
       } catch (error) {
-        console.warn("Heartbeat fehlgeschlagen", error);
+        if (error?.name !== "AbortError") console.warn("Heartbeat fehlgeschlagen", error);
+      } finally {
+        finishSessionRequest(controller);
       }
+
+      if (sessionNetworkSuspendedRef.current) return;
 
       const inactiveFor = Date.now() - lastActivityRef.current;
 
@@ -515,6 +608,7 @@ export default function useSession() {
     if (!token) return;
 
     const interval = window.setInterval(async () => {
+      if (sessionNetworkSuspendedRef.current) return;
       if (document.hidden) return;
       if (gameActiveRef.current) return;
 
@@ -531,6 +625,7 @@ export default function useSession() {
 
     async function onVisibilityChange() {
       if (document.hidden) return;
+      if (sessionNetworkSuspendedRef.current) return;
 
       const inactiveFor = Date.now() - lastActivityRef.current;
 
@@ -562,8 +657,8 @@ export default function useSession() {
     loginName,
     password,
     twoFactorChallenge,
-    twoFactorCode,
-    twoFactorPassword,
+    twoFactorProofValues,
+    twoFactorRecoveryMode,
     message,
     activeArea,
 
@@ -571,12 +666,14 @@ export default function useSession() {
 
     setLoginName,
     setPassword,
-    setTwoFactorCode,
-    setTwoFactorPassword,
+    setTwoFactorProofValue,
+    setTwoFactorRecoveryMode,
 
     login,
     submitTwoFactor,
     cancelTwoFactor,
+    endRevokedSession,
+    suspendRevokedSession,
     logout,
     reloadShell: loadShell,
 

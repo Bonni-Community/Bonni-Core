@@ -23,9 +23,10 @@ export function resolveBootstrapAdminPassword(
     };
   }
 
+  const validation = validateExactLocalPassword(configuredPassword);
   if (
-    configuredPassword.length < 16
-    || configuredPassword.length > 1024
+    !validation.ok
+    || validation.characters < 16
     || !/[a-z]/.test(configuredPassword)
     || !/[A-Z]/.test(configuredPassword)
     || !/[0-9]/.test(configuredPassword)
@@ -41,3 +42,4 @@ export function resolveBootstrapAdminPassword(
     usesStandardPassword: false,
   };
 }
+import { validateExactLocalPassword } from "../../core/modules/identity/local-password-policy.js";

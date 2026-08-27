@@ -24,6 +24,12 @@ model Account {
   loginName       String      @unique
   email           String?
   passwordHash    String?
+  credentialRevision Int       @default(0)
+  twoFactorProviderId String?
+  twoFactorEnrolledAt DateTime?
+  privateDataTwoFactorEnrolledAt DateTime?
+  passwordRecoveryLockedAt DateTime?
+  passwordRecoveryRequestId String?
   externalSubject String?
   isActive        Boolean     @default(true)
   isSandbox       Boolean     @default(false)
@@ -47,6 +53,8 @@ model Account {
   twoFactorRecoveryCodes    SecurityTwoFactorRecoveryCode[]
   twoFactorChallenges       SecurityTwoFactorChallenge[]
   twoFactorLockouts         SecurityTwoFactorLockout[]
+  twoFactorEnrollment       SecurityTwoFactorEnrollment?
+  passwordRecoveryRequests  SecurityAccountRecoveryRequest[]
 
   archiveGrantsCreated ArchiveFolderGrant[] @relation("ArchiveFolderGrantor")
   accountLinksRequested AccountPersonLinkRequest[] @relation("AccountLinkRequester")
@@ -58,4 +66,5 @@ model Account {
   @@index([type])
   @@index([isActive])
   @@index([authProviderId])
+  @@index([passwordRecoveryLockedAt])
 }

@@ -76,3 +76,52 @@ export function compareStrictSemVer(leftValue: string, rightValue: string): -1 |
 
   return 0;
 }
+
+function alphabeticRevisionValue(value: string) {
+  let result = 0n;
+  for (const character of value) {
+    result = result * 26n + BigInt(character.charCodeAt(0) - 96);
+  }
+  return result;
+}
+
+function bonniRevision(value: ParsedStrictSemVer) {
+  if (value.build.length === 0) return 0n;
+  if (value.build.length !== 1 || !/^[a-z]+$/.test(value.build[0])) {
+    throw new Error(`INVALID_BONNI_RELEASE_REVISION:${value.raw}`);
+  }
+  return alphabeticRevisionValue(value.build[0]);
+}
+
+/**
+ * Bonni displays maintenance releases as `0.1.19+a`, `0.1.19+b`, ... .
+ * Standard SemVer intentionally ignores build metadata for precedence, so the
+ * update boundary uses this narrower comparator and accepts only the Bonni
+ * alphabetic revision form. The ordinary strict comparator remains standards
+ * compliant for every other subsystem.
+ */
+export function compareBonniReleaseVersion(leftValue: string, rightValue: string): -1 | 0 | 1 {
+  const standardComparison = compareStrictSemVer(leftValue, rightValue);
+  if (standardComparison !== 0) return standardComparison;
+  const left = parseStrictSemVer(leftValue);
+  const right = parseStrictSemVer(rightValue);
+  const comparison = compareBigInt(bonniRevision(left), bonniRevision(right));
+  return comparison;
+}
+
+/** Maps the visible Bonni revision to a Docker-compatible immutable tag. */
+export function bonniReleaseImageTag(versionValue: string) {
+  const version = parseStrictSemVer(versionValue);
+  // Validation is deliberate even though the result would be syntactically
+  // usable: official releases must have one unambiguous alphabetic revision.
+  bonniRevision(version);
+  const tag = [
+    `${version.major}.${version.minor}.${version.patch}`,
+    version.prerelease.length ? `-${version.prerelease.join(".")}` : "",
+    version.build.length ? `-${version.build[0]}` : "",
+  ].join("");
+  if (!/^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$/.test(tag)) {
+    throw new Error(`INVALID_BONNI_RELEASE_IMAGE_TAG:${versionValue}`);
+  }
+  return tag;
+}

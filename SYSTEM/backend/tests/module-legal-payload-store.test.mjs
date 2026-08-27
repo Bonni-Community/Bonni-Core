@@ -137,6 +137,9 @@ test("legal receipt identity and every entry are strictly schema-bound", async (
   const installed = await installModuleLegalPayload(sample.manifest, sample);
   const receiptFile = path.join(installed.targetRoot, "RECEIPT.json");
   const original = JSON.parse(await fs.readFile(receiptFile, "utf8"));
+  // Produktiv ist der unveraenderliche Beleg absichtlich nur-lesbar. Die
+  // Negativtests oeffnen ausschliesslich ihre isolierte Fixture zum Manipulieren.
+  await fs.chmod(receiptFile, 0o600);
   const cases = [
     ["schema", (receipt) => { receipt.schemaVersion = "bonni.module-legal-receipt/v0"; }, /MODULE_LEGAL_RECEIPT_SCHEMA_INVALID/u],
     ["module key", (receipt) => { receipt.moduleKey = "app.other"; }, /MODULE_LEGAL_RECEIPT_IDENTITY_MISMATCH/u],
@@ -154,6 +157,7 @@ test("legal receipt identity and every entry are strictly schema-bound", async (
     await assert.rejects(verifyStoredModuleLegalPayload(installed.targetRoot), error, label);
   }
   await fs.writeFile(receiptFile, `${JSON.stringify(original, null, 2)}\n`);
+  await fs.chmod(receiptFile, 0o444);
   assert.equal((await verifyStoredModuleLegalPayload(installed.targetRoot)).moduleKey, sample.manifest.key);
 });
 

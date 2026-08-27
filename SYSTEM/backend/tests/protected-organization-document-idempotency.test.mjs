@@ -2,8 +2,16 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import test from "node:test";
 
-import { createModuleProtectedOrganizationRuntime } from "../dist/core/protected-organization/index.js";
-import { runWithVerifiedRequestIdentity } from "../dist/platform/auth/request-identity/request-identity-context.js";
+const { createModuleProtectedOrganizationRuntime } = await import(
+  process.env.BONNI_TEST_SOURCE === "1"
+    ? "../src/core/protected-organization/index.ts"
+    : "../dist/core/protected-organization/index.js"
+);
+const { runWithVerifiedRequestIdentity } = await import(
+  process.env.BONNI_TEST_SOURCE === "1"
+    ? "../src/platform/auth/request-identity/request-identity-context.ts"
+    : "../dist/platform/auth/request-identity/request-identity-context.js"
+);
 
 const identity = {
   accountId: "account-1",
@@ -20,7 +28,7 @@ function sha256(bytes) {
   return createHash("sha256").update(bytes).digest("hex");
 }
 
-function harness({ forceCreateRace = false } = {}) {
+function harness({ forceCreateRace = false, twoFactorStatus = null } = {}) {
   const rowsByBinding = new Map();
   const rowsById = new Map();
   const audit = [];
@@ -101,7 +109,7 @@ function harness({ forceCreateRace = false } = {}) {
     { async get() { return { organizationId: "organization-1", tenantId: "tenant-1" }; } },
     {
       async getTwoFactorStatus() {
-        return {
+        return twoFactorStatus || {
           enabled: false,
           privateDataProtectionEnrolled: false,
           provider: { externallyManaged: false, configured: true },
@@ -219,4 +227,25 @@ test("unbound legacy documents retain the compatible delete behavior", async () 
   }));
   assert.deepEqual(result, { deleted: true, documentId: created.id });
   assert.deepEqual(storage.deleted, [storage.stored[0].objectKey]);
+});
+
+test("a bound but unavailable provider keeps protected organization data locked", async () => {
+  const { runtime } = harness({
+    twoFactorStatus: {
+      enabled: true,
+      available: false,
+      privateDataProtectionEnrolled: false,
+      credentialRevision: 9,
+      provider: {
+        id: "privacyidea",
+        configured: false,
+        available: false,
+      },
+    },
+  });
+  await assert.rejects(
+    withIdentity(() => runtime.createDocument(createInput())),
+    (error) => error?.code === "PROTECTED_ORGANIZATION_2FA_PROVIDER_REQUIRED"
+      && error?.statusCode === 423,
+  );
 });

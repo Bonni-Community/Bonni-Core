@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 
 import { fetchCoreUpdateStatus } from "../../../system/api/coreUpdateApi.js";
 import { BONNI_CORE_VERSION } from "../../../system/version.js";
+import { formatBonniCoreVersion } from "../update/localUpdatePresentation.js";
 
 const CURRENT_HIGHLIGHTS = [
   "Systemüberwachung mit echtem Systemstatus, Ressourcen und aktuellen Störungen.",
@@ -22,6 +23,7 @@ export default function ChangelogPage({ token, onBack }) {
   const manifest = status?.manifest;
   const releaseNotes = manifest?.releaseNotes;
   const version = manifest?.version || status?.currentVersion || BONNI_CORE_VERSION;
+  const versionLabel = formatBonniCoreVersion(version);
   const highlights = releaseNotes?.highlights?.length ? releaseNotes.highlights : CURRENT_HIGHLIGHTS;
   const description = releaseNotes?.descriptions?.de
     || releaseNotes?.descriptions?.en
@@ -32,8 +34,8 @@ export default function ChangelogPage({ token, onBack }) {
       <div className="cc-changelog-card">
         <div className="cc-changelog-card__header">
           <div>
-            <p className="cc-changelog-card__breadcrumb">Bonni Core › Versionsbeschreibung › {version}</p>
-            <h1>Bonni Core {version}</h1>
+            <p className="cc-changelog-card__breadcrumb">Bonni Core › Versionsbeschreibung › {versionLabel}</p>
+            <h1>Bonni Core {versionLabel}</h1>
           </div>
           <button type="button" onClick={onBack} aria-label="Versionsbeschreibung schließen">×</button>
         </div>

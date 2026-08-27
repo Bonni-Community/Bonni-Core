@@ -12,7 +12,7 @@ x-backend-environment: &backend_environment
   LOCAL_AUTH_PORT: 4001
   SYSTEM_SLOT_NAME: backend-active
   SYSTEM_SLOT_ROLE: active
-  SYSTEM_VERSION: ${SYSTEM_VERSION:-0.1.19}
+  SYSTEM_VERSION: ${SYSTEM_VERSION:-0.1.20}
   SYSTEM_UPDATE_PROBE_MODE: "false"
   # Exactly one trusted hop: the closed runtime-proxy nginx container. Core
   # defaults to zero outside this topology and validates the configured count.
@@ -21,11 +21,14 @@ x-backend-environment: &backend_environment
   BONNI_NETWORK_TRANSPORT_GATE_FILE: /run/bonni-update/ipc/network-transport-gate.json
   BONNI_UPDATE_REQUEST_SECRET_FILE: /run/secrets/bonni-update/request.key
   BONNI_UPDATE_TRUSTED_KEYS_DIR: /run/secrets/bonni-update/trusted-keys
+  BONNI_UPDATE_MANIFEST_URL: ${BONNI_UPDATE_MANIFEST_URL:-https://github.com/Bonni-Community/bonni-core/releases/latest/download/manifest.json}
+  BONNI_UPDATE_ALLOWED_ORIGINS: ${BONNI_UPDATE_ALLOWED_ORIGINS:-https://github.com,https://release-assets.githubusercontent.com}
+  BONNI_UPDATE_MAX_BYTES: ${BONNI_UPDATE_MAX_BYTES:-2147483648}
   BONNI_PROJECT_ROOT: /app
   BONNI_STORAGE_ROOT: /app/storage
   RUN_SYSTEM_ROOT: /app/run_system
   FRONTEND_DIST_ROOT: /app/public
-  SYSTEM_EMERGENCY_HOLD_DAYS: ${SYSTEM_EMERGENCY_HOLD_DAYS:-14}
+  SYSTEM_EMERGENCY_HOLD_DAYS: "14"
   SYSTEM_BOOT_KEY_REQUIRED: ${SYSTEM_BOOT_KEY_REQUIRED:-false}
   OIDC_ENABLED: ${OIDC_ENABLED:-false}
   BONNI_SERIAL: ${BONNI_SERIAL:?BONNI_SERIAL muss gesetzt sein}
@@ -226,10 +229,16 @@ services:
       SYSTEM_RUNTIME_SOURCE: json
       TIMECAPSULE_EMERGENCY_MODE: "true"
       BONNI_UPDATE_REQUEST_SECRET_FILE: ""
+      # Infrastructure-level writer lease for the delayed/previous image.
+      # The separate RUN_SYSTEM_ROOT hides production database-routing.json,
+      # while every fallback URL forces PostgreSQL read-only transactions.
+      RUN_SYSTEM_ROOT: /app/emergency-run-system
+      DATABASE_URL: "postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD muss gesetzt sein}@db:5432/${POSTGRES_DB:-bonni_core}?schema=public&options=-c%20default_transaction_read_only%3Don"
+      SERVER_DATABASE_URL: "postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD muss gesetzt sein}@db:5432/${POSTGRES_DB:-bonni_core}?schema=public&options=-c%20default_transaction_read_only%3Don"
+      LOCAL_DATABASE_URL: "postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD muss gesetzt sein}@db:5432/${POSTGRES_DB:-bonni_core}?schema=public&options=-c%20default_transaction_read_only%3Don"
     volumes:
-      - ${BONNI_HOST_RUNTIME_ROOT:-../../runtime}/storage:/app/storage
-      - ${BONNI_HOST_RUNTIME_ROOT:-../../runtime}/archive/logs:/app/backend/archives/logs
-      - ${BONNI_HOST_RUN_SYSTEM_ROOT:-../../run_system}:/app/run_system
+      - ${BONNI_HOST_RUNTIME_ROOT:-../../runtime}/storage:/app/storage:ro
+      - ${BONNI_HOST_RUN_SYSTEM_ROOT:-../../run_system}/system/emergency:/app/emergency-run-system/system/emergency:ro
       - update_runner_outbox:/run/bonni-update/ipc:ro
       - ${BONNI_UPDATE_TRUSTED_KEYS_HOST_DIR:?start-runtime.sh muss BONNI_UPDATE_TRUSTED_KEYS_HOST_DIR absolut setzen}:/run/secrets/bonni-update/trusted-keys:ro
     networks:
@@ -243,6 +252,10 @@ services:
       retries: 8
       start_period: 30s
     stop_grace_period: 20s
+    read_only: true
+    tmpfs:
+      - /tmp:size=32m,mode=0700
+      - /app/backend/archives/logs:size=32m,mode=0700
     security_opt:
       - no-new-privileges:true
     labels:
@@ -325,7 +338,7 @@ services:
       <<: *backend_environment
       SYSTEM_SLOT_NAME: candidate-migrator
       SYSTEM_SLOT_ROLE: installer
-      SYSTEM_VERSION: ${CANDIDATE_SYSTEM_VERSION:-0.1.19}
+      SYSTEM_VERSION: ${CANDIDATE_SYSTEM_VERSION:-0.1.20}
       DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD muss gesetzt sein}@db-candidate:5432/${POSTGRES_DB:-bonni_core}?schema=public
       SERVER_DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD muss gesetzt sein}@db-candidate:5432/${POSTGRES_DB:-bonni_core}?schema=public
     volumes:
@@ -364,7 +377,7 @@ services:
       <<: *backend_environment
       SYSTEM_SLOT_NAME: backend-candidate
       SYSTEM_SLOT_ROLE: candidate
-      SYSTEM_VERSION: ${CANDIDATE_SYSTEM_VERSION:-0.1.19}
+      SYSTEM_VERSION: ${CANDIDATE_SYSTEM_VERSION:-0.1.20}
       SYSTEM_UPDATE_PROBE_MODE: "true"
       LOCAL_AUTH_BIND: 127.0.0.1
       DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD muss gesetzt sein}@db-candidate:5432/${POSTGRES_DB:-bonni_core}?schema=public
@@ -408,7 +421,7 @@ services:
       <<: *backend_environment
       SYSTEM_SLOT_NAME: database-migrator
       SYSTEM_SLOT_ROLE: installer
-      SYSTEM_VERSION: ${CANDIDATE_SYSTEM_VERSION:-0.1.19}
+      SYSTEM_VERSION: ${CANDIDATE_SYSTEM_VERSION:-0.1.20}
     volumes: *production_volumes
     networks:
       - runtime_database
@@ -423,7 +436,7 @@ services:
   # Proxy, Active and Emergency are stopped. Production mounts are read-only;
   # the target release image is never allowed to create its own rollback data.
   update-snapshot-create:
-    image: "${BONNI_UPDATE_RUNNER_IMAGE:-${COMPOSE_PROJECT_NAME:?COMPOSE_PROJECT_NAME muss gesetzt sein}-update-runner:runtime-v0.2.1}"
+    image: "${BONNI_UPDATE_RUNNER_IMAGE:-${COMPOSE_PROJECT_NAME:?COMPOSE_PROJECT_NAME muss gesetzt sein}-update-runner:runtime-v0.3.0}"
     pull_policy: never
     profiles: ["update"]
     restart: "no"
@@ -445,7 +458,7 @@ services:
       - update_rollback_snapshots:/var/lib/bonni-rollback-snapshots
     networks:
       - runtime_database
-    entrypoint: ["node", "/runner/System/backend/scripts/backup/update-cutover-snapshot.mjs"]
+    entrypoint: ["node", "/runner/SYSTEM/backend/scripts/backup/update-cutover-snapshot.mjs"]
     command: ["create"]
     read_only: true
     tmpfs:
@@ -462,7 +475,7 @@ services:
   # is written to a separate volume, while only the two production file roots
   # are writable. Database replacement happens over the internal DB network.
   update-snapshot-restore:
-    image: "${BONNI_UPDATE_RUNNER_IMAGE:-${COMPOSE_PROJECT_NAME:?COMPOSE_PROJECT_NAME muss gesetzt sein}-update-runner:runtime-v0.2.1}"
+    image: "${BONNI_UPDATE_RUNNER_IMAGE:-${COMPOSE_PROJECT_NAME:?COMPOSE_PROJECT_NAME muss gesetzt sein}-update-runner:runtime-v0.3.0}"
     pull_policy: never
     profiles: ["update"]
     restart: "no"
@@ -487,7 +500,7 @@ services:
       - ${BONNI_HOST_RUN_SYSTEM_ROOT:-../../run_system}:/target-run-system
     networks:
       - runtime_database
-    entrypoint: ["node", "/runner/System/backend/scripts/backup/update-cutover-snapshot.mjs"]
+    entrypoint: ["node", "/runner/SYSTEM/backend/scripts/backup/update-cutover-snapshot.mjs"]
     command: ["restore"]
     read_only: true
     tmpfs:
@@ -500,11 +513,37 @@ services:
       org.bonni.runtime.managed: "true"
       org.bonni.runtime.role: update-snapshot-restore
 
+  # Deletes only the exact request-owned rollback snapshot/result after the
+  # 14-day hold (or an explicit early finalize) has safely advanced Emergency.
+  update-snapshot-cleanup:
+    image: "${BONNI_UPDATE_RUNNER_IMAGE:-${COMPOSE_PROJECT_NAME:?COMPOSE_PROJECT_NAME muss gesetzt sein}-update-runner:runtime-v0.3.0}"
+    pull_policy: never
+    profiles: ["update"]
+    restart: "no"
+    environment:
+      BONNI_UPDATE_ROLLBACK_SNAPSHOT_ROOT: /var/lib/bonni-rollback-snapshots
+      BONNI_UPDATE_ROLLBACK_RESULT_ROOT: /var/lib/bonni-rollback-results
+      BONNI_UPDATE_SNAPSHOT_ID: ${BONNI_UPDATE_SNAPSHOT_ID:-invalid}
+    volumes:
+      - update_rollback_snapshots:/var/lib/bonni-rollback-snapshots
+      - update_rollback_results:/var/lib/bonni-rollback-results
+    entrypoint: ["node", "/runner/SYSTEM/backend/scripts/backup/update-cutover-retention.mjs"]
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=0700
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    labels:
+      org.bonni.runtime.managed: "true"
+      org.bonni.runtime.role: update-snapshot-cleanup
+
   runtime-proxy:
     image: "${BONNI_RUNTIME_PROXY_IMAGE:-${COMPOSE_PROJECT_NAME:?COMPOSE_PROJECT_NAME muss gesetzt sein}-runtime-proxy:runtime-v1}"
     build:
       context: ../..
-      dockerfile: System/backend/ops/runtime/proxy/Dockerfile
+      dockerfile: SYSTEM/backend/ops/runtime/proxy/Dockerfile
     # Never reopen the public route before the boot recovery gate has passed.
     restart: "no"
     depends_on:
@@ -536,10 +575,10 @@ services:
   # The runner is a separate trust boundary. Bonni Core itself never receives
   # the Docker socket. Its implementation owns validation/state reconciliation.
   update-runner:
-    image: "${BONNI_UPDATE_RUNNER_IMAGE:-${COMPOSE_PROJECT_NAME:?COMPOSE_PROJECT_NAME muss gesetzt sein}-update-runner:runtime-v0.2.1}"
+    image: "${BONNI_UPDATE_RUNNER_IMAGE:-${COMPOSE_PROJECT_NAME:?COMPOSE_PROJECT_NAME muss gesetzt sein}-update-runner:runtime-v0.3.0}"
     build:
       context: ../..
-      dockerfile: System/backend/ops/update-runner/Dockerfile
+      dockerfile: SYSTEM/backend/ops/update-runner/Dockerfile
     # The host boot gate runs this image once before starting its daemon mode.
     # Auto-starting it could race Active/Proxy recovery after a daemon restart.
     restart: "no"
@@ -550,7 +589,7 @@ services:
       BONNI_HOST_PROJECT_ROOT: ${BONNI_HOST_PROJECT_ROOT:?start-runtime.sh muss BONNI_HOST_PROJECT_ROOT absolut setzen}
       BONNI_HOST_RUNTIME_ROOT: ${BONNI_HOST_RUNTIME_ROOT:?start-runtime.sh muss BONNI_HOST_RUNTIME_ROOT absolut setzen}
       BONNI_HOST_RUN_SYSTEM_ROOT: ${BONNI_HOST_RUN_SYSTEM_ROOT:?start-runtime.sh muss BONNI_HOST_RUN_SYSTEM_ROOT absolut setzen}
-      BONNI_COMPOSE_FILE: ${BONNI_HOST_PROJECT_ROOT:?start-runtime.sh muss BONNI_HOST_PROJECT_ROOT absolut setzen}/System/backend/docker-compose.runtime.yml
+      BONNI_COMPOSE_FILE: ${BONNI_HOST_PROJECT_ROOT:?start-runtime.sh muss BONNI_HOST_PROJECT_ROOT absolut setzen}/SYSTEM/backend/docker-compose.runtime.yml
       BONNI_STORAGE_ROOT: /var/lib/bonni-core/storage
       BONNI_UPDATE_STORAGE_ROOT: /var/lib/bonni-core/storage/system/update-center
       BONNI_UPDATE_RUNNER_STATE_ROOT: /run/bonni-update/ipc
@@ -559,6 +598,8 @@ services:
       BONNI_UPDATE_REQUEST_SECRET_FILE: /run/secrets/bonni-update/request.key
       BONNI_ACTIVE_IMAGE_TAG: ${SYSTEM_IMAGE:-${BONNI_ACTIVE_IMAGE_TAG:?BONNI_ACTIVE_IMAGE_TAG muss gesetzt sein}}
       BONNI_ROLLBACK_IMAGE_TAG: ${BONNI_ROLLBACK_IMAGE_TAG:?BONNI_ROLLBACK_IMAGE_TAG muss gesetzt sein}
+      BONNI_EMERGENCY_IMAGE_TAG: ${BONNI_EMERGENCY_IMAGE_TAG:?BONNI_EMERGENCY_IMAGE_TAG muss gesetzt sein}
+      SYSTEM_EMERGENCY_HOLD_DAYS: "14"
       COMPOSE_PROJECT_NAME: ${COMPOSE_PROJECT_NAME:?COMPOSE_PROJECT_NAME muss gesetzt sein}
       BONNI_RUNTIME_ENV_FILE: ${BONNI_RUNTIME_ENV_FILE:?start-runtime.sh muss BONNI_RUNTIME_ENV_FILE absolut setzen}
       BONNI_UPDATE_TRUSTED_KEYS_DIR: /run/secrets/bonni-update/trusted-keys
@@ -585,6 +626,16 @@ services:
       - runtime_update
       - runtime_candidate
       - runtime_frontend
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "const fs=require('fs');const p='/run/bonni-update/ipc/heartbeat.json';const v=JSON.parse(fs.readFileSync(p,'utf8'));const age=Date.now()-Date.parse(v.updatedAt);process.exit(v.schemaVersion===1&&v.runnerVersion==='0.3.0'&&Number.isFinite(age)&&age>=-300000&&age<=15000?0:1)"
+      interval: 5s
+      timeout: 3s
+      retries: 6
+      start_period: 10s
     read_only: true
     tmpfs:
       - /tmp:size=256m,mode=0700

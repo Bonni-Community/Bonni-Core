@@ -27,7 +27,7 @@ test("feedback stays local until the user explicitly opens an online channel", (
   assert.doesNotMatch(source, /github[_-]?token|authorization:\s*[`'"]Bearer/i);
 });
 
-test("2FA installation guide ships one privacy-safe illustration per step", () => {
+test("legacy guide assets remain privacy-safe even though enrollment moved to Core", () => {
   const illustrations = fs.readdirSync(guideDirectory).filter((entry) => entry.endsWith(".svg"));
   assert.deepEqual(illustrations.sort(), [
     "01-provider.svg",
@@ -43,9 +43,11 @@ test("2FA installation guide ships one privacy-safe illustration per step", () =
   }
 });
 
-test("QR enrollment is backed by Core and distinguishes privacyIDEA issuance", () => {
-  assert.match(source, /startCurrentUserTotpSetup/);
-  assert.match(source, /confirmCurrentUserTotpSetup/);
-  assert.match(source, /Bonni erzeugt keinen Ersatzschlüssel/);
-  assert.match(source, /nur jetzt sichtbar/);
+test("Store only configures the provider adapter and never enrolls a person", () => {
+  assert.match(source, /function StoreTwoFactorProviderSetup/);
+  assert.match(source, /getControlCenterSystemSettings/);
+  assert.match(source, /saveControlCenterSystemSettings/);
+  assert.match(source, /Keine persoenlichen 2FA-Daten im Store/);
+  assert.doesNotMatch(source, /startCurrentUserTotpSetup|confirmCurrentUserTotpSetup/);
+  assert.doesNotMatch(source, /includeManualSecret|qrCodeDataUrl|otpauthUri|manualSecret/);
 });

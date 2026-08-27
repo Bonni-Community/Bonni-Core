@@ -2,8 +2,11 @@ import { createHash, createHmac } from "node:crypto";
 import type { Prisma, PrismaClient } from "@prisma/client";
 
 import { env } from "../config/env.js";
-import { getVerifiedRequestIdentity } from "../../platform/auth/request-identity/request-identity-context.js";
-import { getStatus as getTwoFactorStatus } from "../../platform/security/two-factor/services/two-factor.service.js";
+import {
+  getVerifiedRequestIdentity,
+  getVerifiedRequestSessionAssurance,
+} from "../../platform/auth/request-identity/request-identity-context.js";
+import { getStatus as getTwoFactorStatus } from "../modules/security/two-factor/service.js";
 import {
   decryptAes256GcmToUtf8,
   encryptAes256Gcm,
@@ -17,6 +20,8 @@ import {
 export const PROTECTED_ORGANIZATION_CONTRACT_VERSION =
   "bonni.protected-organization/v1" as const;
 const CIPHERTEXT_PREFIX = "organization1";
+const ORGANIZATION_PRIVATE_ACCESS_SCOPE = "ACCOUNTING_PAYMENT";
+const SESSION_MFA_ACCESS_TOKEN = "bonni-session-mfa-v1";
 
 type InstanceIdentityPort = {
   get(): Promise<Readonly<{ organizationId: string; tenantId: string }>>;
@@ -151,11 +156,14 @@ export function createModuleProtectedOrganizationRuntime(
   async function twoFactorProtectionState(accountId: string) {
     const status = await readTwoFactorStatus(accountId);
     const available = status.enabled === true
-      && status.provider?.externallyManaged === true
-      && status.provider?.configured === true;
+      && status.available === true
+      && status.provider?.configured === true
+      && status.provider?.available !== false;
     return {
       available,
-      enrolled: status.privateDataProtectionEnrolled === true || available,
+      enrolled: status.privateDataProtectionEnrolled === true || status.enabled === true,
+      providerId: String(status.provider?.id || "").trim().toLowerCase(),
+      credentialRevision: Number(status.credentialRevision ?? -1),
     };
   }
 
@@ -164,9 +172,9 @@ export function createModuleProtectedOrganizationRuntime(
     if (!current?.accountId) {
       fail("PROTECTED_ORGANIZATION_REQUEST_IDENTITY_REQUIRED", 401);
     }
-    // Vor der ersten Plugin-Einrichtung ist 2FA optional. Nach der ersten
+    // Vor der ersten Provider-Einrichtung ist 2FA optional. Nach der ersten
     // Aktivierung bleibt der Schutz dauerhaft verriegelt: Ein deaktiviertes
-    // oder entferntes Plugin darf die Daten nicht wieder freigeben.
+    // oder entfernter Provider darf die Daten nicht wieder freigeben.
     const protection = await twoFactorProtectionState(current.accountId);
     if (!protection.enrolled) return current;
     if (!protection.available) {
@@ -174,6 +182,17 @@ export function createModuleProtectedOrganizationRuntime(
     }
     const rawToken = text(grantToken, 300);
     if (!rawToken) fail("PROTECTED_ORGANIZATION_2FA_GRANT_REQUIRED", 401);
+    if (rawToken === SESSION_MFA_ACCESS_TOKEN) {
+      const assurance = getVerifiedRequestSessionAssurance();
+      if (
+        assurance?.accountId !== current.accountId
+        || assurance.credentialRevision !== current.credentialRevision
+        || assurance.credentialRevision !== protection.credentialRevision
+        || !assurance.mfaVerifiedAt
+        || assurance.mfaProviderId !== protection.providerId
+      ) fail("PROTECTED_ORGANIZATION_SESSION_MFA_INVALID", 401);
+      return current;
+    }
     const grant = await privacy.protectedDataAccessGrant.findUnique({
       where: { tokenHash: tokenHash(rawToken) },
     });
@@ -183,6 +202,10 @@ export function createModuleProtectedOrganizationRuntime(
       || grant.moduleKey !== moduleKey
       || grant.dataDomain !== "protected"
       || grant.purpose !== normalizedPurpose
+      || grant.credentialRevision !== current.credentialRevision
+      || grant.credentialRevision !== protection.credentialRevision
+      || grant.providerId !== protection.providerId
+      || grant.accessScope !== ORGANIZATION_PRIVATE_ACCESS_SCOPE
       || grant.subjectId
       || grant.revokedAt
       || grant.expiresAt <= new Date()

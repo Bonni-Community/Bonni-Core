@@ -3,14 +3,12 @@ import { prisma } from "../../database/prisma.js";
 import { verifyAccessToken } from "../../../platform/auth/token/token.service.js";
 import type { AuthenticatedRequest } from "../../../platform/auth/session/authContext.js";
 import {
-  getDatabaseRoutingStatus,
   isDatabaseAuthorizationFailure,
-  isDatabaseConnectionFailure,
 } from "../../database/database-routing.js";
 import {
-  cacheJsonEmergencyIdentity,
-  getJsonEmergencyIdentity,
-} from "../../database/json-emergency-store.js";
+  getVerifiedRequestIdentity,
+  getVerifiedRequestSessionAssurance,
+} from "../../../platform/auth/request-identity/request-identity-context.js";
 
 function getBearerToken(header?: string): string | null {
   if (!header) return null;
@@ -46,6 +44,18 @@ export async function requireAuth(req: AuthenticatedRequest, res: Response, next
     return res.status(401).json({ error: "INVALID_TOKEN" });
   }
 
+  const verifiedIdentity = getVerifiedRequestIdentity();
+  const verifiedSession = getVerifiedRequestSessionAssurance();
+  if (
+    !verifiedIdentity
+    || !verifiedSession
+    || verifiedIdentity.accountId !== payload.accountId
+    || verifiedSession.accountId !== payload.accountId
+    || verifiedSession.credentialRevision !== payload.credentialRevision
+  ) {
+    return res.status(401).json({ error: "INVALID_OR_ENDED_SESSION" });
+  }
+
   try {
     const account = await prisma.account.findUnique({
       where: { id: payload.accountId },
@@ -66,7 +76,12 @@ export async function requireAuth(req: AuthenticatedRequest, res: Response, next
       }
     });
 
-    if (!account || !account.isActive) {
+    if (
+      !account
+      || !account.isActive
+      || account.passwordRecoveryLockedAt
+      || account.credentialRevision !== payload.credentialRevision
+    ) {
       return res.status(401).json({ error: "ACCOUNT_INACTIVE_OR_MISSING" });
     }
 
@@ -80,33 +95,16 @@ export async function requireAuth(req: AuthenticatedRequest, res: Response, next
       loginName: account.loginName,
       accountType: account.type,
       type: payload.type,
+      credentialRevision: account.credentialRevision,
       roles,
       permissions: Array.from(new Set(permissions))
     };
 
-    await cacheJsonEmergencyIdentity(`core:${account.id}`, { auth: req.auth }).catch((error) => {
-      console.warn("JSON-Notlauf-Identität konnte nicht aktualisiert werden", error);
-    });
-
     next();
   } catch (error) {
-    if (getDatabaseRoutingStatus().jsonEmergency.enabled && isDatabaseConnectionFailure(error)) {
-      try {
-        const cached = await getJsonEmergencyIdentity<{ auth: NonNullable<AuthenticatedRequest["auth"]> }>(
-          `core:${payload.accountId}`,
-        );
-        if (cached?.auth) {
-          req.auth = cached.auth;
-          res.setHeader("X-Bonni-JSON-Notlauf", "active");
-          console.warn("Authentication uses encrypted JSON emergency identity", {
-            accountId: payload.accountId,
-          });
-          return next();
-        }
-      } catch (fallbackError) {
-        console.error("JSON emergency authentication unavailable", fallbackError);
-      }
-    }
+    // Interactive authentication is deliberately fail-closed during database
+    // outages. A cached credential revision can become stale immediately after
+    // password or 2FA rotation and must never authorize an old JWT.
     console.error("Authentication service unavailable", error);
     if (isDatabaseAuthorizationFailure(error)) {
       return res.status(500).json({

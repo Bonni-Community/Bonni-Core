@@ -5,6 +5,7 @@ import AccessTab from "./tab/AccessTab.jsx";
 import FunctionsTab from "./tab/FunctionsTab.jsx";
 import SessionsTab from "./tab/SessionsTab.jsx";
 import ProtocolTab from "./tab/ProtocolTab.jsx";
+import AdminEnrollmentPanel from "../../../../../core/modules/security/two-factor/components/AdminEnrollmentPanel.jsx";
 import { updateControlCenterLocalMemberProfile } from "../../../../../system/api/controlCenterUsersApi.js";
 import { isBootstrapAdminLoginName } from "../../../../../system/auth/systemAccountPolicy.js";
 import {
@@ -37,6 +38,7 @@ const TABS = [
   { key: "verwendung", label: "Verwendung" },
   { key: "funktionen", label: "Funktion" },
   { key: "zugang", label: "Zugänge" },
+  { key: "two-factor", label: "2FA" },
   { key: "sessions", label: "Sessions" },
   { key: "protokoll", label: "Protokolle" },
 ];
@@ -708,6 +710,7 @@ export default function MemberActionWindow({
                 />
               ) : null}
               {tab === "sessions" ? <SessionsTab member={draftMember} /> : null}
+              {tab === "two-factor" ? <AdminEnrollmentPanel token={token} member={draftMember} /> : null}
               {tab === "protokoll" ? <ProtocolTab member={draftMember} /> : null}
             </div>
           </main>

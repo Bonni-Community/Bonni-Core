@@ -76,6 +76,7 @@ function FeatureModuleFrame({
   onLogout,
   onBack,
   onOpenControlCenter,
+  onOpenMySettings,
   transport,
   rpcContract,
   sandboxCapabilities,
@@ -110,6 +111,7 @@ function FeatureModuleFrame({
     onLogout,
     onBack,
     onOpenControlCenter,
+    onOpenMySettings,
   };
 
   function postToFrame(message) {
@@ -219,6 +221,7 @@ function FeatureModuleFrame({
       if (action === "logout") handlers.onLogout?.();
       if (action === "back") handlers.onBack?.();
       if (action === "open-control-center") handlers.onOpenControlCenter?.();
+      if (action === "open-my-settings") handlers.onOpenMySettings?.();
       if (action === "change-workspace") handlers.onChangeWorkspace?.(data?.payload?.workspace);
       if (opaqueRpc && action === "navigate") {
         const target = normalizeSameOriginNavigationUrl(data?.payload?.url, window.location.origin);
@@ -306,6 +309,7 @@ export default function FeatureModuleHost({
   fallbackRoute,
   onBack,
   onOpenControlCenter,
+  onOpenMySettings,
   exportName,
   ...moduleProps
 }) {
@@ -422,6 +426,7 @@ export default function FeatureModuleHost({
           onLogout={moduleProps.onLogout}
           onBack={onBack}
           onOpenControlCenter={onOpenControlCenter}
+          onOpenMySettings={onOpenMySettings}
           transport={transport}
           rpcContract={rpcContract}
           sandboxCapabilities={sandboxCapabilities}
@@ -451,6 +456,7 @@ export default function FeatureModuleHost({
           error={error}
           onBack={onBack}
           onOpenControlCenter={onOpenControlCenter}
+          onOpenMySettings={onOpenMySettings}
         />
       )}
     >
@@ -462,6 +468,7 @@ export default function FeatureModuleHost({
           featureModule={state.module}
           startRoute={fallbackRoute}
           onOpenControlCenter={onOpenControlCenter}
+          onOpenMySettings={onOpenMySettings}
           onBackToMainMenu={onBack}
         />
       </Suspense>

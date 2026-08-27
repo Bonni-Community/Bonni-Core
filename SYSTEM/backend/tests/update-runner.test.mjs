@@ -9,9 +9,12 @@ import {
   DockerCli,
   UpdateRunner,
   assertReleaseArchiveTags,
+  bonniReleaseImageTag,
   canonicalReleasePayload,
+  compareBonniReleaseVersion,
   createUpdateRunnerConfig,
   discoverComposeProject,
+  signLifecycleCommand,
   signUpdateRunnerRequest,
   validateUpdateRunnerRequest,
 } from "../src/system/update-runner/index.mjs";
@@ -19,7 +22,14 @@ import { loadTrustedReleaseKeys } from "../src/system/update-runner/trusted-keys
 import {
   createCutoverSnapshot,
   restoreCutoverSnapshot,
+  snapshotDirectory,
 } from "../scripts/backup/update-cutover-snapshot-lib.mjs";
+import {
+  acquireDockerRuntimeActivation,
+  acquireDockerRuntimeDeactivationIntent,
+  releaseDockerRuntimeActivation,
+  releaseDockerRuntimeDeactivationIntent,
+} from "../scripts/runtime/runtime-mode-exclusion.mjs";
 
 const NOW = new Date("2026-07-22T12:00:00.000Z");
 const OLD_IMAGE = `sha256:${"a".repeat(64)}`;
@@ -74,13 +84,31 @@ class FakeDocker {
     this.emergencyHealthCalls = 0;
     this.proxyHealthCalls = 0;
     this.activeOverlayAtStarts = [];
-    this.imageTags = new Map([["bonni_test-system:active", OLD_IMAGE]]);
+    this.imageTags = new Map([
+      ["bonni_test-system:active", OLD_IMAGE],
+      ["bonni_test-system:emergency", OLD_IMAGE],
+    ]);
+    this.leaseAbortSignal = null;
   }
+
+  setLeaseAbortSignal(signal) { this.leaseAbortSignal = signal; }
 
   record(operation, value) { this.commands.push({ operation, ...value }); }
 
   async compose(args, options = {}) {
     this.record("compose", { args: [...args], env: { ...(options.env || {}) } });
+    if (this.options.blockCompose && args.includes(this.options.blockCompose)) {
+      this.options.onBlocked?.();
+      await new Promise((resolve, reject) => {
+        const signal = this.leaseAbortSignal;
+        if (signal?.aborted) {
+          reject(new Error("fake compose aborted by lease loss"));
+          return;
+        }
+        signal?.addEventListener("abort", () => reject(new Error("fake compose aborted by lease loss")), { once: true });
+        this.options.releaseBlocked = resolve;
+      });
+    }
     if (this.options.failCandidateStart && args.includes("backend-candidate")) throw new Error("fake candidate start failed");
     if (args.includes("runtime-proxy")) this.proxyTarget = options.env?.ACTIVE_BACKEND || this.proxyTarget;
     if (args.includes("backend-active") && args.includes("--force-recreate")) {
@@ -120,6 +148,22 @@ class FakeDocker {
         restoreDatabase: async () => undefined,
       });
     }
+    if (args.includes("run") && args.includes("update-snapshot-cleanup")) {
+      if (this.options.failSnapshotCleanup) throw new Error("fake snapshot cleanup failed");
+      await fs.rm(snapshotDirectory(
+        this.options.snapshotConfig.rollbackSnapshotRoot,
+        options.env.BONNI_UPDATE_SNAPSHOT_ID,
+      ), { recursive: true, force: true });
+      await fs.rm(path.join(
+        this.options.snapshotConfig.rollbackResultRoot,
+        `${options.env.BONNI_UPDATE_SNAPSHOT_ID}.json`,
+      ), { force: true });
+    }
+    if (args.includes("backend-emergency")
+      && args.includes("--force-recreate")
+      && this.options.activeDiesDuringEmergencyFinalize) {
+      this.options.activeDead = true;
+    }
     return { stdout: "", stderr: "", code: 0 };
   }
 
@@ -136,12 +180,13 @@ class FakeDocker {
 
   async serviceContainer(service) {
     this.record("serviceContainer", { service });
-    return "active-container-1";
+    return `${service}-container-1`;
   }
 
   async containerImageId(container) {
     this.record("containerImageId", { container });
-    return OLD_IMAGE;
+    if (container.startsWith("backend-emergency-")) return this.imageTags.get("bonni_test-system:emergency");
+    return this.imageTags.get("bonni_test-system:active");
   }
 
   async loadImage(archive) {
@@ -198,6 +243,9 @@ class FakeDocker {
     if (this.options.failPromotedActiveHealth && this.activeVersion === "0.1.11") {
       return health("active", this.activeVersion, { state: "unready", database: { ready: false } });
     }
+    if (this.options.activeDead) {
+      return health("active", this.activeVersion, { state: "unready", database: { ready: false } });
+    }
     return health("active", this.activeVersion);
   }
 
@@ -208,6 +256,10 @@ class FakeDocker {
     if (this.proxyTarget === "backend-emergency") return health("emergency", this.options.emergencyVersion || "0.1.9");
     return health("active", this.activeVersion);
   }
+}
+
+function assertNoDockerMutation(docker) {
+  assert.ok(docker.commands.every((entry) => entry.operation === "runningServiceContainers"));
 }
 
 async function fixture(options = {}) {
@@ -320,7 +372,7 @@ async function fixture(options = {}) {
   };
 }
 
-function runnerFor(workspace, docker) {
+function runnerFor(workspace, docker, clock = () => new Date(NOW), monotonicClock = () => 0) {
   docker.options.snapshotConfig = workspace.config;
   docker.options.snapshotStorage = workspace.storageRoot;
   docker.options.snapshotRunSystem = workspace.runSystemRoot;
@@ -329,9 +381,65 @@ function runnerFor(workspace, docker) {
     docker,
     trustedKeys: { "test-release-key": workspace.publicKey },
     requestSecret: REQUEST_SECRET,
-    clock: () => new Date(NOW),
+    clock,
+    monotonicClock,
     sleep: async () => undefined,
   });
+}
+
+async function enableRuntimeDeactivation(workspace) {
+  const activation = await acquireDockerRuntimeActivation({
+    productRoot: workspace.root,
+    ownerPid: 999_991,
+    isPidAlive: () => false,
+    probePort: async () => false,
+  });
+  const intent = await acquireDockerRuntimeDeactivationIntent({
+    productRoot: workspace.root,
+    ownerPid: process.pid,
+    isPidAlive: (pid) => pid === process.pid,
+  });
+  return async () => {
+    await releaseDockerRuntimeDeactivationIntent({
+      productRoot: workspace.root,
+      ownerPid: process.pid,
+      token: intent.token,
+    });
+    await releaseDockerRuntimeActivation({
+      productRoot: workspace.root,
+      ownerPid: 999_991,
+      token: activation.token,
+    });
+  };
+}
+
+function deploymentLifecycle(workspace, state = "holding") {
+  return {
+    protocol: "bonni-deployment-lifecycle/1",
+    schemaVersion: 1,
+    generation: 1,
+    state,
+    holdId: workspace.request.requestId,
+    workflowId: workspace.request.workflowId,
+    previousVersion: workspace.request.currentVersion,
+    targetVersion: workspace.request.targetVersion,
+    previousImageId: OLD_IMAGE,
+    targetImageId: NEW_IMAGE,
+    rollbackImageTag: workspace.config.rollbackImageTag,
+    emergencyImageTag: workspace.config.emergencyImageTag,
+    holdDays: 14,
+    activatedAt: NOW.toISOString(),
+    holdUntil: new Date(NOW.getTime() + 14 * 24 * 60 * 60_000).toISOString(),
+    observedHoldMs: 0,
+    lastObservedAt: NOW.toISOString(),
+    clockAnomalyAt: null,
+    clockAnomalyCode: null,
+    finalizeReason: state === "finalized" ? "runtime-deactivation" : null,
+    finalizeRequestedAt: null,
+    finalizedAt: state === "finalized" ? NOW.toISOString() : null,
+    updatedAt: NOW.toISOString(),
+    mode: "single-active-fail-closed-hold",
+  };
 }
 
 async function prepareRecoveryCutover(workspace, progress, { phase = "promoting", decision = null } = {}) {
@@ -373,7 +481,111 @@ async function prepareRecoveryCutover(workspace, progress, { phase = "promoting"
     createdAt: NOW.toISOString(),
     updatedAt: NOW.toISOString(),
   }, null, 2)}\n`);
+  if (decision === "target") {
+    await fs.writeFile(workspace.config.lifecycleStatePath, `${JSON.stringify({
+      protocol: "bonni-deployment-lifecycle/1",
+      schemaVersion: 1,
+      generation: 1,
+      state: "holding",
+      holdId: workspace.request.requestId,
+      workflowId: workspace.request.workflowId,
+      previousVersion: workspace.request.currentVersion,
+      targetVersion: workspace.request.targetVersion,
+      previousImageId: OLD_IMAGE,
+      targetImageId: NEW_IMAGE,
+      rollbackImageTag: workspace.config.rollbackImageTag,
+      emergencyImageTag: workspace.config.emergencyImageTag,
+      holdDays: 14,
+      activatedAt: NOW.toISOString(),
+      holdUntil: new Date(NOW.getTime() + 14 * 24 * 60 * 60_000).toISOString(),
+      observedHoldMs: 0,
+      lastObservedAt: NOW.toISOString(),
+      clockAnomalyAt: null,
+      clockAnomalyCode: null,
+      finalizeReason: null,
+      finalizeRequestedAt: null,
+      finalizedAt: null,
+      updatedAt: NOW.toISOString(),
+      mode: "single-active-fail-closed-hold",
+    }, null, 2)}\n`);
+  }
 }
+
+test("runtime deactivation gate is locked, comprehensive and fail closed", async (t) => {
+  const workspace = await fixture();
+  const releaseMode = await enableRuntimeDeactivation(workspace);
+  t.after(async () => {
+    await releaseMode();
+    await workspace.cleanup();
+  });
+  const docker = new FakeDocker();
+  const runner = runnerFor(workspace, docker);
+  await runner.initialize();
+
+  await assert.rejects(
+    runner.assertRuntimeDeactivationSafe(),
+    /UPDATE_RUNNER_DEACTIVATION_QUEUED_REQUEST/u,
+  );
+  await fs.unlink(workspace.requestFile);
+
+  const claim = path.join(workspace.config.claimedRoot, `${workspace.request.requestId}.request.json`);
+  await fs.writeFile(claim, `${JSON.stringify(workspace.request)}\n`);
+  await assert.rejects(
+    runner.assertRuntimeDeactivationSafe(),
+    /UPDATE_RUNNER_DEACTIVATION_OPEN_CLAIM/u,
+  );
+  await fs.unlink(claim);
+
+  const journal = path.join(workspace.config.journalRoot, `${workspace.request.requestId}.json`);
+  await fs.writeFile(journal, `${JSON.stringify({ status: "running" })}\n`);
+  await assert.rejects(
+    runner.assertRuntimeDeactivationSafe(),
+    /UPDATE_RUNNER_DEACTIVATION_JOURNAL_OPEN/u,
+  );
+  await fs.writeFile(journal, `${JSON.stringify({ status: "completed" })}\n`);
+
+  await fs.writeFile(workspace.config.transactionFencePath, "{}\n");
+  await assert.rejects(
+    runner.assertRuntimeDeactivationSafe(),
+    /UPDATE_RUNNER_DEACTIVATION_TRANSACTION_FENCE_PRESENT/u,
+  );
+  await fs.unlink(workspace.config.transactionFencePath);
+
+  await fs.writeFile(
+    workspace.config.lifecycleStatePath,
+    `${JSON.stringify(deploymentLifecycle(workspace, "holding"), null, 2)}\n`,
+  );
+  await assert.rejects(
+    runner.assertRuntimeDeactivationSafe(),
+    /UPDATE_RUNNER_DEACTIVATION_LIFECYCLE_HOLDING/u,
+  );
+  await fs.writeFile(
+    workspace.config.lifecycleStatePath,
+    `${JSON.stringify(deploymentLifecycle(workspace, "finalized"), null, 2)}\n`,
+  );
+
+  assert.deepEqual(await runner.assertRuntimeDeactivationSafe(), {
+    ok: true,
+    lifecycleState: "finalized",
+  });
+  assert.ok(docker.commands.some((entry) => entry.operation === "runningServiceContainers"
+    && entry.services.includes("backend-candidate")
+    && entry.services.includes("update-snapshot-restore")));
+});
+
+test("runtime deactivation intent quiesces processNext before claiming a queued release", async (t) => {
+  const workspace = await fixture({ requestId: "request-deactivation-0002" });
+  const releaseMode = await enableRuntimeDeactivation(workspace);
+  t.after(async () => {
+    await releaseMode();
+    await workspace.cleanup();
+  });
+  const docker = new FakeDocker();
+  const result = await runnerFor(workspace, docker).processNext();
+  assert.deepEqual(result, { ok: false, processed: false, deactivating: true });
+  assert.ok(await fs.stat(workspace.requestFile));
+  assert.equal(docker.commands.length, 0);
+});
 
 test("runner installs a signed OCI release through isolated candidate and canonical active", async (t) => {
   const workspace = await fixture();
@@ -446,8 +658,8 @@ test("runner installs a signed OCI release through isolated candidate and canoni
   assert.equal(persisted.status, "completed");
   assert.deepEqual(persisted.steps.map((entry) => entry.status), ["completed", "completed", "completed"]);
   const heartbeat = JSON.parse(await fs.readFile(workspace.config.heartbeatPath, "utf8"));
-  assert.equal(heartbeat.version, "0.2.1");
-  assert.equal(heartbeat.runnerVersion, "0.2.1");
+  assert.equal(heartbeat.version, "0.3.0");
+  assert.equal(heartbeat.runnerVersion, "0.3.0");
   assert.equal(heartbeat.state, "idle");
   assert.equal(heartbeat.status, "idle");
   assert.equal(await fs.readFile(workspace.config.activeEnvironmentPath, "utf8"),
@@ -459,9 +671,185 @@ test("runner installs a signed OCI release through isolated candidate and canoni
     state: "open",
     openedAt: NOW.toISOString(),
     reason: "update-runtime-confirmed",
-    runnerVersion: "0.2.1",
+    runnerVersion: "0.3.0",
   });
   await assert.rejects(fs.stat(workspace.config.transactionFencePath), /ENOENT/);
+});
+
+test("completed deployment creates an exact 14-day hold and blocks a queued follow-up", async (t) => {
+  const workspace = await fixture({ requestId: "request-hold-0001", nonce: "V".repeat(32) });
+  t.after(workspace.cleanup);
+  const docker = new FakeDocker();
+  const runner = runnerFor(workspace, docker);
+  assert.equal((await runner.processNext()).ok, true);
+
+  const lifecycle = JSON.parse(await fs.readFile(workspace.config.lifecycleStatePath, "utf8"));
+  assert.equal(lifecycle.state, "holding");
+  assert.equal(lifecycle.mode, "single-active-fail-closed-hold");
+  assert.equal(lifecycle.holdId, workspace.request.requestId);
+  assert.equal(lifecycle.holdDays, 14);
+  assert.equal(Date.parse(lifecycle.holdUntil) - Date.parse(lifecycle.activatedAt), 14 * 24 * 60 * 60_000);
+  assert.equal(docker.imageTags.get(workspace.config.rollbackImageTag), OLD_IMAGE);
+
+  const queued = path.join(workspace.config.requestsRoot, "future-request-0002.json");
+  await fs.writeFile(queued, "{}\n");
+  const blocked = await runner.processNext();
+  assert.equal(blocked.ok, true);
+  assert.equal(blocked.processed, false);
+  assert.equal(blocked.lifecycle.blocksUpdates, true);
+  assert.equal(await fs.readFile(queued, "utf8"), "{}\n");
+});
+
+test("signed developer finalize is idempotent and advances Emergency plus rollback pin", async (t) => {
+  const workspace = await fixture({ requestId: "request-finalize-0001", nonce: "W".repeat(32) });
+  t.after(workspace.cleanup);
+  const docker = new FakeDocker();
+  const runner = runnerFor(workspace, docker);
+  assert.equal((await runner.processNext()).ok, true);
+  const lifecycle = JSON.parse(await fs.readFile(workspace.config.lifecycleStatePath, "utf8"));
+  const unsigned = {
+    schemaVersion: 1,
+    commandId: "finalize-command-0001",
+    action: "finalize",
+    holdId: lifecycle.holdId,
+    generation: lifecycle.generation,
+    issuedAt: NOW.toISOString(),
+    expiresAt: new Date(NOW.getTime() + 10 * 60_000).toISOString(),
+    nonce: "X".repeat(32),
+  };
+  const command = signLifecycleCommand(unsigned, REQUEST_SECRET, { now: NOW });
+  await fs.writeFile(
+    path.join(workspace.config.lifecycleRequestsRoot, `${command.commandId}.json`),
+    `${JSON.stringify(command, null, 2)}\n`,
+  );
+
+  const finalized = await runner.processNext();
+  assert.equal(finalized.ok, true);
+  assert.equal(finalized.processed, false);
+  const state = JSON.parse(await fs.readFile(workspace.config.lifecycleStatePath, "utf8"));
+  assert.equal(state.state, "finalized");
+  assert.equal(state.finalizeReason, "developer-requested");
+  assert.equal(docker.imageTags.get(workspace.config.emergencyImageTag), NEW_IMAGE);
+  assert.equal(docker.imageTags.get(workspace.config.rollbackImageTag), NEW_IMAGE);
+  assert.ok(docker.commands.some((entry) => entry.operation === "compose"
+    && entry.args.includes("update-snapshot-cleanup") && entry.args.includes("run")));
+
+  const replay = signLifecycleCommand({ ...unsigned, commandId: "finalize-command-0002", nonce: "Y".repeat(32) }, REQUEST_SECRET, { now: NOW });
+  await fs.writeFile(
+    path.join(workspace.config.lifecycleRequestsRoot, `${replay.commandId}.json`),
+    `${JSON.stringify(replay, null, 2)}\n`,
+  );
+  await runner.processNext();
+  const replayResult = JSON.parse(await fs.readFile(runner.lifecycleCommandResultPath(replay.commandId), "utf8"));
+  assert.equal(replayResult.ok, true);
+  assert.equal(replayResult.idempotent, true);
+});
+
+test("finalize preserves rollback pin and snapshot when Active dies during Emergency recreation", async (t) => {
+  const workspace = await fixture({ requestId: "request-finalize-race", nonce: "R".repeat(32) });
+  t.after(workspace.cleanup);
+  const docker = new FakeDocker();
+  const runner = runnerFor(workspace, docker);
+  assert.equal((await runner.processNext()).ok, true);
+  const lifecycle = JSON.parse(await fs.readFile(workspace.config.lifecycleStatePath, "utf8"));
+  const retainedSnapshotPath = snapshotDirectory(
+    workspace.config.rollbackSnapshotRoot,
+    workspace.request.requestId,
+  );
+  assert.ok(docker.commands.some((entry) => entry.operation === "compose"
+    && entry.args.includes("update-snapshot-create") && entry.args.includes("run")));
+  assert.ok(!docker.commands.some((entry) => entry.operation === "compose"
+    && entry.args.includes("update-snapshot-cleanup") && entry.args.includes("run")));
+  assert.ok(await fs.stat(retainedSnapshotPath));
+  const command = signLifecycleCommand({
+    schemaVersion: 1,
+    commandId: "finalize-command-active-dies",
+    action: "finalize",
+    holdId: lifecycle.holdId,
+    generation: lifecycle.generation,
+    issuedAt: NOW.toISOString(),
+    expiresAt: new Date(NOW.getTime() + 10 * 60_000).toISOString(),
+    nonce: "S".repeat(32),
+  }, REQUEST_SECRET, { now: NOW });
+  await fs.writeFile(
+    path.join(workspace.config.lifecycleRequestsRoot, `${command.commandId}.json`),
+    `${JSON.stringify(command, null, 2)}\n`,
+  );
+  docker.options.activeDiesDuringEmergencyFinalize = true;
+
+  const result = await runner.processNext();
+
+  assert.equal(result.ok, true);
+  assert.equal(result.processed, false);
+  const commandResult = JSON.parse(await fs.readFile(
+    runner.lifecycleCommandResultPath(command.commandId),
+    "utf8",
+  ));
+  assert.equal(commandResult.ok, false);
+  assert.match(commandResult.error, /Active unmittelbar vor Hold-Freigabe/);
+  const retained = JSON.parse(await fs.readFile(workspace.config.lifecycleStatePath, "utf8"));
+  assert.equal(retained.state, "finalizing");
+  assert.equal(docker.imageTags.get(workspace.config.rollbackImageTag), OLD_IMAGE);
+  assert.ok(!docker.commands.some((entry) => entry.operation === "compose"
+    && entry.args.includes("update-snapshot-cleanup") && entry.args.includes("run")));
+  assert.ok(await fs.stat(retainedSnapshotPath));
+});
+
+test("expired hold finalizes automatically before accepting another update", async (t) => {
+  const workspace = await fixture({ requestId: "request-expiry-0001", nonce: "Z".repeat(32) });
+  t.after(workspace.cleanup);
+  const docker = new FakeDocker();
+  let current = new Date(NOW);
+  let monotonicMs = 0;
+  const runner = runnerFor(
+    workspace,
+    docker,
+    () => new Date(current),
+    () => monotonicMs,
+  );
+  assert.equal((await runner.processNext()).ok, true);
+  // First post-activation pass establishes a process-local monotonic baseline.
+  assert.equal((await runner.processNext()).ok, true);
+  let result;
+  for (let checkpoint = 0; checkpoint < 56; checkpoint += 1) {
+    current = new Date(current.getTime() + 6 * 60 * 60_000);
+    monotonicMs += 6 * 60 * 60_000;
+    result = await runner.processNext();
+  }
+  assert.equal(result.ok, true);
+  const lifecycle = JSON.parse(await fs.readFile(workspace.config.lifecycleStatePath, "utf8"));
+  assert.equal(lifecycle.state, "finalized");
+  assert.equal(lifecycle.finalizeReason, "hold-expired");
+  assert.equal(docker.imageTags.get(workspace.config.rollbackImageTag), NEW_IMAGE);
+});
+
+test("a fifteen-day wall-clock jump never auto-finalizes or deletes rollback evidence", async (t) => {
+  const workspace = await fixture({ requestId: "request-clock-jump-01", nonce: "J".repeat(32) });
+  t.after(workspace.cleanup);
+  const docker = new FakeDocker();
+  let current = new Date(NOW);
+  let monotonicMs = 0;
+  const runner = runnerFor(
+    workspace,
+    docker,
+    () => new Date(current),
+    () => monotonicMs,
+  );
+  assert.equal((await runner.processNext()).ok, true);
+  assert.equal((await runner.processNext()).ok, true);
+  current = new Date(current.getTime() + 15 * 24 * 60 * 60_000);
+
+  const result = await runner.processNext();
+
+  assert.equal(result.ok, true);
+  assert.equal(result.processed, false);
+  const lifecycle = JSON.parse(await fs.readFile(workspace.config.lifecycleStatePath, "utf8"));
+  assert.equal(lifecycle.state, "holding");
+  assert.equal(lifecycle.clockAnomalyCode, "CLOCK_FORWARD_JUMP");
+  assert.equal(lifecycle.observedHoldMs, 0);
+  assert.equal(docker.imageTags.get(workspace.config.rollbackImageTag), OLD_IMAGE);
+  assert.ok(!docker.commands.some((entry) => entry.operation === "compose"
+    && entry.args.includes("update-snapshot-cleanup") && entry.args.includes("run")));
 });
 
 test("candidate must report exact version, role, database and ready state three times", async (t) => {
@@ -490,6 +878,12 @@ test("failed promoted active restores previous image and proxy", async (t) => {
   assert.equal(docker.activeVersion, "0.1.10");
   assert.equal(docker.proxyTarget, "backend-active");
   assert.ok(docker.commands.some((entry) => entry.operation === "tagImage" && entry.imageId === OLD_IMAGE));
+  await assert.rejects(
+    fs.stat(snapshotDirectory(workspace.config.rollbackSnapshotRoot, workspace.request.requestId)),
+    /ENOENT/,
+  );
+  assert.equal(result.result.flags.rollbackSnapshotCleanupComplete, true);
+  assert.equal(result.result.flags.rollbackLifecycleClosed, true);
 });
 
 test("restore failure leaves every productive service closed and keeps the claim for recovery", async (t) => {
@@ -515,6 +909,36 @@ test("restore failure leaves every productive service closed and keeps the claim
     && entry.args.includes("runtime-proxy") && entry.args.includes("up")));
 });
 
+test("rollback keeps its claim until lifecycle closure is durably acknowledged", async (t) => {
+  const workspace = await fixture({ requestId: "request-rollback-lifecycle", nonce: "Y".repeat(32) });
+  t.after(workspace.cleanup);
+  const docker = new FakeDocker({ failPromotedActiveHealth: true });
+  const runner = runnerFor(workspace, docker);
+  const realClose = runner.closeRollbackLifecycle.bind(runner);
+  let failOnce = true;
+  runner.closeRollbackLifecycle = async (...args) => {
+    if (failOnce) {
+      failOnce = false;
+      throw new Error("simulated lifecycle receipt I/O failure");
+    }
+    return realClose(...args);
+  };
+
+  const first = await runner.processNext();
+  assert.equal(first.ok, false);
+  assert.equal(first.result.flags.rollbackSnapshotCleanupComplete, true);
+  assert.equal(first.result.flags.rollbackLifecycleClosed, false);
+  await fs.stat(path.join(workspace.config.claimedRoot, `${workspace.request.requestId}.request.json`));
+
+  const recovered = await runner.processNext();
+  assert.equal(recovered.result.status, "rolled-back");
+  assert.equal(recovered.result.flags.rollbackLifecycleClosed, true);
+  await assert.rejects(
+    fs.stat(path.join(workspace.config.claimedRoot, `${workspace.request.requestId}.request.json`)),
+    /ENOENT/,
+  );
+});
+
 test("artifact tampering is rejected before the first Docker command", async (t) => {
   const workspace = await fixture({ requestId: "request-0004", nonce: "D".repeat(32) });
   t.after(workspace.cleanup);
@@ -524,7 +948,7 @@ test("artifact tampering is rejected before the first Docker command", async (t)
 
   assert.equal(result.ok, false);
   assert.match(result.result.error, /SIZE_MISMATCH|HASH_MISMATCH/);
-  assert.equal(docker.commands.length, 0);
+  assertNoDockerMutation(docker);
 });
 
 test("archive carrying the canonical Active tag is rejected before docker image load", async (t) => {
@@ -547,6 +971,40 @@ test("archive requires exactly one signed repository and version tag", () => {
   assert.equal(assertReleaseArchiveTags(identity, [`${REPOSITORY}:0.1.11`]), true);
 });
 
+test("runner uses Bonni build ordering and Docker-safe maintenance tags", () => {
+  assert.equal(compareBonniReleaseVersion("0.1.19+c", "0.1.19+d"), -1);
+  assert.equal(compareBonniReleaseVersion("0.1.19+a", "0.1.19"), 1);
+  assert.equal(compareBonniReleaseVersion("0.1.19+aa", "0.1.19+z"), 1);
+  assert.equal(bonniReleaseImageTag("0.1.19+d"), "0.1.19-d");
+});
+
+test("runner install contract accepts the next Bonni build and rejects a reverse build", async (t) => {
+  const workspace = await fixture({ requestId: "request-build-order-01", nonce: "Q".repeat(32) });
+  t.after(workspace.cleanup);
+
+  const forwardDraft = structuredClone(workspace.request);
+  forwardDraft.currentVersion = "0.1.19+c";
+  forwardDraft.targetVersion = "0.1.19+d";
+  forwardDraft.release.version = "0.1.19+d";
+  const forward = signUpdateRunnerRequest(forwardDraft, REQUEST_SECRET, { now: NOW });
+  const validated = validateUpdateRunnerRequest(forward, { now: NOW });
+
+  assert.equal(validated.currentVersion, "0.1.19+c");
+  assert.equal(validated.targetVersion, "0.1.19+d");
+  assert.equal(compareBonniReleaseVersion(validated.targetVersion, validated.currentVersion), 1);
+  assert.equal(bonniReleaseImageTag(validated.targetVersion), "0.1.19-d");
+
+  const reverse = structuredClone(forward);
+  reverse.currentVersion = "0.1.19+d";
+  reverse.targetVersion = "0.1.19+c";
+  reverse.release.version = "0.1.19+c";
+  delete reverse.auth;
+  assert.throws(
+    () => validateUpdateRunnerRequest(reverse, { now: NOW, requireAuth: false }),
+    /Zielversion ist nicht neuer/,
+  );
+});
+
 test("request HMAC tampering is quarantined before Docker access", async (t) => {
   const workspace = await fixture({ requestId: "request-0008", nonce: "H".repeat(32) });
   t.after(workspace.cleanup);
@@ -555,7 +1013,7 @@ test("request HMAC tampering is quarantined before Docker access", async (t) => 
   const docker = new FakeDocker();
   const result = await runnerFor(workspace, docker).processNext();
   assert.equal(result.processed, false);
-  assert.equal(docker.commands.length, 0);
+  assertNoDockerMutation(docker);
   const resultNames = await fs.readdir(workspace.config.resultsRoot);
   assert.ok(resultNames.some((name) => name.startsWith("rejected-")));
 });
@@ -571,26 +1029,47 @@ test("request currentVersion must equal the real healthy active version", async 
   assert.ok(!docker.commands.some((entry) => entry.operation === "loadImage"));
 });
 
-test("offline or destructive database migration is rejected by the fixed request schema", async (t) => {
-  const workspace = await fixture({ requestId: "request-0005", nonce: "E".repeat(32) });
+test("signed backward-compatible expand migration runs online before the production write fence", async (t) => {
+  const workspace = await fixture({
+    requestId: "request-0005",
+    nonce: "E".repeat(32),
+    migration: {
+      required: true,
+      strategy: "expand-contract",
+      fromSchemaVersion: "1.0.0",
+      toSchemaVersion: "1.1.0",
+      backwardCompatible: true,
+    },
+  });
   t.after(workspace.cleanup);
-  workspace.request.release.migration = {
-    required: true,
-    strategy: "expand-contract",
-    fromSchemaVersion: "1.0.0",
-    toSchemaVersion: "1.1.0",
-    backwardCompatible: true,
-  };
-  const { auth: _oldAuth, ...unsignedRejected } = workspace.request;
-  workspace.request = signUpdateRunnerRequest(unsignedRejected, REQUEST_SECRET, { now: NOW });
-  assert.throws(() => validateUpdateRunnerRequest(workspace.request, { now: NOW }), /gesperrt/);
-  await fs.writeFile(workspace.requestFile, `${JSON.stringify(workspace.request, null, 2)}\n`);
+  const docker = new FakeDocker();
+  const result = await runnerFor(workspace, docker).processNext();
+  assert.equal(result.ok, true);
+  const migrationIndex = docker.commands.findIndex((entry) => entry.operation === "compose"
+    && entry.args.includes("database-migrator") && entry.args.includes("run"));
+  const proxyStopIndex = docker.commands.findIndex((entry) => entry.operation === "compose"
+    && entry.args[0] === "stop" && entry.args.includes("runtime-proxy"));
+  assert.ok(migrationIndex >= 0 && proxyStopIndex > migrationIndex);
+});
+
+test("offline migration is rejected before Docker access", async (t) => {
+  const workspace = await fixture({
+    requestId: "request-offline-0005",
+    nonce: "U".repeat(32),
+    migration: {
+      required: true,
+      strategy: "offline",
+      fromSchemaVersion: "1.0.0",
+      toSchemaVersion: "2.0.0",
+      backwardCompatible: false,
+    },
+  });
+  t.after(workspace.cleanup);
+  assert.throws(() => validateUpdateRunnerRequest(workspace.request, { now: NOW }), /offline\/contract/);
   const docker = new FakeDocker();
   const result = await runnerFor(workspace, docker).processNext();
   assert.equal(result.processed, false);
-  assert.equal(docker.commands.length, 0);
-  const terminal = JSON.parse(await fs.readFile(path.join(workspace.config.progressRoot, `${workspace.request.workflowId}.json`), "utf8"));
-  assert.equal(terminal.status, "failed");
+  assertNoDockerMutation(docker);
 });
 
 test("signed release with backwardCompatible false is rejected before Docker access", async (t) => {
@@ -605,12 +1084,12 @@ test("signed release with backwardCompatible false is rejected before Docker acc
   const result = await runnerFor(workspace, docker).processNext();
 
   assert.equal(result.processed, false);
-  assert.equal(docker.commands.length, 0);
+  assertNoDockerMutation(docker);
   const terminal = JSON.parse(await fs.readFile(
     path.join(workspace.config.progressRoot, `${workspace.request.workflowId}.json`), "utf8",
   ));
   assert.equal(terminal.status, "failed");
-  assert.match(terminal.error, /rückwärtskompatiblen Datenstand/);
+  assert.match(terminal.error, /rückwärtskompatible expand-contract/);
 });
 
 test("existing runner lock prevents concurrent Docker orchestration", async (t) => {
@@ -621,7 +1100,76 @@ test("existing runner lock prevents concurrent Docker orchestration", async (t) 
   const docker = new FakeDocker();
   const result = await runnerFor(workspace, docker).processNext();
   assert.deepEqual(result, { ok: false, busy: true });
-  assert.equal(docker.commands.length, 0);
+  assertNoDockerMutation(docker);
+});
+
+test("a refreshed live runner lease cannot be stolen after the stale threshold", async (t) => {
+  const workspace = await fixture({ requestId: "request-lock-lease", nonce: "L".repeat(32) });
+  t.after(workspace.cleanup);
+  await fs.unlink(workspace.requestFile);
+  workspace.config.staleLockMs = 60_000;
+  let current = new Date(NOW);
+  const first = runnerFor(workspace, new FakeDocker(), () => new Date(current));
+  await first.initialize();
+  assert.equal(await first.acquireLock(), true);
+  current = new Date(current.getTime() + 2 * 60_000);
+  await first.refreshLockLease();
+
+  const competingDocker = new FakeDocker();
+  const second = runnerFor(workspace, competingDocker, () => new Date(current));
+  assert.deepEqual(await second.processNext(), { ok: false, busy: true });
+  assert.ok(!competingDocker.commands.some((entry) => entry.operation !== "runningServiceContainers"));
+  await first.releaseLock();
+});
+
+test("a changed lock token makes the original runner fail closed and preserves the foreign lock", async (t) => {
+  const workspace = await fixture({ requestId: "request-lock-token", nonce: "K".repeat(32) });
+  t.after(workspace.cleanup);
+  await fs.unlink(workspace.requestFile);
+  const docker = new FakeDocker();
+  const runner = runnerFor(workspace, docker);
+  await runner.initialize();
+  assert.equal(await runner.acquireLock(), true);
+  await fs.writeFile(workspace.config.lockPath, JSON.stringify({
+    pid: 999_999,
+    hostname: "foreign-runner",
+    token: "foreign-lock-token",
+    acquiredAt: NOW.toISOString(),
+  }));
+
+  await assert.rejects(() => runner.refreshLockLease(), /UPDATE_RUNNER_LOCK_OWNERSHIP_LOST/);
+  await assert.rejects(() => runner.docker.compose(["stop", "backend-active"]), /UPDATE_RUNNER_LOCK_OWNERSHIP_LOST/);
+  assertNoDockerMutation(docker);
+  await runner.releaseLock();
+  assert.equal(JSON.parse(await fs.readFile(workspace.config.lockPath, "utf8")).token, "foreign-lock-token");
+});
+
+test("lease loss aborts an in-flight Docker operation and a second runner remains blocked", async (t) => {
+  const workspace = await fixture({ requestId: "request-lock-abort", nonce: "B".repeat(32) });
+  t.after(workspace.cleanup);
+  await fs.unlink(workspace.requestFile);
+  let startedResolve;
+  const started = new Promise((resolve) => { startedResolve = resolve; });
+  const firstDocker = new FakeDocker({
+    blockCompose: "update-snapshot-restore",
+    onBlocked: () => startedResolve(),
+  });
+  const first = runnerFor(workspace, firstDocker);
+  await first.initialize();
+  assert.equal(await first.acquireLock(), true);
+  const operation = first.docker.compose(["run", "update-snapshot-restore"]);
+  await started;
+  await fs.unlink(workspace.config.lockPath);
+  await fs.writeFile(workspace.config.lockPath, JSON.stringify({ token: "replacement" }));
+  await assert.rejects(() => first.refreshLockLease(), /UPDATE_RUNNER_LOCK_OWNERSHIP_LOST/);
+  await assert.rejects(() => operation, /UPDATE_RUNNER_LOCK_OWNERSHIP_LOST/);
+
+  await fs.unlink(workspace.config.lockPath);
+  const secondDocker = new FakeDocker({ runningWriters: ["first-runner-still-running"] });
+  const second = runnerFor(workspace, secondDocker);
+  assert.deepEqual(await second.processNext(), { ok: false, busy: true });
+  assert.ok(!secondDocker.commands.some((entry) => entry.operation === "compose"));
+  await first.releaseLock();
 });
 
 test("boot recovery takes over a fresh orphan lock only when no other runner container exists", async (t) => {
@@ -639,6 +1187,61 @@ test("boot recovery takes over a fresh orphan lock only when no other runner con
   const competing = new FakeDocker({ runningWriters: ["different-running-runner"] });
   const blocked = await runnerFor(workspace, competing).processNext();
   assert.deepEqual(blocked, { ok: false, busy: true });
+});
+
+test("boot gate defers expired and in-progress hold finalization until Active is healthy", async (t) => {
+  for (const [state, suffix] of [["holding", "expired"], ["finalizing", "resume"]]) {
+    const workspace = await fixture({
+      requestId: `request-boot-hold-${suffix}`,
+      nonce: (state === "holding" ? "E" : "I").repeat(32),
+    });
+    t.after(workspace.cleanup);
+    const installedDocker = new FakeDocker();
+    assert.equal((await runnerFor(workspace, installedDocker).processNext()).ok, true);
+    const lifecycle = JSON.parse(await fs.readFile(workspace.config.lifecycleStatePath, "utf8"));
+    if (state === "finalizing") {
+      lifecycle.state = "finalizing";
+      lifecycle.finalizeReason = "developer-requested";
+      lifecycle.finalizeRequestedAt = NOW.toISOString();
+      await fs.writeFile(workspace.config.lifecycleStatePath, `${JSON.stringify(lifecycle, null, 2)}\n`);
+    }
+    const afterExpiry = new Date(NOW.getTime() + 15 * 24 * 60 * 60_000);
+    workspace.config.bootRecovery = true;
+    const bootDocker = new FakeDocker();
+    const boot = await runnerFor(workspace, bootDocker, () => new Date(afterExpiry)).processNext();
+    assert.equal(boot.ok, true);
+    assert.equal(boot.processed, false);
+    assert.equal(boot.lifecycle.state, state);
+    assert.ok(!bootDocker.commands.some((entry) => entry.operation === "tagImage"
+      || (entry.operation === "compose" && entry.args.includes("update-snapshot-cleanup"))));
+
+    workspace.config.bootRecovery = false;
+    const daemonDocker = new FakeDocker();
+    daemonDocker.activeVersion = "0.1.11";
+    daemonDocker.imageTags.set(workspace.config.canonicalActiveImage, NEW_IMAGE);
+    daemonDocker.imageTags.set(workspace.config.rollbackImageTag, OLD_IMAGE);
+    if (state === "holding") {
+      const command = signLifecycleCommand({
+        schemaVersion: 1,
+        commandId: `finalize-after-boot-${suffix}`,
+        action: "finalize",
+        holdId: lifecycle.holdId,
+        generation: lifecycle.generation,
+        issuedAt: afterExpiry.toISOString(),
+        expiresAt: new Date(afterExpiry.getTime() + 10 * 60_000).toISOString(),
+        nonce: "T".repeat(32),
+      }, REQUEST_SECRET, { now: afterExpiry });
+      await fs.writeFile(
+        path.join(workspace.config.lifecycleRequestsRoot, `${command.commandId}.json`),
+        `${JSON.stringify(command, null, 2)}\n`,
+      );
+    }
+    const daemon = await runnerFor(workspace, daemonDocker, () => new Date(afterExpiry)).processNext();
+    assert.equal(daemon.ok, true);
+    assert.equal(JSON.parse(await fs.readFile(workspace.config.lifecycleStatePath, "utf8")).state, "finalized");
+    assert.ok(daemonDocker.commands.some((entry) => entry.operation === "compose"
+      && entry.args.includes("update-snapshot-cleanup")));
+  }
 });
 
 test("journal rolls back a promotion interrupted before the durable commit decision", async (t) => {
@@ -675,7 +1278,7 @@ test("journal rolls back a promotion interrupted before the durable commit decis
     && entry.args.includes("run") && entry.args.includes("candidate-bootstrap")));
 });
 
-test("boot recovery commits the journal and overlay before starting a recovered Active", async (t) => {
+test("boot recovery completes a committed target after release expiry using durable claimedAt", async (t) => {
   const workspace = await fixture({ requestId: "request-boot-0001", nonce: "O".repeat(32) });
   t.after(workspace.cleanup);
   const firstRunner = runnerFor(workspace, new FakeDocker());
@@ -714,7 +1317,11 @@ test("boot recovery commits the journal and overlay before starting a recovered 
   });
   recoveredDocker.proxyTarget = "stopped";
 
-  const result = await runnerFor(workspace, recoveredDocker).processNext();
+  const result = await runnerFor(
+    workspace,
+    recoveredDocker,
+    () => new Date("2026-08-22T12:00:00.000Z"),
+  ).processNext();
 
   assert.equal(result.ok, true);
   assert.equal(result.result.status, "completed");
@@ -835,7 +1442,7 @@ test("a corrupt private claim is quarantined instead of blocking later runner st
   assert.equal(result.processed, true);
   assert.equal(result.result.status, "failed");
   assert.equal(result.result.phase, "claim-quarantined");
-  assert.equal(docker.commands.length, 0);
+  assertNoDockerMutation(docker);
   const remainingClaims = await fs.readdir(workspace.config.claimedRoot);
   assert.ok(!remainingClaims.includes(`${workspace.request.requestId}.request.json`));
   assert.ok(remainingClaims.some((name) => name.startsWith(`${workspace.request.requestId}.request.json.failed-`)));
@@ -851,11 +1458,11 @@ test("Docker CLI supplies fixed argument arrays, ordered env overlays and never 
   await fs.writeFile(activeEnvironmentFile, "SYSTEM_VERSION=0.1.11\n", { mode: 0o600 });
   const docker = new DockerCli({
     binary: "/trusted/docker",
-    composeFile: "/project/System/backend/docker-compose.runtime.yml",
+    composeFile: "/project/SYSTEM/backend/docker-compose.runtime.yml",
     project: "bonni_project",
     baseEnvironmentFile,
     activeEnvironmentFile,
-    cwd: "/project/System/backend",
+    cwd: "/project/SYSTEM/backend",
     execute: async (command, args, options) => {
       calls.push({ command, args, options });
       return { code: 0, stdout: "", stderr: "" };
@@ -867,10 +1474,10 @@ test("Docker CLI supplies fixed argument arrays, ordered env overlays and never 
     "compose", "-p", "bonni_project",
     "--env-file", baseEnvironmentFile,
     "--env-file", activeEnvironmentFile,
-    "-f", "/project/System/backend/docker-compose.runtime.yml",
+    "-f", "/project/SYSTEM/backend/docker-compose.runtime.yml",
     "up", "-d", "--no-deps", "backend-active",
   ]);
-  assert.equal(calls[0].options.cwd, "/project/System/backend");
+  assert.equal(calls[0].options.cwd, "/project/SYSTEM/backend");
   assert.equal(calls[0].options.env.SYSTEM_VERSION, "0.1.11");
 });
 
@@ -905,6 +1512,49 @@ test("runner config honors separated shared update and private runner roots", ()
   assert.equal(config.journalRoot, "/private/update-runner/journal");
 });
 
+test("runner rejects aliased private state and any hold other than exact 14 days", () => {
+  assert.throws(() => createUpdateRunnerConfig({
+    BONNI_HOST_PROJECT_ROOT: "/project",
+    BONNI_STORAGE_ROOT: "/shared/storage",
+    BONNI_UPDATE_RUNNER_PRIVATE_STATE_ROOT: "/shared/storage/private",
+    COMPOSE_PROJECT_NAME: "bonni_project",
+  }), /vollständig von Produktions-Storage und IPC getrennt/);
+  assert.throws(() => createUpdateRunnerConfig({
+    BONNI_HOST_PROJECT_ROOT: "/project",
+    BONNI_STORAGE_ROOT: "/shared/storage",
+    BONNI_UPDATE_RUNNER_PRIVATE_STATE_ROOT: "/private/update-runner",
+    SYSTEM_EMERGENCY_HOLD_DAYS: "13",
+    COMPOSE_PROJECT_NAME: "bonni_project",
+  }), /exakt 14/);
+});
+
+test("runner rejects a symlink alias from private state into shared IPC", async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "bonni-private-alias-"));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const storage = path.join(root, "storage");
+  const ipc = path.join(root, "ipc");
+  const privateAlias = path.join(root, "private-alias");
+  await fs.mkdir(storage, { recursive: true });
+  await fs.mkdir(ipc, { recursive: true });
+  await fs.symlink(ipc, privateAlias, "dir");
+  const config = createUpdateRunnerConfig({
+    BONNI_HOST_PROJECT_ROOT: root,
+    BONNI_STORAGE_ROOT: storage,
+    BONNI_UPDATE_RUNNER_STATE_ROOT: ipc,
+    BONNI_UPDATE_RUNNER_PRIVATE_STATE_ROOT: privateAlias,
+    COMPOSE_PROJECT_NAME: "bonni_test",
+    BONNI_ACTIVE_IMAGE_TAG: "bonni_test-system:active",
+    BONNI_ROLLBACK_IMAGE_TAG: "bonni_test-system:rollback",
+  });
+  const runner = new UpdateRunner({
+    config,
+    docker: new FakeDocker(),
+    trustedKeys: { "test-release-key": "configured" },
+    requestSecret: REQUEST_SECRET,
+  });
+  await assert.rejects(() => runner.initialize(), /echte Verzeichnisse|real nicht/);
+});
+
 test("runner refuses cross-instance Active and Rollback tags", async (t) => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "bonni-tag-scope-"));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
@@ -934,7 +1584,7 @@ test("Docker CLI removes only project-scoped volumes carrying all disposable lab
   const calls = [];
   const docker = new DockerCli({
     binary: "docker",
-    composeFile: "/project/System/backend/docker-compose.runtime.yml",
+    composeFile: "/project/SYSTEM/backend/docker-compose.runtime.yml",
     project: "bonni_project",
     execute: async (_command, args) => {
       calls.push(args);
@@ -959,7 +1609,7 @@ test("Docker CLI removes only project-scoped volumes carrying all disposable lab
 
   const refusing = new DockerCli({
     binary: "docker",
-    composeFile: "/project/System/backend/docker-compose.runtime.yml",
+    composeFile: "/project/SYSTEM/backend/docker-compose.runtime.yml",
     project: "bonni_project",
     execute: async () => ({ code: 0, stderr: "", stdout: JSON.stringify({ "org.bonni.runtime.disposable": "false" }) }),
   });

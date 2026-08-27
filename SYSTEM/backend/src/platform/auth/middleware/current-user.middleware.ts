@@ -1,3 +1,5 @@
+import { createHash, timingSafeEqual } from "node:crypto";
+
 import { coreTokenService } from "../token/core-token.service.js";
 import { getServerPrismaClient } from "../../../core/database/database.js";
 import {
@@ -8,6 +10,7 @@ import {
   runWithVerifiedRequestIdentity,
   type RequestIdentity,
   type RequestIdentityAccountType,
+  type RequestSessionAssurance,
 } from "../request-identity/request-identity-context.js";
 
 function unique(values: string[]) {
@@ -33,6 +36,8 @@ type ResolvedCurrentUserAccount = {
   loginName: string;
   type: string;
   isActive: boolean;
+  credentialRevision: number;
+  passwordRecoveryLockedAt: Date | null;
   personId: string | null;
   person: { member: { id: string } | null } | null;
   roles: Array<{
@@ -43,14 +48,61 @@ type ResolvedCurrentUserAccount = {
   }>;
 };
 
+type ResolvedCurrentUserSession = {
+  id: string;
+  accountId: string;
+  tokenHash: string | null;
+  credentialRevision: number;
+  mfaVerifiedAt: Date | null;
+  mfaProviderId: string | null;
+  mfaMethod: string | null;
+  endedAt: Date | null;
+};
+
 type CurrentUserMiddlewareDependencies = {
   verifyToken: (token: string) => {
     accountId: string;
+    sessionId: string;
     source?: string;
+    credentialRevision: number;
   };
   findAccount: (accountId: string) => Promise<ResolvedCurrentUserAccount | null>;
+  findSession: (
+    sessionId: string,
+    accountId: string,
+  ) => Promise<ResolvedCurrentUserSession | null>;
   warn: (message: string, error: unknown) => void;
 };
+
+function hashToken(token: string) {
+  return createHash("sha256").update(token, "utf8").digest("hex");
+}
+
+function tokenMatchesSession(token: string, storedHash: string | null) {
+  if (!storedHash || !/^[a-f0-9]{64}$/u.test(storedHash)) return false;
+  const actual = Buffer.from(hashToken(token), "hex");
+  const expected = Buffer.from(storedHash, "hex");
+  return actual.length === expected.length && timingSafeEqual(actual, expected);
+}
+
+function sessionAssurance(
+  account: ResolvedCurrentUserAccount,
+  session: ResolvedCurrentUserSession,
+): RequestSessionAssurance {
+  const verifiedAt = session.mfaVerifiedAt instanceof Date
+    && Number.isFinite(session.mfaVerifiedAt.getTime())
+    && String(session.mfaProviderId || "").trim()
+      ? session.mfaVerifiedAt.toISOString()
+      : null;
+  return {
+    sessionId: session.id,
+    accountId: account.id,
+    credentialRevision: session.credentialRevision,
+    mfaVerifiedAt: verifiedAt,
+    mfaProviderId: verifiedAt ? String(session.mfaProviderId).trim().toLowerCase() : null,
+    mfaMethod: verifiedAt ? String(session.mfaMethod || "").trim().toUpperCase() || null : null,
+  };
+}
 
 function requestIdentity(account: ResolvedCurrentUserAccount): RequestIdentity {
   const roles = unique(account.roles.map((entry) => entry.role.key));
@@ -70,6 +122,7 @@ function requestIdentity(account: ResolvedCurrentUserAccount): RequestIdentity {
     allowedApps,
     personId: account.personId || null,
     memberId: account.person?.member?.id || null,
+    credentialRevision: account.credentialRevision,
   };
 }
 
@@ -78,9 +131,11 @@ export function createCurrentUserMiddleware(dependencies: CurrentUserMiddlewareD
     const header = req.headers?.authorization || "";
     const token = header.startsWith("Bearer ") ? header.slice(7) : null;
     let identity: RequestIdentity | null = null;
+    let assurance: RequestSessionAssurance | null = null;
     let tokenSource = "LOCAL";
 
     delete req.user;
+    delete req.bonniSessionId;
     req.bonniIdentityVerified = false;
 
     if (token) {
@@ -98,12 +153,26 @@ export function createCurrentUserMiddleware(dependencies: CurrentUserMiddlewareD
       tokenSource = payload.source || "LOCAL";
 
       try {
-        const account = await dependencies.findAccount(payload.accountId);
+        const [account, session] = await Promise.all([
+          dependencies.findAccount(payload.accountId),
+          dependencies.findSession(payload.sessionId, payload.accountId),
+        ]);
 
         if (account && account.type === "SERVICE") {
           identity = null;
-        } else if (account?.isActive) {
+        } else if (
+          account?.isActive
+          && !account.passwordRecoveryLockedAt
+          && account.credentialRevision === payload.credentialRevision
+          && session
+          && session.id === payload.sessionId
+          && session.accountId === account.id
+          && session.credentialRevision === account.credentialRevision
+          && !session.endedAt
+          && tokenMatchesSession(token, session.tokenHash)
+        ) {
           identity = requestIdentity(account);
+          assurance = sessionAssurance(account, session);
         }
       } catch (error) {
         dependencies.warn("Current user database lookup failed", error);
@@ -129,10 +198,11 @@ export function createCurrentUserMiddleware(dependencies: CurrentUserMiddlewareD
         source: tokenSource,
         status: "ACTIVE",
       };
+      req.bonniSessionId = assurance?.sessionId;
       req.bonniIdentityVerified = true;
     }
 
-    return runWithVerifiedRequestIdentity(identity, next);
+    return runWithVerifiedRequestIdentity(identity, next, assurance);
   };
 }
 
@@ -145,6 +215,8 @@ export const currentUserMiddleware = createCurrentUserMiddleware({
       loginName: true,
       type: true,
       isActive: true,
+      credentialRevision: true,
+      passwordRecoveryLockedAt: true,
       personId: true,
       person: {
         select: {
@@ -169,6 +241,22 @@ export const currentUserMiddleware = createCurrentUserMiddleware({
           },
         },
       },
+    },
+  }),
+  findSession: (sessionId, accountId) => getServerPrismaClient("core").session.findFirst({
+    where: {
+      id: sessionId,
+      accountId,
+    },
+    select: {
+      id: true,
+      accountId: true,
+      tokenHash: true,
+      credentialRevision: true,
+      mfaVerifiedAt: true,
+      mfaProviderId: true,
+      mfaMethod: true,
+      endedAt: true,
     },
   }),
   warn: (message, error) => console.warn(message, error),

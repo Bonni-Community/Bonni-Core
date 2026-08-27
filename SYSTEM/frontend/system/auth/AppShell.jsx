@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import useSession from "./useSession.js";
 import LoginView from "./LoginView.jsx";
@@ -6,6 +6,7 @@ import AppLauncher from "./AppLauncher.jsx";
 import ControlCenter from "../../platform/control-center/ControlCenter.jsx";
 import FeatureModuleHost from "../feature-modules/FeatureModuleHost.jsx";
 import ShellAddonDock from "../addons/ShellAddonDock.jsx";
+import MySettingsPage from "../../platform/my-settings/MySettingsPage.jsx";
 import {
   canOpenControlCenter,
   canOpenLaunchTarget,
@@ -81,19 +82,21 @@ export default function AppShell() {
     loginName,
     password,
     twoFactorChallenge,
-    twoFactorCode,
-    twoFactorPassword,
+    twoFactorProofValues,
+    twoFactorRecoveryMode,
     message,
     activeArea,
     allowedWorkspaces,
     setLoginName,
     setPassword,
-    setTwoFactorCode,
-    setTwoFactorPassword,
+    setTwoFactorProofValue,
+    setTwoFactorRecoveryMode,
     setActiveArea,
     login,
     submitTwoFactor,
     cancelTwoFactor,
+    endRevokedSession,
+    suspendRevokedSession,
     logout,
   } = useSession();
 
@@ -104,7 +107,10 @@ export default function AppShell() {
     [launchTarget, user, shell],
   );
   const controlCenterAllowed = useMemo(() => canOpenControlCenter(user, shell), [user, shell]);
-  const [activeTarget, setActiveTarget] = useState(launchTarget);
+  const [activeTarget, setActiveTarget] = useState(() => (
+    window.location.pathname === "/my-settings" ? "my-settings" : launchTarget
+  ));
+  const settingsReturnTargetRef = useRef(launchTarget || "home");
   const activeWorkspace = useMemo(
     () => getWorkspaceForLaunchTarget(activeTarget, user, shell) || activeArea,
     [activeTarget, activeArea, user, shell],
@@ -113,7 +119,7 @@ export default function AppShell() {
   useEffect(() => subscribeRuntimeEndpoint(setRuntimeEndpoint), []);
 
   useEffect(() => {
-    setActiveTarget(launchTarget);
+    setActiveTarget((current) => current === "my-settings" ? current : launchTarget);
     if (launchWorkspace) setActiveArea(launchWorkspace);
   }, [launchTarget, launchWorkspace, user?.accountId, user?.id]);
 
@@ -145,6 +151,27 @@ export default function AppShell() {
     window.history.replaceState(null, "", `/#${normalized}`);
   }
 
+  function openMySettings() {
+    setActiveTarget((current) => {
+      if (current !== "my-settings") settingsReturnTargetRef.current = current || "home";
+      return "my-settings";
+    });
+    window.history.replaceState(null, "", "/my-settings");
+  }
+
+  function closeMySettings() {
+    const target = settingsReturnTargetRef.current || "home";
+    if (target === "control-center" && controlCenterAllowed) {
+      openControlCenter();
+      return;
+    }
+    if (target.startsWith("app.") && canOpenLaunchTarget(target, user, shell)) {
+      openTarget(target);
+      return;
+    }
+    openMainMenu();
+  }
+
   let content;
 
   if (!token || !user) {
@@ -153,19 +180,30 @@ export default function AppShell() {
         loginName={loginName}
         password={password}
         twoFactorChallenge={twoFactorChallenge}
-        twoFactorCode={twoFactorCode}
-        twoFactorPassword={twoFactorPassword}
+        twoFactorProofValues={twoFactorProofValues}
+        twoFactorRecoveryMode={twoFactorRecoveryMode}
         message={message}
         onLoginNameChange={setLoginName}
         onPasswordChange={setPassword}
-        onTwoFactorCodeChange={setTwoFactorCode}
-        onTwoFactorPasswordChange={setTwoFactorPassword}
+        onTwoFactorProofChange={setTwoFactorProofValue}
+        onTwoFactorRecoveryModeChange={setTwoFactorRecoveryMode}
         onCancelTwoFactor={cancelTwoFactor}
         onSubmit={twoFactorChallenge ? submitTwoFactor : login}
       />
     );
   } else if (shellLoading && !shell) {
     content = <div style={{ padding: 24 }}>Lade Bonni Core...</div>;
+  } else if (activeTarget === "my-settings") {
+    content = (
+      <MySettingsPage
+        token={token}
+        user={user}
+        shell={shell}
+        onClose={closeMySettings}
+        onSessionRevoked={endRevokedSession}
+        onSessionInvalidated={suspendRevokedSession}
+      />
+    );
   } else if (activeTarget === "control-center" && controlCenterAllowed) {
     content = (
       <ControlCenter
@@ -177,6 +215,7 @@ export default function AppShell() {
         onChangeWorkspace={setActiveArea}
         onLogout={logout}
         onMainMenu={openMainMenu}
+        onOpenMySettings={openMySettings}
       />
     );
   } else if (
@@ -196,6 +235,7 @@ export default function AppShell() {
         fallbackRoute={activeTarget}
         onBack={openMainMenu}
         onOpenControlCenter={controlCenterAllowed ? openControlCenter : undefined}
+        onOpenMySettings={openMySettings}
       />
     );
   } else {
@@ -205,6 +245,7 @@ export default function AppShell() {
         shell={shell}
         onOpenTarget={openTarget}
         onOpenControlCenter={openControlCenter}
+        onOpenMySettings={openMySettings}
         onLogout={logout}
       />
     );
@@ -222,6 +263,7 @@ export default function AppShell() {
           allowedWorkspaces={allowedWorkspaces}
           onLogout={logout}
           onChangeWorkspace={setActiveArea}
+          onOpenMySettings={openMySettings}
         />
       ) : null}
     </RuntimeShell>

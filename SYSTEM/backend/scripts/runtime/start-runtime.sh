@@ -3,10 +3,56 @@ set -euo pipefail
 
 ROOT_DIR="${1:-.}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+
+# Supported modes are mutually exclusive. Acquire this host-side marker before
+# host-path initialization, Docker inspection, database bootstrap or any other
+# shared-runtime mutation. The local source Supervisor checks the same marker
+# before and after acquiring its own singleton receipt, closing simultaneous
+# start races in both directions.
+EARLY_BACKEND_ROOT="$(cd "$ROOT_DIR" && pwd -P)"
+EARLY_PROJECT_ROOT="${BONNI_HOST_PROJECT_ROOT:-$(cd "$EARLY_BACKEND_ROOT/../.." && pwd -P)}"
+case "$EARLY_PROJECT_ROOT" in
+  /*) ;;
+  *) echo "BONNI_HOST_PROJECT_ROOT muss ein absoluter Hostpfad sein." >&2; exit 2 ;;
+esac
+runtime_activation_token="$(node "$SCRIPT_DIR/runtime-mode-exclusion.mjs" acquire "$EARLY_PROJECT_ROOT" "$$")"
+runtime_activation_owned=true
+runtime_shared_mutation_started=false
+release_runtime_activation() {
+  local original_status=$?
+  local release_status=0
+  if [ "${runtime_activation_owned:-false}" = true ]; then
+    if [ "${runtime_shared_mutation_started:-false}" = true ]; then
+      echo "Docker-Runtime-Aktivierung bleibt nach begonnenem Runtime-Aufbau fail-closed gesperrt; bitte runtime:stop verwenden." >&2
+    else
+      if ! node "$SCRIPT_DIR/runtime-mode-exclusion.mjs" release \
+        "$EARLY_PROJECT_ROOT" "$$" "$runtime_activation_token"; then
+        echo "Docker-Runtime-Aktivierungssperre konnte nicht eigentumsgetreu freigegeben werden." >&2
+        release_status=1
+      fi
+    fi
+    runtime_activation_owned=false
+  fi
+  if [ "$original_status" -eq 0 ] && [ "$release_status" -ne 0 ]; then
+    return "$release_status"
+  fi
+  return "$original_status"
+}
+trap release_runtime_activation EXIT
+
 # shellcheck source=host-paths.sh
 source "$SCRIPT_DIR/host-paths.sh"
 bonni_runtime_export_host_paths "$ROOT_DIR"
 cd "$BONNI_BACKEND_ROOT"
+
+# A legacy Supervisor does not know the new activation marker. Recheck after
+# host-path setup and still before the first Docker/DB/runtime mutation.
+node "$SCRIPT_DIR/runtime-mode-exclusion.mjs" check "$BONNI_HOST_PROJECT_ROOT"
+
+# Emergency receives only its immutable JSON runtime subtree. Keeping the
+# production database-routing file outside this mount prevents a delayed old
+# image from replacing the Compose-enforced read-only connection string.
+mkdir -p "$BONNI_HOST_RUN_SYSTEM_ROOT/system/emergency"
 
 if ! command -v docker >/dev/null 2>&1; then
   echo "Docker mit Compose-Unterstützung ist für den Runtime-Start erforderlich." >&2
@@ -30,8 +76,40 @@ if [[ ! "$legacy_project" =~ ^[a-z0-9] ]]; then legacy_project="bonni-$legacy_pr
 legacy_project="${legacy_project:0:63}"
 project_probe="${persisted_project:-$legacy_project}"
 
+# A failed `volume inspect` is ambiguous: it can mean either "not found" or a
+# daemon/permission/transport failure. Confirm absence with a second, exact
+# read-only listing before treating a runtime as fresh. While this probe is in
+# flight the activation receipt stays fail-closed; only a fully reliable fresh
+# result makes an early failure releasable again.
+probe_docker_volume() {
+  local volume_name="$1"
+  local listed
+  if docker volume inspect "$volume_name" >/dev/null 2>&1; then
+    printf '%s\n' present
+    return 0
+  fi
+  if ! listed="$(docker volume ls --quiet --filter "name=^${volume_name}$" 2>/dev/null)"; then
+    echo "Docker-Volume-Status für $volume_name ist nicht zuverlässig lesbar." >&2
+    return 2
+  fi
+  if [ -z "$listed" ]; then
+    printf '%s\n' absent
+    return 0
+  fi
+  echo "Docker-Volume $volume_name wird gelistet, konnte aber nicht geprüft werden." >&2
+  return 2
+}
+
+runtime_shared_mutation_started=true
+if ! postgres_volume_state="$(probe_docker_volume "${project_probe}_postgres_data")"; then
+  exit 2
+fi
+if ! backend_volume_state="$(probe_docker_volume "${project_probe}_backend_storage")"; then
+  exit 2
+fi
+
 existing_runtime=false
-if docker volume inspect "${project_probe}_postgres_data" >/dev/null 2>&1; then
+if [ "$postgres_volume_state" = present ]; then
   existing_runtime=true
 fi
 storage_has_data=false
@@ -41,17 +119,26 @@ for data_root in "$BONNI_HOST_RUNTIME_ROOT/storage"; do
     storage_has_data=true
   fi
 done
-if [ "$storage_has_data" = false ] \
-  && docker volume inspect "${project_probe}_backend_storage" >/dev/null 2>&1; then
+if [ "$storage_has_data" = false ] && [ "$backend_volume_state" = present ]; then
   echo "Altes Docker-Volume ${project_probe}_backend_storage gefunden, aber der neue Bind-Storage ist leer." >&2
   echo "Start verweigert: persistenten Speicher zuerst kontrolliert nach $BONNI_HOST_RUNTIME_ROOT/storage migrieren." >&2
   exit 2
 fi
 if [ "$existing_runtime" = true ] && [ -z "$persisted_project" ] \
-  && ! docker volume inspect "${legacy_project}_postgres_data" >/dev/null 2>&1; then
+  && [ "$postgres_volume_state" != present ]; then
   echo "Bestehende Laufzeitdaten ohne eindeutig ermittelbaren COMPOSE_PROJECT_NAME gefunden." >&2
   echo "Bitte den bisherigen Projektnamen kontrolliert in $BONNI_RUNTIME_ENV_FILE eintragen." >&2
   exit 2
+fi
+if [ "$existing_runtime" = true ]; then
+  # From here onward a failed restart may have stopped or changed an existing
+  # production runtime. Keep the latch until runtime:stop proves it offline.
+  runtime_shared_mutation_started=true
+else
+  # Both exact volume probes and the bind-storage inspection reliably proved a
+  # fresh installation. Until the Compose stop/status boundary below, an early
+  # validation failure may still release this newly-created receipt.
+  runtime_shared_mutation_started=false
 fi
 
 preflight_mode=--fresh
@@ -91,15 +178,29 @@ fi
 # Stop potentially legacy auto-restarting containers as soon as the immutable
 # instance identity is known. No application process may outlive this point and
 # race the private update journal during the rest of the boot preflight.
-"${compose[@]}" --profile update stop \
-  runtime-proxy backend-active backend-emergency update-runner database-bootstrap \
-  database-migrator update-snapshot-create update-snapshot-restore >/dev/null 2>&1 || true
-running_writers="$("${compose[@]}" --profile update ps --all --status running -q \
-  runtime-proxy backend-active backend-emergency update-runner database-bootstrap \
-  database-migrator update-snapshot-create update-snapshot-restore 2>/dev/null || true)"
+runtime_shared_mutation_started=true
+if ! "${compose[@]}" --profile update stop \
+  runtime-proxy backend-active backend-emergency backend-candidate update-runner database-bootstrap \
+  database-migrator candidate-bootstrap candidate-migrator db-candidate \
+  update-secret-init update-snapshot-create update-snapshot-restore update-snapshot-cleanup; then
+  echo "Start verweigert: bestehende Runtime-Dienste konnten nicht zuverlässig gestoppt werden." >&2
+  exit 2
+fi
+if ! running_writers="$("${compose[@]}" --profile update ps --all --status running -q \
+  runtime-proxy backend-active backend-emergency backend-candidate update-runner database-bootstrap \
+  database-migrator candidate-bootstrap candidate-migrator db-candidate \
+  update-secret-init update-snapshot-create update-snapshot-restore update-snapshot-cleanup 2>/dev/null)"; then
+  echo "Start verweigert: Status bestehender Runtime-Dienste ist nicht zuverlässig lesbar." >&2
+  exit 2
+fi
 if [ -n "$running_writers" ]; then
   echo "Start verweigert: Produktionsschreiber oder Update-Helfer ließen sich nicht vollständig stoppen." >&2
   exit 2
+fi
+if [ "$existing_runtime" = false ]; then
+  # A reliable empty Compose probe proves that an early failure before the
+  # fresh database starts can still release this newly-created marker.
+  runtime_shared_mutation_started=false
 fi
 
 if [ "$existing_runtime" = true ] && ! docker image inspect "$SYSTEM_IMAGE" >/dev/null 2>&1; then
@@ -127,9 +228,9 @@ fi
 if ! docker image inspect "$SYSTEM_IMAGE" >/dev/null 2>&1; then
   echo "Initiales Bonni-Core-Image $SYSTEM_IMAGE wird gebaut."
   docker build \
-    --file "$BONNI_HOST_PROJECT_ROOT/System/backend/Dockerfile" \
+    --file "$BONNI_HOST_PROJECT_ROOT/SYSTEM/backend/Dockerfile" \
     --tag "$SYSTEM_IMAGE" \
-    --build-arg "BONNI_CORE_VERSION=${SYSTEM_VERSION:-0.1.19}" \
+    --build-arg "BONNI_CORE_VERSION=${SYSTEM_VERSION:-0.1.20}" \
     --build-arg "BONNI_CORE_REVISION=${BONNI_CORE_REVISION:-unknown}" \
     "$BONNI_HOST_PROJECT_ROOT"
 fi
@@ -159,6 +260,9 @@ fi
 # Only PostgreSQL is allowed before reconciliation. The target database may be
 # temporarily absent after a crash between exact drop/recreate restore steps;
 # therefore database-bootstrap must run only after the boot gate repaired it.
+# Starting the production database is the first writer/orchestration boundary
+# for a fresh installation. Every later failure must preserve the mode latch.
+runtime_shared_mutation_started=true
 "${compose[@]}" up -d db
 "${compose[@]}" up -d --wait --wait-timeout "$runtime_wait_seconds" db
 
@@ -188,9 +292,15 @@ fi
 "${compose[@]}" up -d --wait --wait-timeout "$runtime_wait_seconds" backend-emergency
 "${compose[@]}" up -d --wait --wait-timeout "$runtime_wait_seconds" runtime-proxy
 "${compose[@]}" run --rm --no-deps update-runner --network-transport-gate=open
-"${compose[@]}" up -d update-runner
+"${compose[@]}" up -d --wait --wait-timeout "$runtime_wait_seconds" update-runner
 
 echo "Runtime started after recovery gate: proxy -> confirmed backend-active, emergency fallback available."
 echo "Health: http://localhost:${BACKEND_PORT:-4000}/api/health/ready"
 echo "Emergency direct: http://127.0.0.1:${BACKEND_EMERGENCY_DIRECT_PORT:-4199}/api/health/ready"
 echo "Update runner: enabled (isolated IPC and private state volumes)"
+
+# Persist the now-dead-owner receipt as a runtime-mode latch. The local source
+# Supervisor must remain blocked even while a later release cutover has every
+# application port intentionally closed. Only runtime:stop may remove it after
+# proving all project containers and relevant loopback ports are offline.
+runtime_activation_owned=false

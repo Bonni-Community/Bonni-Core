@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import registerPos from "../../app/posapp/backend/src/registerFeatureModule.js";
 import { registerDomainMessageHandlers as registerKontor } from "../../app/kontorapp/backend/src/modules/domain-messages.js";
 
 const CASH_REQUESTED = "bonni.finance.pos.cash-transfer.requested/v1";
@@ -9,6 +8,18 @@ const CASH_COMPLETED = "bonni.finance.stueberl.cash-transfer.completed/v1";
 const ACCOUNTING_COMPLETED = "bonni.finance.stueberl.accounting.completed/v1";
 const INVOICE_REQUESTED = "bonni.finance.kontor.invoice.requested/v1";
 const INVOICE_COMPLETED = "bonni.finance.pos.invoice.completed/v1";
+
+async function loadOptionalPos(t) {
+  try {
+    return (await import("../../app/posapp/backend/src/registerFeatureModule.js")).default;
+  } catch (error) {
+    if (error?.code === "ERR_MODULE_NOT_FOUND") {
+      t.skip("Die optionale POS-App ist in diesem Bonni-Core/Kontor-Quellpaket nicht enthalten.");
+      return null;
+    }
+    throw error;
+  }
+}
 
 function messageBus() {
   const handlers = new Map();
@@ -184,7 +195,9 @@ function kontorPrisma() {
   };
 }
 
-test("Stueberl CASH request is recorded by POS, invoiced to Kontor and fully correlated", async () => {
+test("Stueberl CASH request is recorded by POS, invoiced to Kontor and fully correlated", async (t) => {
+  const registerPos = await loadOptionalPos(t);
+  if (!registerPos) return;
   const expectedInvoiceNumber = `POS-${new Date().getUTCFullYear()}-000001`;
   const bus = messageBus();
   const pos = posPrisma();
@@ -280,7 +293,9 @@ test("Stueberl CASH request is recorded by POS, invoiced to Kontor and fully cor
   releasePos();
 });
 
-test("POS rejects every Stueberl transfer form except CASH", async () => {
+test("POS rejects every Stueberl transfer form except CASH", async (t) => {
+  const registerPos = await loadOptionalPos(t);
+  if (!registerPos) return;
   const bus = messageBus();
   const pos = posPrisma();
   const releasePos = await registerPos({

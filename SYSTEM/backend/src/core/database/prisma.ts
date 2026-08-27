@@ -334,6 +334,16 @@ async function queueEmergencyWrite(
   args: unknown[],
   databaseError: unknown,
 ) {
+  // Security capabilities, credential proofs and transactions are never safe
+  // to acknowledge now and replay later. Their CAS/revision context is valid
+  // only in the live database transaction which produced the request.
+  if (
+    modelProperty.startsWith("securityTwoFactor")
+    || modelProperty.startsWith("securityAccountRecovery")
+    || (modelProperty === "$client" && operation === "$transaction")
+  ) {
+    throw databaseError;
+  }
   const routing = getDatabaseRoutingStatus();
   if (
     !dataDomainAllowsJsonEmergency(domain)

@@ -183,7 +183,7 @@ test("the production bootstrap seeds a missing admin without requiring tsx", asy
   assert.match(systemSeed, /type === AccountType\.MEMBER \|\| type === AccountType\.ADMIN/);
   assert.match(systemSeed, /BOOTSTRAP_ADMIN_MEMBER_PROFILE_MISSING_AFTER_SEED/);
   assert.doesNotMatch(systemSeed, /new PrismaClient\(/);
-  assert.match(dockerfile, /COPY System\/backend\/tsconfig\.seed\.json \.\//);
+  assert.match(dockerfile, /COPY SYSTEM\/backend\/tsconfig\.seed\.json \.\//);
   assert.match(
     composeRuntime,
     /BONNI_BOOTSTRAP_ADMIN_PASSWORD: \$\{BONNI_BOOTSTRAP_ADMIN_PASSWORD:-\}/,

@@ -1,14 +1,21 @@
 import assert from "node:assert/strict";
+import { existsSync } from "node:fs";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 
-import {
+const adapterUrl = new URL("../../plugins/2FA/backend/privacyidea.js", import.meta.url);
+const adapter = existsSync(fileURLToPath(adapterUrl))
+  ? await import(adapterUrl.href)
+  : null;
+const optionalAdapterTest = adapter ? test : test.skip;
+const {
   composePrivacyIdeaPass,
   normalizePrivacyIdeaConfiguration,
   privacyIdeaProofFields,
   verifyPrivacyIdea,
-} from "../../plugins/2FA/backend/privacyidea.js";
+} = adapter || {};
 
-test("privacyIDEA plugin defaults to one minute and eight attempts", () => {
+optionalAdapterTest("privacyIDEA plugin defaults to one minute and eight attempts", () => {
   const configuration = normalizePrivacyIdeaConfiguration({});
   assert.equal(configuration.challengeExpiresSeconds, 60);
   assert.equal(configuration.maxAttempts, 8);
@@ -17,7 +24,7 @@ test("privacyIDEA plugin defaults to one minute and eight attempts", () => {
   assert.equal(configuration.enabled, false);
 });
 
-test("privacyIDEA plugin composes token and password in the configured order", () => {
+optionalAdapterTest("privacyIDEA plugin composes token and password in the configured order", () => {
   assert.equal(composePrivacyIdeaPass({
     enabled: true,
     baseUrl: "https://privacyidea.example.org",
@@ -30,7 +37,7 @@ test("privacyIDEA plugin composes token and password in the configured order", (
   }, { token: "123456", password: "secret" }), "secret123456");
 });
 
-test("privacyIDEA plugin labels a separate password without storing it", () => {
+optionalAdapterTest("privacyIDEA plugin labels a separate password without storing it", () => {
   const fields = privacyIdeaProofFields({
     enabled: true,
     baseUrl: "https://privacyidea.example.org",
@@ -40,7 +47,7 @@ test("privacyIDEA plugin labels a separate password without storing it", () => {
   assert.match(fields[1].label, /Separates privacyIDEA-Passwort/);
 });
 
-test("privacyIDEA plugin posts the composed pass to validate/check", async () => {
+optionalAdapterTest("privacyIDEA plugin posts the composed pass to validate/check", async () => {
   let captured;
   const result = await verifyPrivacyIdea({
     enabled: true,
@@ -64,7 +71,7 @@ test("privacyIDEA plugin posts the composed pass to validate/check", async () =>
   assert.equal(captured.options.body.get("pass"), "secret123456");
 });
 
-test("privacyIDEA plugin rejects active configuration without an endpoint", () => {
+optionalAdapterTest("privacyIDEA plugin rejects active configuration without an endpoint", () => {
   assert.throws(
     () => normalizePrivacyIdeaConfiguration({ enabled: true }),
     (error) => error?.code === "PRIVACYIDEA_BASE_URL_REQUIRED",

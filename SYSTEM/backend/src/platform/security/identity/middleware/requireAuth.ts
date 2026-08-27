@@ -4,25 +4,12 @@ import { getServerPrismaClient } from "../../../../core/database/database.js";
 import { permissionsService } from "../../../permissions/permissions.service.js";
 import { assertPersonalDataLoginAllowed, getPersonalDataMasterKeyStatus } from "../../crypto/index.js";
 import {
-  getDatabaseRoutingStatus,
   isDatabaseAuthorizationFailure,
-  isDatabaseConnectionFailure,
 } from "../../../../core/database/database-routing.js";
 import {
-  cacheJsonEmergencyIdentity,
-  getJsonEmergencyIdentity,
-} from "../../../../core/database/json-emergency-store.js";
-
-type CachedEmergencyIdentity = {
-  auth: Record<string, unknown>;
-  user: Record<string, unknown>;
-  personalLogin: {
-    accountId: string;
-    loginName: string;
-    memberId?: string;
-    roles: string[];
-  };
-};
+  getVerifiedRequestIdentity,
+  getVerifiedRequestSessionAssurance,
+} from "../../../auth/request-identity/request-identity-context.js";
 
 const prisma = getServerPrismaClient("core");
 
@@ -43,6 +30,18 @@ export async function requireAuth(req: Request, res: Response, next: NextFunctio
     return res.status(401).json({ error: "INVALID_TOKEN" });
   }
 
+  const verifiedIdentity = getVerifiedRequestIdentity();
+  const verifiedSession = getVerifiedRequestSessionAssurance();
+  if (
+    !verifiedIdentity
+    || !verifiedSession
+    || verifiedIdentity.accountId !== payload.accountId
+    || verifiedSession.accountId !== payload.accountId
+    || verifiedSession.credentialRevision !== payload.credentialRevision
+  ) {
+    return res.status(401).json({ error: "INVALID_OR_ENDED_SESSION" });
+  }
+
   try {
     const account = await prisma.account.findUnique({
       where: { id: payload.accountId },
@@ -52,6 +51,8 @@ export async function requireAuth(req: Request, res: Response, next: NextFunctio
         email: true,
         type: true,
         isActive: true,
+        credentialRevision: true,
+        passwordRecoveryLockedAt: true,
         roles: {
           include: {
             role: true,
@@ -65,7 +66,11 @@ export async function requireAuth(req: Request, res: Response, next: NextFunctio
       },
     });
 
-    if (!account?.isActive) {
+    if (
+      !account?.isActive
+      || account.passwordRecoveryLockedAt
+      || account.credentialRevision !== payload.credentialRevision
+    ) {
       return res.status(401).json({ error: "ACCOUNT_DISABLED" });
     }
 
@@ -125,41 +130,10 @@ export async function requireAuth(req: Request, res: Response, next: NextFunctio
     (req as any).user = user;
     (req as any).account = user;
 
-    await cacheJsonEmergencyIdentity(`platform:${account.id}`, {
-      auth,
-      user,
-      personalLogin: {
-        accountId: account.id,
-        loginName: account.loginName,
-        memberId: account.person?.member?.id,
-        roles,
-      },
-    } satisfies CachedEmergencyIdentity).catch((error) => {
-      console.warn("JSON-Notlauf-Identität konnte nicht aktualisiert werden", error);
-    });
-
     next();
   } catch (error) {
-    if (getDatabaseRoutingStatus().jsonEmergency.enabled && isDatabaseConnectionFailure(error)) {
-      try {
-        const cached = await getJsonEmergencyIdentity<CachedEmergencyIdentity>(
-          `platform:${payload.accountId}`,
-        );
-        if (cached && String(cached.user?.type || "").toUpperCase() !== "SERVICE") {
-          assertPersonalDataLoginAllowed(cached.personalLogin);
-          (req as any).auth = cached.auth;
-          (req as any).user = cached.user;
-          (req as any).account = cached.user;
-          res.setHeader("X-Bonni-JSON-Notlauf", "active");
-          console.warn("Authentication uses encrypted JSON emergency identity", {
-            accountId: payload.accountId,
-          });
-          return next();
-        }
-      } catch (fallbackError) {
-        console.error("JSON emergency authentication unavailable", fallbackError);
-      }
-    }
+    // Never authenticate an interactive account from a cached revision. The
+    // database is authoritative for password/2FA rotation and revocation.
     console.error("Authentication service unavailable", error);
     if (isDatabaseAuthorizationFailure(error)) {
       return res.status(500).json({

@@ -130,6 +130,17 @@ export const releaseManifestPayloadSchema = z.object({
   if (manifest.channel === "stable" && version.prerelease.length > 0) {
     context.addIssue({ code: "custom", path: ["version"], message: "Der stable-Kanal erlaubt keine Vorabversion." });
   }
+  if (
+    manifest.channel === "stable"
+    && version.build.length > 0
+    && (version.build.length !== 1 || !/^[a-z]+$/.test(version.build[0]))
+  ) {
+    context.addIssue({
+      code: "custom",
+      path: ["version"],
+      message: "Bonni-Wartungsversionen verwenden genau einen alphabetischen +Zusatz.",
+    });
+  }
 });
 
 export const releaseManifestSignatureSchema = z.object({

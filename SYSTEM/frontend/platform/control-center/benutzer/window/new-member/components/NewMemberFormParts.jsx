@@ -3,6 +3,7 @@ import {
   getSelectedModulePermissions,
   getSelectedNewMemberModules,
 } from "../newMemberWindowUtils.js";
+import ExactSecretInput from "../../../../../../core/modules/security/two-factor/components/ExactSecretInput.jsx";
 
 export function NewMemberEditableField({
   label,
@@ -12,7 +13,22 @@ export function NewMemberEditableField({
   placeholder = "",
   readOnly = false,
   disabled = false,
+  exactSecret = false,
 }) {
+  if (exactSecret) {
+    return (
+      <ExactSecretInput
+        className="cc-member-window-field cc-member-window-field--editable"
+        inputClassName="cc-member-window-input"
+        label={label}
+        value={typeof value === "string" ? value : ""}
+        onChange={onChange}
+        autoComplete="new-password"
+        disabled={disabled || readOnly}
+        placeholder={placeholder}
+      />
+    );
+  }
   return (
     <label className="cc-member-window-field cc-member-window-field--editable">
       <span>{label}</span>

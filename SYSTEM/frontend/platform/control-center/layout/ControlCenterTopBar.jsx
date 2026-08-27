@@ -3,12 +3,17 @@ import { useEffect, useMemo, useState } from "react";
 import { apiRequest } from "../../../system/api/apiClient.js";
 import {
   checkCoreUpdate,
+  checkLocalSourceUpdate,
   fetchCoreUpdateStatus,
-  installCoreUpdate,
   prepareCoreUpdate,
 } from "../../../system/api/coreUpdateApi.js";
 import { BONNI_CORE_VERSION } from "../../../system/version.js";
 import CoreUpdatePopover from "../update/CoreUpdatePopover.jsx";
+import {
+  formatBonniCoreVersion,
+  normalizeUpdateActionError,
+  UPDATE_ACTION_ERROR_STORAGE_KEY,
+} from "../update/localUpdatePresentation.js";
 
 
 function toNumber(value, fallback = 0) {
@@ -50,10 +55,63 @@ function extractRuntimeStatus(payload) {
   };
 }
 
+const LOCAL_SOURCE_ATTENTION_STATES = new Set([
+  "available",
+  "ready",
+  "queued",
+  "checking",
+  "validating",
+  "backing-up",
+  "maintenance",
+  "stopping",
+  "applying",
+  "setting-up",
+  "restarting",
+  "health-check",
+  "in-progress",
+  "installing",
+  "running",
+  "failed",
+  "invalid",
+  "id-collision",
+  "multiple-packages",
+  "recovery-required",
+]);
+
+function readStoredUpdateError() {
+  try {
+    const raw = window.sessionStorage.getItem(UPDATE_ACTION_ERROR_STORAGE_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch {
+    return null;
+  }
+}
+
+function storeUpdateError(error) {
+  try {
+    if (error) {
+      window.sessionStorage.setItem(UPDATE_ACTION_ERROR_STORAGE_KEY, JSON.stringify(error));
+    } else {
+      window.sessionStorage.removeItem(UPDATE_ACTION_ERROR_STORAGE_KEY);
+    }
+  } catch {
+    // Die Statusanzeige bleibt auch ohne verfügbaren Sitzungsspeicher nutzbar.
+  }
+}
+
+function hasLocalSourceUpdateAttention(localSourceUpdate) {
+  return Boolean(localSourceUpdate?.updateAvailable)
+    || LOCAL_SOURCE_ATTENTION_STATES.has(String(localSourceUpdate?.state || "").toLowerCase())
+    || LOCAL_SOURCE_ATTENTION_STATES.has(String(
+      localSourceUpdate?.progress?.status || localSourceUpdate?.progress?.phase || "",
+    ).toLowerCase());
+}
+
 const QUICK_ACTIONS = [
   { key: "secure", icon: "▣", label: "Sicherer Zugriff", kind: "status" },
   { key: "sync", icon: "↻", label: "Registry synchronisieren", action: "sync" },
   { key: "logout", icon: "⎋", label: "Logout", action: "logout" },
+  { key: "my-settings", icon: "◉", label: "Meine Einstellungen", action: "my-settings" },
   { key: "terminal", icon: ">_", label: "Terminal", target: "terminal" },
   { key: "files", icon: "▤", label: "Datei-Verwaltung", target: "system" },
   { key: "help", icon: "?", label: "Systemstatus", target: "system" },
@@ -68,6 +126,7 @@ export default function ControlCenterTopBar({
   onLogout,
   onSyncRegistry,
   onMainMenu,
+  onOpenMySettings,
 }) {
   const [versionOpen, setVersionOpen] = useState(false);
   const [runtimeStatus, setRuntimeStatus] = useState(null);
@@ -75,7 +134,7 @@ export default function ControlCenterTopBar({
   const [updateStatus, setUpdateStatus] = useState(null);
   const [updateLoading, setUpdateLoading] = useState(false);
   const [updateAction, setUpdateAction] = useState("");
-  const [updateError, setUpdateError] = useState("");
+  const [updateError, setUpdateError] = useState(() => readStoredUpdateError()?.message || "");
 
   useEffect(() => {
     let cancelled = false;
@@ -114,6 +173,9 @@ export default function ControlCenterTopBar({
       if (!token) return;
       if (!quiet) setUpdateLoading(true);
       try {
+        // Local test packages already reside in UPDATE, so the lightweight
+        // inbox scan remains independent from the production download cycle.
+        await checkLocalSourceUpdate(token).catch(() => null);
         let payload = await fetchCoreUpdateStatus(token);
         if (!automaticCheckHandled && payload?.settings?.automaticChecks) {
           automaticCheckHandled = true;
@@ -124,6 +186,7 @@ export default function ControlCenterTopBar({
           !automaticDownloadHandled
           && payload?.settings?.automaticDownload
           && payload?.updateAvailable
+          && payload?.updateKind !== "local-source"
           && !["running", "ready"].includes(payload?.workflow?.status)
         ) {
           automaticDownloadHandled = true;
@@ -132,10 +195,17 @@ export default function ControlCenterTopBar({
         }
         if (!cancelled) {
           setUpdateStatus(payload);
-          setUpdateError("");
         }
       } catch (error) {
-        if (!cancelled && !quiet) setUpdateError(error?.message || "Update-Status konnte nicht geladen werden.");
+        if (!cancelled && !quiet) {
+          const normalized = normalizeUpdateActionError(
+            error,
+            "Update-Status konnte nicht geladen werden.",
+            "current",
+          );
+          setUpdateError(normalized.message);
+          storeUpdateError(normalized);
+        }
       } finally {
         if (!cancelled && !quiet) setUpdateLoading(false);
       }
@@ -148,6 +218,11 @@ export default function ControlCenterTopBar({
       window.clearInterval(intervalId);
     };
   }, [token]);
+
+  useEffect(() => {
+    if (!versionOpen) return;
+    setUpdateError(readStoredUpdateError()?.message || "");
+  }, [versionOpen]);
 
   useEffect(() => {
     const intervalId = window.setInterval(() => setRuntimeTick(Date.now()), 60_000);
@@ -175,6 +250,7 @@ export default function ControlCenterTopBar({
     updateStatus?.currentVersion
     && updateStatus.currentVersion !== BONNI_CORE_VERSION,
   );
+  const localSourceUpdateAttention = hasLocalSourceUpdateAttention(updateStatus?.localSourceUpdate);
 
   const navItemsByKey = useMemo(() => {
     const map = new Map();
@@ -221,6 +297,11 @@ export default function ControlCenterTopBar({
       return;
     }
 
+    if (key === "update") {
+      onNavigate?.({ key: "update", label: "Aktualisierung" });
+      return;
+    }
+
     if (key === "release-notes") {
       onNavigate?.({ key: "changelog", label: "Release Notes" });
     }
@@ -230,25 +311,20 @@ export default function ControlCenterTopBar({
     if (!token || updateAction) return;
     setUpdateAction("check");
     setUpdateError("");
+    storeUpdateError(null);
     try {
-      await checkCoreUpdate(token);
+      const checks = await Promise.allSettled([
+        checkCoreUpdate(token),
+        checkLocalSourceUpdate(token),
+      ]);
+      const rejected = checks.find((result) => result.status === "rejected");
+      if (rejected?.status === "rejected") throw rejected.reason;
       setUpdateStatus(await fetchCoreUpdateStatus(token));
+      storeUpdateError(null);
     } catch (error) {
-      setUpdateError(error?.message || "Updateprüfung fehlgeschlagen.");
-    } finally {
-      setUpdateAction("");
-    }
-  }
-
-  async function handleInstallUpdate() {
-    if (!token || updateAction) return;
-    setUpdateAction("install");
-    setUpdateError("");
-    try {
-      await installCoreUpdate(token, updateStatus?.targetVersion);
-      setUpdateStatus(await fetchCoreUpdateStatus(token));
-    } catch (error) {
-      setUpdateError(error?.message || "Update konnte nicht installiert werden.");
+      const normalized = normalizeUpdateActionError(error, "Updateprüfung fehlgeschlagen.", "current");
+      setUpdateError(normalized.message);
+      storeUpdateError(normalized);
     } finally {
       setUpdateAction("");
     }
@@ -267,6 +343,11 @@ export default function ControlCenterTopBar({
 
     if (action.action === "logout") {
       onLogout?.();
+      return;
+    }
+
+    if (action.action === "my-settings") {
+      onOpenMySettings?.();
       return;
     }
 
@@ -296,8 +377,17 @@ export default function ControlCenterTopBar({
             aria-expanded={versionOpen}
             title="Versionsinformationen"
           >
-            <span className={`cc-version-dot${updateStatus?.updateAvailable || versionMismatch ? " is-update" : ""}`} aria-hidden="true" />
-            {updateStatus?.currentVersion || BONNI_CORE_VERSION}
+            <span
+              className={`cc-version-dot${
+                updateStatus?.updateAvailable || versionMismatch
+                  ? " is-update"
+                  : localSourceUpdateAttention
+                    ? " is-local-update"
+                    : ""
+              }`}
+              aria-hidden="true"
+            />
+            {formatBonniCoreVersion(updateStatus?.currentVersion || BONNI_CORE_VERSION)}
             <span className="cc-version-caret" aria-hidden="true">⌄</span>
           </button>
 
@@ -308,7 +398,6 @@ export default function ControlCenterTopBar({
               action={updateAction}
               error={updateError}
               onCheck={handleCheckForUpdates}
-              onInstall={handleInstallUpdate}
               onNavigate={handleUpdateNavigate}
             />
           ) : null}

@@ -5,6 +5,7 @@ import {
   markRuntimeEndpointSuccess,
   orderRuntimeApiUrls,
 } from "./runtimeEndpointRouter.js";
+import { clearClientAuthStorage } from "../auth/clientAuthStorage.js";
 
 export class ApiError extends Error {
   constructor(message, options = {}) {
@@ -18,14 +19,6 @@ export class ApiError extends Error {
     this.request = options.request;
   }
 }
-
-const AUTH_STORAGE_KEYS = [
-  "token",
-  "user",
-  "shell",
-  "activeArea",
-  "lastActivityAt",
-];
 
 const INVALID_SESSION_CODES = new Set([
   "INVALID_TOKEN",
@@ -52,14 +45,13 @@ function responseErrorCode(data) {
 function clearStoredSession() {
   if (typeof window === "undefined") return;
 
-  for (const storage of [window.localStorage, window.sessionStorage]) {
-    try {
-      for (const key of AUTH_STORAGE_KEYS) {
-        storage.removeItem(key);
-      }
-    } catch {
-      // Storage kann beispielsweise im privaten Browsermodus gesperrt sein.
-    }
+  try {
+    clearClientAuthStorage({
+      localStorage: window.localStorage,
+      sessionStorage: window.sessionStorage,
+    });
+  } catch {
+    // Storage kann beispielsweise im privaten Browsermodus gesperrt sein.
   }
 }
 
@@ -231,16 +223,28 @@ export async function apiRequest(path, {
   auth = true,
   responseType = "json",
   signal,
+  allowFailover = true,
+  cache,
+  credentials,
+  sensitive = false,
 } = {}) {
-  const urls = orderRuntimeApiUrls([
+  const configuredUrls = [
     ...new Set(buildApiUrls(path).map((url) => normalizeBrowserApiUrl(url))),
-  ]);
+  ];
+  // Sicherheitsnachweise und einmalig sichtbare Geheimnisse duerfen nie an
+  // ein anderes Backend wiederholt werden. Der Runtime-Proxy behandelt die
+  // entsprechenden Core-Routen zusaetzlich als active-only.
+  const urls = allowFailover
+    ? orderRuntimeApiUrls(configuredUrls)
+    : configuredUrls.slice(0, 1);
   const networkErrors = [];
 
   for (let index = 0; index < urls.length; index += 1) {
     const url = urls[index];
     const nextUrl = urls[index + 1];
-    const request = { path, url, method, body };
+    const request = sensitive
+      ? { path, url, method, sensitive: true }
+      : { path, url, method, body };
     let response;
 
     try {
@@ -249,13 +253,15 @@ export async function apiRequest(path, {
         headers: buildHeaders({ token, body, headers, auth }),
         body: body == null ? undefined : isRawBody(body) ? body : JSON.stringify(body),
         signal,
+        cache,
+        credentials,
       });
     } catch (error) {
       if (signal?.aborted || error?.name === "AbortError") throw error;
       networkErrors.push({ url, error });
       markRuntimeEndpointFailure(url, error, { reason: "NETWORK_ERROR" });
 
-      if (nextUrl) {
+      if (allowFailover && nextUrl) {
         markRuntimeEndpointFailover({
           fromUrl: url,
           toUrl: nextUrl,
@@ -303,7 +309,7 @@ export async function apiRequest(path, {
         request,
       });
 
-      if (shouldTryNextBackend({ response, data, nextUrl })) {
+      if (allowFailover && shouldTryNextBackend({ response, data, nextUrl })) {
         markRuntimeEndpointFailure(url, error, { reason: "UNHEALTHY_BACKEND" });
         markRuntimeEndpointFailover({
           fromUrl: url,

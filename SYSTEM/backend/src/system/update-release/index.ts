@@ -7,3 +7,4 @@ export * from "./release-signature.js";
 export * from "./release-source.js";
 export * from "./semver.js";
 export * from "./update-request-auth.js";
+export * from "./lifecycle-command-auth.js";

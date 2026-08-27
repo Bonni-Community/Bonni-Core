@@ -1,8 +1,10 @@
+import { createHash, randomUUID } from "node:crypto";
 import { Router } from "express";
 import { AccountType } from "@prisma/client";
 
 import { getServerPrismaClient } from "../../../core/database/database.js";
 import { LoginError, normalizeLoginError } from "../../../core/errors/login-error.js";
+import { validateExactLocalPassword } from "../../../core/modules/identity/local-password-policy.js";
 import { listModuleManifests } from "../../module-manager/manifests/index.js";
 import type {
   ModuleAccessProfile,
@@ -12,14 +14,26 @@ import { ensureLocalBootstrapAdminAccess } from "../bootstrap-admin-access.js";
 import { verifyPasswordRuntime } from "../password-runtime.js";
 import { isForbiddenInteractiveLoginName } from "../system-account-policy.js";
 import { coreTokenService } from "../token/core-token.service.js";
-import * as twoFactorService from "../../security/two-factor/services/two-factor.service.js";
+import * as twoFactorService from "../../../core/modules/security/two-factor/service.js";
 
 const router = Router();
+router.use((_req, res, next) => {
+  res.setHeader("Cache-Control", "no-store, max-age=0");
+  res.setHeader("Pragma", "no-cache");
+  res.setHeader("Expires", "0");
+  next();
+});
 // Accounts and sessions belong to Bonni Core. Authentication must therefore
 // never follow a local/app request surface into another database context.
 const prisma = getServerPrismaClient("core");
 
 type AccountWithAuth = Awaited<ReturnType<typeof findAccountForLogin>>;
+
+type LoginMfaAssurance = Readonly<{
+  verifiedAt: Date;
+  providerId: string;
+  method: string | null;
+}>;
 
 type AccessKind = "control-center" | "app" | "add-on" | "plug-in";
 
@@ -533,29 +547,100 @@ function requestMeta(req: any) {
   };
 }
 
+function sessionTokenHash(token: string) {
+  return createHash("sha256").update(token, "utf8").digest("hex");
+}
+
+function exactLoginMfaAssurance(value: LoginMfaAssurance | null) {
+  if (!value) return null;
+  const providerId = String(value.providerId || "").trim().toLowerCase();
+  const method = String(value.method || "").trim().toUpperCase() || null;
+  if (
+    !(value.verifiedAt instanceof Date)
+    || !Number.isFinite(value.verifiedAt.getTime())
+    || !/^[a-z0-9][a-z0-9._:-]{0,119}$/u.test(providerId)
+  ) {
+    throw new LoginError(
+      "TWO_FACTOR_CREDENTIAL_REVISION_MISMATCH",
+      "Der bestätigte zweite Faktor konnte nicht sicher an die Sitzung gebunden werden",
+      409,
+    );
+  }
+  return Object.freeze({ verifiedAt: value.verifiedAt, providerId, method });
+}
+
+function exactOptionalProofText(value: unknown, field: string, maxCharacters: number) {
+  if (value === undefined) return undefined;
+  if (
+    typeof value !== "string"
+    || value.length === 0
+    || [...value].length > maxCharacters
+    || /[\r\n\0]/u.test(value)
+    || Buffer.from(value, "utf8").toString("utf8") !== value
+  ) {
+    throw Object.assign(new Error("TWO_FACTOR_LOGIN_PAYLOAD_INVALID"), {
+      code: "TWO_FACTOR_LOGIN_PAYLOAD_INVALID",
+      statusCode: 400,
+      details: { field },
+    });
+  }
+  return value;
+}
+
 async function completeInteractiveLogin(
   account: NonNullable<AccountWithAuth>,
   req: any,
+  expectedCredentialRevision = account.credentialRevision,
+  loginMfaAssurance: LoginMfaAssurance | null = null,
 ) {
   const authenticatedAccount = await repairBootstrapAdminAccess(account);
-  const token = coreTokenService.issueToken({
-    accountId: authenticatedAccount.id,
-    loginName: authenticatedAccount.loginName,
-    source: "LOCAL",
-  });
-
-  await prisma.account.update({
-    where: { id: authenticatedAccount.id },
-    data: { lastLoginAt: new Date() },
-  });
-  await prisma.session.create({
-    data: {
+  const mfa = exactLoginMfaAssurance(loginMfaAssurance);
+  if (authenticatedAccount.passwordRecoveryLockedAt) {
+    throw new LoginError("PASSWORD_RECOVERY_LOCKED", "Das Konto ist bis zum Abschluss der Wiederherstellung gesperrt", 423);
+  }
+  if (authenticatedAccount.credentialRevision !== expectedCredentialRevision) {
+    throw new LoginError("TWO_FACTOR_CREDENTIAL_REVISION_MISMATCH", "Der Sicherheitsstand des Kontos hat sich geändert", 409);
+  }
+  const token = await prisma.$transaction(async (transaction) => {
+    const unchanged = await transaction.account.updateMany({
+      where: {
+        id: authenticatedAccount.id,
+        isActive: true,
+        credentialRevision: authenticatedAccount.credentialRevision,
+        passwordRecoveryLockedAt: null,
+      },
+      data: { lastLoginAt: new Date() },
+    });
+    if (unchanged.count !== 1) {
+      throw new LoginError(
+        "TWO_FACTOR_CREDENTIAL_REVISION_MISMATCH",
+        "Der Sicherheitsstand des Kontos hat sich geändert",
+        409,
+      );
+    }
+    const sessionId = randomUUID();
+    const nextToken = coreTokenService.issueToken({
       accountId: authenticatedAccount.id,
-      tokenHash: null,
-      ipAddress: req.ip || null,
-      userAgent: req.headers?.["user-agent"] || null,
-    },
-  }).catch(() => null);
+      loginName: authenticatedAccount.loginName,
+      sessionId,
+      source: "LOCAL",
+      credentialRevision: authenticatedAccount.credentialRevision,
+    });
+    await transaction.session.create({
+      data: {
+        id: sessionId,
+        accountId: authenticatedAccount.id,
+        tokenHash: sessionTokenHash(nextToken),
+        ipAddress: req.ip || null,
+        userAgent: req.headers?.["user-agent"] || null,
+        credentialRevision: authenticatedAccount.credentialRevision,
+        mfaVerifiedAt: mfa?.verifiedAt || null,
+        mfaProviderId: mfa?.providerId || null,
+        mfaMethod: mfa?.method || null,
+      },
+    });
+    return nextToken;
+  });
 
   const shell = await createShell(authenticatedAccount);
   return {
@@ -619,9 +704,10 @@ router.get("/status", async (_req, res) => {
 router.post("/login", async (req, res) => {
   try {
     const loginName = normalizeLoginName(req.body?.login || req.body?.loginName || req.body?.username || req.body?.email);
-    const password = String(req.body?.password || "");
+    const passwordValidation = validateExactLocalPassword(req.body?.password);
+    const password = passwordValidation.ok ? passwordValidation.password : "";
 
-    if (!loginName || !password) {
+    if (!loginName || !passwordValidation.ok) {
       throw new LoginError("LOGIN_PAYLOAD_INVALID", "Benutzername und Passwort erforderlich", 400);
     }
 
@@ -659,6 +745,14 @@ router.post("/login", async (req, res) => {
       throw new LoginError("INVALID_PASSWORD", "Passwort falsch", 401);
     }
 
+    if (account.passwordRecoveryLockedAt) {
+      throw new LoginError(
+        "PASSWORD_RECOVERY_LOCKED",
+        "Das Konto ist bis zum Abschluss der Wiederherstellung gesperrt",
+        423,
+      );
+    }
+
     const authenticatedAccount = await repairBootstrapAdminAccess(account);
     if (await twoFactorService.hasActiveTwoFactor(authenticatedAccount.id)) {
       const challenge = await twoFactorService.createChallenge(
@@ -687,18 +781,17 @@ router.post("/login", async (req, res) => {
 router.post("/login/2fa", async (req, res) => {
   try {
     const challengeId = String(req.body?.challengeId || "").trim();
-    const code = String(req.body?.code || "").trim();
-    const recoveryCode = String(req.body?.recoveryCode || "").trim();
-    const token = String(req.body?.token || "").trim();
-    const password = String(req.body?.password || "");
+    const code = exactOptionalProofText(req.body?.code, "code", 128);
+    const recoveryCode = exactOptionalProofText(req.body?.recoveryCode, "recoveryCode", 80);
+    const token = exactOptionalProofText(req.body?.token, "token", 128);
+    const passwordValidation = req.body?.password === undefined
+      ? null
+      : validateExactLocalPassword(req.body.password);
+    const password = passwordValidation?.ok ? passwordValidation.password : undefined;
     if (
       !challengeId
-      || (!code && !recoveryCode && !token)
-      || code.length > 128
-      || recoveryCode.length > 80
-      || token.length > 128
-      || password.length > 256
-      || /[\r\n]/.test(code + token + password)
+      || (code === undefined && recoveryCode === undefined && token === undefined && password === undefined)
+      || (passwordValidation !== null && !passwordValidation.ok)
     ) {
       throw Object.assign(new Error("TWO_FACTOR_LOGIN_PAYLOAD_INVALID"), {
         code: "TWO_FACTOR_LOGIN_PAYLOAD_INVALID",
@@ -706,27 +799,52 @@ router.post("/login/2fa", async (req, res) => {
       });
     }
 
+    const pending = await prisma.securityTwoFactorChallenge.findUnique({
+      where: { id: challengeId },
+      select: { accountId: true, purpose: true },
+    });
+    const pendingAccount = pending?.purpose === "LOGIN"
+      ? await prisma.account.findUnique({ where: { id: pending.accountId }, select: { passwordRecoveryLockedAt: true } })
+      : null;
+    if (pendingAccount?.passwordRecoveryLockedAt) {
+      throw new LoginError("PASSWORD_RECOVERY_LOCKED", "Das Konto ist bis zum Abschluss der Wiederherstellung gesperrt", 423);
+    }
+
     const verified = await twoFactorService.verifyLoginChallenge(
       challengeId,
       {
-        code: code || undefined,
-        recoveryCode: recoveryCode || undefined,
-        token: token || undefined,
-        password: password || undefined,
+        code,
+        recoveryCode,
+        token,
+        password,
       },
       requestMeta(req),
     );
-    await twoFactorService.consumeVerifiedChallenge({
+    const consumed = await twoFactorService.consumeVerifiedChallenge({
       accountId: verified.accountId,
       challengeId,
       purpose: "LOGIN",
     });
 
     const account = await findAccountForLoginById(verified.accountId);
-    if (!account?.isActive || account.type === AccountType.SERVICE) {
+    if (
+      !account?.isActive
+      || Boolean(account.passwordRecoveryLockedAt)
+      || account.type === AccountType.SERVICE
+      || account.credentialRevision !== consumed.credentialRevision
+    ) {
       throw new LoginError("ACCOUNT_DISABLED", "Benutzer deaktiviert", 403);
     }
-    return res.json(await completeInteractiveLogin(account, req));
+    return res.json(await completeInteractiveLogin(
+      account,
+      req,
+      consumed.credentialRevision,
+      {
+        verifiedAt: consumed.verifiedAt as Date,
+        providerId: consumed.providerId,
+        method: consumed.method,
+      },
+    ));
   } catch (error: unknown) {
     const normalized = normalizeLoginError(error);
     return res.status(normalized.status).json({
@@ -737,8 +855,28 @@ router.post("/login/2fa", async (req, res) => {
   }
 });
 
-router.post("/logout", (_req, res) => {
-  res.json({ ok: true });
+router.post("/logout", async (req: any, res) => {
+  try {
+    const sessionId = String(req.bonniSessionId || "").trim();
+    const accountId = String(req.user?.accountId || req.user?.id || "").trim();
+    if (sessionId && accountId) {
+      await prisma.session.updateMany({
+        where: {
+          id: sessionId,
+          accountId,
+          endedAt: null,
+        },
+        data: { endedAt: new Date() },
+      });
+    }
+    return res.json({ ok: true });
+  } catch (error: unknown) {
+    const normalized = normalizeLoginError(error);
+    return res.status(normalized.status).json({
+      code: normalized.code,
+      message: normalized.message,
+    });
+  }
 });
 
 router.post("/heartbeat", (req, res) => {

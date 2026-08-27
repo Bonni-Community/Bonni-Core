@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import test from "node:test";
 import express from "express";
 
@@ -8,6 +9,7 @@ import {
 } from "../dist/platform/auth/request-identity/index.js";
 import {
   getVerifiedRequestIdentity,
+  getVerifiedRequestSessionAssurance,
   runWithVerifiedRequestIdentity,
 } from "../dist/platform/auth/request-identity/request-identity-context.js";
 import {
@@ -23,6 +25,7 @@ const accessProfiles = [
 function identity(overrides = {}) {
   return {
     accountId: "account-1",
+    credentialRevision: 0,
     loginName: "alice",
     type: "MEMBER",
     roles: ["member", "access:app:app-example:manager"],
@@ -44,6 +47,10 @@ function errorCode(callback) {
       statusCode: error.statusCode,
     };
   }
+}
+
+function tokenHash(token) {
+  return createHash("sha256").update(token, "utf8").digest("hex");
 }
 
 async function withServer(app, callback) {
@@ -76,6 +83,7 @@ test("request identity runtime exposes only the immutable safe DTO", async () =>
     assert.deepEqual(Object.keys(current).sort(), [
       "accountId",
       "allowedApps",
+      "credentialRevision",
       "loginName",
       "memberId",
       "permissions",
@@ -167,6 +175,7 @@ test("current-user middleware binds verified and anonymous request contexts", as
   const accounts = new Map([
     ["account-alice", {
       id: "account-alice",
+      credentialRevision: 0,
       loginName: "alice-from-database",
       type: "MEMBER",
       isActive: true,
@@ -189,6 +198,7 @@ test("current-user middleware binds verified and anonymous request contexts", as
     }],
     ["account-bob", {
       id: "account-bob",
+      credentialRevision: 0,
       loginName: "bob",
       type: "ADMIN",
       isActive: true,
@@ -203,6 +213,7 @@ test("current-user middleware binds verified and anonymous request contexts", as
     }],
     ["account-service", {
       id: "account-service",
+      credentialRevision: 0,
       loginName: "service",
       type: "SERVICE",
       isActive: true,
@@ -212,14 +223,36 @@ test("current-user middleware binds verified and anonymous request contexts", as
     }],
   ]);
   const warnings = [];
+  const sessions = new Map(["alice", "bob", "service"].map((token) => [
+    `session-${token}`,
+    {
+      id: `session-${token}`,
+      accountId: `account-${token}`,
+      tokenHash: tokenHash(token),
+      credentialRevision: 0,
+      mfaVerifiedAt: token === "alice" ? new Date("2026-08-22T08:15:00.000Z") : null,
+      mfaProviderId: token === "alice" ? "local" : null,
+      mfaMethod: token === "alice" ? "TOTP" : null,
+      endedAt: null,
+    },
+  ]));
   const middleware = createCurrentUserMiddleware({
     verifyToken(token) {
       if (token === "invalid") throw new Error("invalid token");
-      return { accountId: `account-${token}`, source: "TEST" };
+      return {
+        accountId: `account-${token}`,
+        sessionId: `session-${token}`,
+        credentialRevision: 0,
+        source: "TEST",
+      };
     },
     async findAccount(accountId) {
       await new Promise((resolve) => setTimeout(resolve, accountId.endsWith("alice") ? 8 : 1));
       return accounts.get(accountId) || null;
+    },
+    async findSession(sessionId, accountId) {
+      const session = sessions.get(sessionId) || null;
+      return session?.accountId === accountId ? session : null;
     },
     warn(message, error) {
       warnings.push([message, error.message]);
@@ -236,6 +269,7 @@ test("current-user middleware binds verified and anonymous request contexts", as
     await new Promise((resolve) => setTimeout(resolve, 3));
     response.json({
       identity: runtime.current(),
+      assurance: getVerifiedRequestSessionAssurance(),
       verified: request.bonniIdentityVerified,
       requestUser: request.user || null,
     });
@@ -245,6 +279,7 @@ test("current-user middleware binds verified and anonymous request contexts", as
     const anonymous = await (await fetch(`${baseUrl}/identity`)).json();
     assert.deepEqual(anonymous, {
       identity: null,
+      assurance: null,
       verified: false,
       requestUser: null,
     });
@@ -255,6 +290,7 @@ test("current-user middleware binds verified and anonymous request contexts", as
     ]);
     assert.deepEqual(alice.identity, {
       accountId: "account-alice",
+      credentialRevision: 0,
       loginName: "alice-from-database",
       type: "MEMBER",
       roles: ["access:app:app-example:manager", "member"],
@@ -262,6 +298,14 @@ test("current-user middleware binds verified and anonymous request contexts", as
       allowedApps: ["app.example"],
       personId: "person-alice",
       memberId: "member-alice",
+    });
+    assert.deepEqual(alice.assurance, {
+      sessionId: "session-alice",
+      accountId: "account-alice",
+      credentialRevision: 0,
+      mfaVerifiedAt: "2026-08-22T08:15:00.000Z",
+      mfaProviderId: "local",
+      mfaMethod: "TOTP",
     });
     assert.equal(alice.verified, true);
     assert.equal(alice.requestUser.source, "TEST");
@@ -276,6 +320,21 @@ test("current-user middleware binds verified and anonymous request contexts", as
       assert.equal(result.verified, false);
       assert.equal(result.requestUser, null);
     }
+
+    sessions.get("session-alice").endedAt = new Date();
+    const ended = await fetch(`${baseUrl}/identity`, {
+      headers: { authorization: "Bearer alice" },
+    }).then((res) => res.json());
+    assert.equal(ended.identity, null);
+    assert.equal(ended.assurance, null);
+
+    sessions.get("session-alice").endedAt = null;
+    sessions.get("session-alice").tokenHash = "0".repeat(64);
+    const mismatchedToken = await fetch(`${baseUrl}/identity`, {
+      headers: { authorization: "Bearer alice" },
+    }).then((res) => res.json());
+    assert.equal(mismatchedToken.identity, null);
+    assert.equal(mismatchedToken.assurance, null);
   });
 
   assert.deepEqual(warnings, [["Current user could not be resolved", "invalid token"]]);
@@ -284,13 +343,30 @@ test("current-user middleware binds verified and anonymous request contexts", as
 test("a database lookup failure never turns a valid token into an anonymous 401", async () => {
   const middleware = createCurrentUserMiddleware({
     verifyToken() {
-      return { accountId: "account-alice", source: "TEST" };
+      return {
+        accountId: "account-alice",
+        sessionId: "session-alice",
+        credentialRevision: 0,
+        source: "TEST",
+      };
     },
     async findAccount() {
       throw Object.assign(
         new Error('PostgresError 42501: keine Berechtigung für Schema "core"'),
         { code: "42501" },
       );
+    },
+    async findSession() {
+      return {
+        id: "session-alice",
+        accountId: "account-alice",
+        tokenHash: tokenHash("valid-token"),
+        credentialRevision: 0,
+        mfaVerifiedAt: null,
+        mfaProviderId: null,
+        mfaMethod: null,
+        endedAt: null,
+      };
     },
     warn() {},
   });

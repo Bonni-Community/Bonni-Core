@@ -4,6 +4,11 @@ import {
   deleteControlCenterLocalMember,
   updateControlCenterLocalMemberAccess,
 } from "../../../../../../system/api/controlCenterUsersApi.js";
+import ExactSecretInput from "../../../../../../core/modules/security/two-factor/components/ExactSecretInput.jsx";
+import {
+  countUnicodeCodePoints,
+  validateExactSecret,
+} from "../../../../../../core/modules/security/two-factor/model/exactSecretPolicy.js";
 import { getAccounts, getPrimaryAccount } from "../memberWindowUtils.js";
 
 function generatePassword(length = 14) {
@@ -134,6 +139,12 @@ function AccessPanel({
       return;
     }
 
+    const passwordError = validateExactSecret(password, { label: "Das Passwort" });
+    if (passwordError || countUnicodeCodePoints(password) < 6) {
+      setError(passwordError || "Das Passwort muss mindestens 6 Zeichen haben.");
+      return;
+    }
+
     if (password !== passwordRepeat) {
       setError("Die Passwort-Wiederholung stimmt nicht überein.");
       return;
@@ -162,8 +173,9 @@ function AccessPanel({
     }
 
     if (passwordChanged) {
-      if (password.length < 6) {
-        setError("Das Passwort muss mindestens 6 Zeichen haben.");
+      const passwordError = validateExactSecret(password, { label: "Das Passwort" });
+      if (passwordError || countUnicodeCodePoints(password) < 6) {
+        setError(passwordError || "Das Passwort muss mindestens 6 Zeichen haben.");
         return;
       }
 
@@ -261,16 +273,18 @@ function AccessPanel({
           />
         </label>
 
-        <label className="cc-member-window-field cc-member-window-field--editable">
-          <span>Neues Passwort</span>
+        <div className="cc-member-window-field cc-member-window-field--editable">
           <div className="cc-member-window-password-row">
-            <input
-              className="cc-member-window-input"
-              type={showPassword ? "text" : "password"}
+            <ExactSecretInput
+              className="cc-member-window-field cc-member-window-field--editable"
+              inputClassName="cc-member-window-input"
+              inputType={showPassword ? "text" : "password"}
+              label="Neues Passwort"
               value={password}
-              onChange={(event) => setPassword(event.target.value)}
+              onChange={setPassword}
               placeholder="Passwort eingeben oder generieren"
               autoComplete="new-password"
+              required={false}
             />
             <button
               type="button"
@@ -284,21 +298,23 @@ function AccessPanel({
               {showPassword ? "Verbergen" : "Anzeigen"}
             </button>
           </div>
-        </label>
+        </div>
 
-        <label className="cc-member-window-field cc-member-window-field--editable">
-          <span>Passwort wiederholen</span>
+        <div className="cc-member-window-field cc-member-window-field--editable">
           <div className="cc-member-window-password-row">
-            <input
-              className="cc-member-window-input"
-              type={showPassword ? "text" : "password"}
+            <ExactSecretInput
+              className="cc-member-window-field cc-member-window-field--editable"
+              inputClassName="cc-member-window-input"
+              inputType={showPassword ? "text" : "password"}
+              label="Passwort wiederholen"
               value={passwordRepeat}
-              onChange={(event) => setPasswordRepeat(event.target.value)}
+              onChange={setPasswordRepeat}
               placeholder="Passwort erneut eingeben"
               autoComplete="new-password"
+              required={false}
             />
           </div>
-        </label>
+        </div>
       </div>
 
       <div className="cc-member-window-access-actions">

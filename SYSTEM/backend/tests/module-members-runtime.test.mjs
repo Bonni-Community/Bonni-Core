@@ -1,14 +1,18 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import {
+const {
   createModuleMembersRuntime,
   MODULE_MEMBERS_CONTRACT_VERSION,
   normalizeModuleLegacyAccessMappings,
-} from "../dist/platform/auth/members/index.js";
-import {
+} = await import(process.env.BONNI_TEST_SOURCE === "1"
+  ? "../src/platform/auth/members/index.ts"
+  : "../dist/platform/auth/members/index.js");
+const {
   validateModuleManifest,
-} from "../dist/platform/module-manager/manifests/manifest.service.js";
+} = await import(process.env.BONNI_TEST_SOURCE === "1"
+  ? "../src/platform/module-manager/manifests/manifest.service.ts"
+  : "../dist/platform/module-manager/manifests/manifest.service.js");
 
 const profiles = [
   {
@@ -83,6 +87,7 @@ function memberRow(overrides = {}) {
         type: "MEMBER",
         isActive: true,
         isSandbox: false,
+        credentialRevision: 4,
         lastLoginAt: new Date("2024-01-01T00:00:00.000Z"),
         createdAt: new Date("2020-01-01T00:00:00.000Z"),
         updatedAt: new Date("2020-02-01T00:00:00.000Z"),
@@ -118,10 +123,63 @@ function memberRow(overrides = {}) {
 
 function readDatabase(row = memberRow()) {
   const passwordUpdates = [];
+  const sessionRevocations = [];
+  const refreshTokenRevocations = [];
+  const recoveryRequestUpdates = [];
+  const recoveryAuditLogs = [];
   return {
     passwordUpdates,
+    sessionRevocations,
+    refreshTokenRevocations,
+    recoveryRequestUpdates,
+    recoveryAuditLogs,
     async $transaction(callback) {
-      return callback({});
+      return callback({
+        account: {
+          async updateMany(input) {
+            passwordUpdates.push(input);
+            return { count: 1 };
+          },
+        },
+        session: {
+          async updateMany(input) {
+            sessionRevocations.push(input);
+            return { count: 1 };
+          },
+        },
+        refreshToken: {
+          async updateMany(input) {
+            refreshTokenRevocations.push(input);
+            return { count: 1 };
+          },
+        },
+        securityTwoFactorCredential: {
+          async findMany() { return []; },
+          async updateMany() { return { count: 0 }; },
+        },
+        securityTwoFactorRecoveryCode: {
+          async updateMany() { return { count: 0 }; },
+        },
+        securityTwoFactorEnrollment: {
+          async updateMany() { return { count: 0 }; },
+        },
+        securityTwoFactorChallenge: {
+          async updateMany() { return { count: 0 }; },
+        },
+        securityAccountRecoveryRequest: {
+          async findMany() { return []; },
+          async updateMany(input) {
+            recoveryRequestUpdates.push(input);
+            return { count: 1 };
+          },
+        },
+        securityAccountRecoveryAuditLog: {
+          async create(input) {
+            recoveryAuditLogs.push(input);
+            return input;
+          },
+        },
+      });
     },
     memberProfile: {
       async findUnique(input) {
@@ -213,8 +271,12 @@ test("member DTO is field-bounded and matches the module accessAccounts contract
     "lastLoginAt",
     "loginName",
     "memberCapabilities",
+    "securityState",
+    "settlementOnly",
     "type",
   ]);
+  assert.equal(result.accessAccounts[0].securityState, "READY");
+  assert.equal(result.accessAccounts[0].settlementOnly, false);
   assert.deepEqual(result.accessAccounts[0].accessProfiles, ["member"]);
   assert.deepEqual(result.accessAccounts[0].memberCapabilities, ["HELPER"]);
   assert.equal(result.presence[0].id, "presence-1");
@@ -274,9 +336,22 @@ test("password reset hashes in Core and requires exactly one active personal LOC
     updated: true,
   });
   assert.deepEqual(database.passwordUpdates, [{
-    where: { id: "account-1" },
-    data: { passwordHash: "hashed:correct horse battery staple" },
+    where: { id: "account-1", credentialRevision: 4, passwordRecoveryLockedAt: null },
+    data: {
+      passwordHash: "hashed:correct horse battery staple",
+      credentialRevision: { increment: 1 },
+    },
   }]);
+  assert.equal(database.sessionRevocations.length, 1);
+  assert.deepEqual(database.sessionRevocations[0].where, {
+    accountId: "account-1",
+    endedAt: null,
+  });
+  assert.equal(database.refreshTokenRevocations.length, 1);
+  assert.deepEqual(database.refreshTokenRevocations[0].where, {
+    accountId: "account-1",
+    revokedAt: null,
+  });
 
   const ambiguous = memberRow();
   ambiguous.person.accounts.push({

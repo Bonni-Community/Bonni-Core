@@ -8,6 +8,7 @@ import {
   decryptAes256GcmToUtf8,
   encryptAes256Gcm,
 } from "../../platform/security/crypto/symmetric.js";
+import { assertExactJitsiSecret } from "./jitsi-secret-policy.js";
 
 const KEYS = {
   enabled: "integration.jitsi.enabled",
@@ -133,13 +134,13 @@ export async function updateJitsiSettings(input: JitsiSettingsUpdate, accountId:
   const current = await fullSettings();
   const serverUrl = normalizeServerUrl(input.serverUrl ?? current.serverUrl);
   const appId = normalizeAppId(input.appId ?? current.appId);
-  const requestedSecret = input.secret === undefined ? current.secret : String(input.secret || "").trim();
+  const secretSupplied = input.secret !== undefined;
+  const requestedSecret = secretSupplied
+    ? assertExactJitsiSecret(input.secret, { allowEmpty: true })
+    : current.secret;
   const enabled = input.enabled === undefined ? current.enabled : Boolean(input.enabled);
-  if (enabled && (!serverUrl || !appId || requestedSecret.length < 32)) {
+  if (enabled && (!serverUrl || !appId || !requestedSecret)) {
     throw Object.assign(new Error("JITSI_CONFIGURATION_INCOMPLETE"), { statusCode: 400 });
-  }
-  if (requestedSecret && requestedSecret.length < 32) {
-    throw Object.assign(new Error("JITSI_SECRET_TOO_SHORT"), { statusCode: 400 });
   }
   const version = current.version + 1;
   const updatedAt = new Date().toISOString();
@@ -150,14 +151,19 @@ export async function updateJitsiSettings(input: JitsiSettingsUpdate, accountId:
     [KEYS.version]: version,
     [KEYS.updatedAt]: updatedAt,
   };
-  if (requestedSecret) values[KEYS.secret] = encryptSecret(requestedSecret);
+  if (secretSupplied && requestedSecret) values[KEYS.secret] = encryptSecret(requestedSecret);
+
+  const settingWrites: Prisma.PrismaPromise<unknown>[] = Object.entries(values).map(([key, value]) => prisma.systemSetting.upsert({
+    where: { key },
+    create: { key, value },
+    update: { value },
+  }));
+  if (secretSupplied && !requestedSecret) {
+    settingWrites.push(prisma.systemSetting.deleteMany({ where: { key: KEYS.secret } }));
+  }
 
   await prisma.$transaction([
-    ...Object.entries(values).map(([key, value]) => prisma.systemSetting.upsert({
-      where: { key },
-      create: { key, value },
-      update: { value },
-    })),
+    ...settingWrites,
     prisma.auditLog.create({
       data: {
         category: "SECURITY",
@@ -171,7 +177,8 @@ export async function updateJitsiSettings(input: JitsiSettingsUpdate, accountId:
           enabled,
           serverHost: serverUrl ? new URL(serverUrl).host : null,
           appId,
-          secretRotated: input.secret !== undefined,
+          secretRotated: secretSupplied,
+          secretCleared: secretSupplied && !requestedSecret,
           version,
         },
       },

@@ -11,6 +11,7 @@ import {
   isSecureMasterKey,
   isSecureJwtSecret,
 } from "../scripts/auth/ensure-jwt-secret.mjs";
+import { fixedCommand } from "../scripts/runtime/run-host-backend-entry.mjs";
 
 async function temporaryEnvironmentFile() {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), "bonni-jwt-test-"));
@@ -250,17 +251,28 @@ test("the local entry points run the automatic JWT preflight", async () => {
     packageJson.scripts["auth:ensure-jwt"],
     "node scripts/auth/ensure-jwt-secret.mjs",
   );
+  assert.equal(
+    packageJson.scripts.start,
+    "npm run maintenance:cleanup && npm run auth:ensure-jwt && node scripts/runtime/start-backend.mjs",
+    "npm start must retain the exact U09 bootstrap contract while start-backend owns the host lease",
+  );
   for (const scriptName of [
     "dev",
-    "start",
     "dev:run",
     "redundant:dev",
     "redundant:start",
   ]) {
     assert.match(
       packageJson.scripts[scriptName],
-      /npm run auth:ensure-jwt/u,
-      `${scriptName} must run the JWT preflight`,
+      /scripts\/runtime\/run-host-backend-entry\.mjs/u,
+      `${scriptName} must use the lifetime-bound host entry wrapper`,
+    );
+    const action = scriptName.replaceAll(":", "-").replace("dev:run", "dev-run");
+    const commands = fixedCommand(action);
+    assert.equal(
+      commands.some(([, args]) => args.some((entry) => /scripts[\\/]auth[\\/]ensure-jwt-secret\.mjs$/u.test(entry))),
+      true,
+      `${scriptName} must run the JWT preflight inside the protected host lifetime`,
     );
   }
   assert.match(packageJson.scripts.setup, /scripts\/setup\/setup-system\.mjs/u);
@@ -268,6 +280,6 @@ test("the local entry points run the automatic JWT preflight", async () => {
   assert.match(repairScript, /await ensureJwtSecret\(\)/u);
   assert.match(
     dockerfile,
-    /COPY System\/backend\/scripts\/auth \.\/scripts\/auth/u,
+    /COPY SYSTEM\/backend\/scripts\/auth \.\/scripts\/auth/u,
   );
 });

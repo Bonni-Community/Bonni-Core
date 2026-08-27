@@ -65,7 +65,7 @@ function initials(value) {
   return (parts[0] || "BC").slice(0, 2).toUpperCase();
 }
 
-export default function AppLauncher({ user, shell, onOpenTarget, onOpenControlCenter, onLogout }) {
+export default function AppLauncher({ user, shell, onOpenTarget, onOpenControlCenter, onOpenMySettings, onLogout }) {
   const assignedApps = getAssignedTargets(user, shell).filter((target) => target.startsWith("app."));
   const controlCenterAllowed = canOpenControlCenter(user, shell);
   const primaryApps = assignedApps.slice(0, APP_POSITIONS.length);
@@ -86,9 +86,10 @@ export default function AppLauncher({ user, shell, onOpenTarget, onOpenControlCe
           <h1>Meine Apps</h1>
           {name ? <p className="bonni-launcher__welcome">Angemeldet als {name}</p> : null}
         </div>
-        <button className="bonni-launcher__logout" type="button" onClick={onLogout}>
-          Abmelden
-        </button>
+        <div className="bonni-launcher__account-actions">
+          <button className="bonni-launcher__settings" type="button" onClick={onOpenMySettings}>Meine Einstellungen</button>
+          <button className="bonni-launcher__logout" type="button" onClick={onLogout}>Abmelden</button>
+        </div>
       </header>
 
       <section className="bonni-launcher__stage" aria-label="Freigeschaltete Bereiche">

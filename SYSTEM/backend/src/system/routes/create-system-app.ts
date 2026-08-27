@@ -15,6 +15,7 @@ import { localRouter } from "./local.routes.js";
 import { createDatabaseContextMiddleware } from "../../core/database/database.js";
 import { assertRunContainerMatchesDatabase } from "../runtime/run-container/index.js";
 import { updateProbeGuard } from "../runtime/update-probe/index.js";
+import { emergencyReadOnlyMethodGuard } from "../../../scripts/runtime/emergency-read-only-guard.mjs";
 
 const DEFAULT_JSON_BODY_LIMIT = "50mb";
 const MAX_JSON_BODY_BYTES = 50 * 1024 * 1024;
@@ -173,6 +174,10 @@ export async function createRedundantSystemApp(): Promise<Express> {
   // Notlauf-Backend: eigener Prozess, eigener Port, JSON-Runtime.
   // Es lädt bewusst keine Fachmodul-Router hart nach, damit das Rettungssystem
   // auch dann startet, wenn active oder die Datenbank nicht verfügbar ist.
+  // The old Emergency image may coexist with a newer Active for 14 days. This
+  // application gate is one layer of the writer lease: direct localhost ports
+  // can never turn Emergency into a second productive database writer.
+  app.use(emergencyReadOnlyMethodGuard);
   app.use(currentUserMiddleware);
   app.use("/api", localRouter);
 

@@ -7,3 +7,4 @@ export * from "./event-bus/event-bus.js";
 export * from "./data-adapters/index.js";
 export * from "./types/core.types.js";
 export * from "./utils/utils.js";
+export * from "./modules/index.js";

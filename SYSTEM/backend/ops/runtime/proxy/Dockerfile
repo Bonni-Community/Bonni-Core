@@ -5,7 +5,7 @@ LABEL org.opencontainers.image.title="Bonni Core Runtime Proxy" \
       org.bonni.product="bonni-core" \
       org.bonni.component="runtime-proxy"
 
-COPY System/backend/ops/runtime/nginx/default.conf.template /etc/nginx/templates/default.conf.template
+COPY SYSTEM/backend/ops/runtime/nginx/default.conf.template /etc/nginx/templates/default.conf.template
 
 EXPOSE 8080
 

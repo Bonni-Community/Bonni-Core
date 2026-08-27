@@ -6,6 +6,7 @@ export type AuthContext = {
   accountType?: string;
   type?: string;
   sessionId?: string;
+  credentialRevision: number;
   roles: string[];
   permissions: string[];
 };

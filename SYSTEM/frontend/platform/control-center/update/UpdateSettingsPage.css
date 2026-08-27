@@ -12,4 +12,11 @@
 .cc-update-settings-message { border-radius: 10px; padding: 11px 13px; }
 .cc-update-settings-message.is-error { color: #8b2932; background: #ffeaec; }
 .cc-update-settings-message.is-success { color: #31764d; background: #e7f6ed; }
-@media (max-width: 650px) { .cc-update-settings-card > label { align-items: flex-start; } .cc-update-settings-select { flex-direction: column; } }
+.cc-update-settings-source { display: flex; align-items: center; justify-content: space-between; gap: 22px; border: 1px solid rgba(25,34,45,.1); border-radius: 15px; padding: 17px 19px; background: #fff; }
+.cc-update-settings-source > div { display: grid; gap: 4px; min-width: 0; }
+.cc-update-settings-source span { color: #a84314; font-size: .7rem; font-weight: 900; letter-spacing: .08em; text-transform: uppercase; }
+.cc-update-settings-source strong { color: #29313a; }
+.cc-update-settings-source small { max-width: 720px; color: #727d87; line-height: 1.4; }
+.cc-update-settings-source a { flex: 0 0 auto; border: 1px solid rgba(25,34,45,.14); border-radius: 9px; padding: 9px 12px; color: #9f431b; background: #fff; font-size: .8rem; font-weight: 850; text-decoration: none; }
+.cc-update-settings-source a:hover, .cc-update-settings-source a:focus-visible { border-color: #d6602d; text-decoration: underline; }
+@media (max-width: 650px) { .cc-update-settings-card > label { align-items: flex-start; } .cc-update-settings-select { flex-direction: column; } .cc-update-settings-source { align-items: flex-start; flex-direction: column; } }

@@ -33,18 +33,18 @@ test("tokens fail closed when JWT_SECRET is missing, short or a placeholder", ()
   withEnvironment(["JWT_SECRET"], () => {
     const service = new CoreTokenService();
     assert.throws(
-      () => service.issueToken({ accountId: "account-1", loginName: "member" }),
+      () => service.issueToken({ accountId: "account-1", loginName: "member", sessionId: "session-secret-1", credentialRevision: 0 }),
       /JWT_SECRET_MISSING_OR_WEAK/,
     );
     for (const value of ["short", "development-token-secret-that-is-long-enough", "x".repeat(64)]) {
       process.env.JWT_SECRET = value;
       assert.throws(
-        () => service.issueToken({ accountId: "account-1", loginName: "member" }),
+        () => service.issueToken({ accountId: "account-1", loginName: "member", sessionId: "session-secret-1", credentialRevision: 0 }),
         /JWT_SECRET_MISSING_OR_WEAK/,
       );
     }
     process.env.JWT_SECRET = "3Kf!8qNzR2vP7xLm5cWd9sTy4uHa6eBj";
-    const token = service.issueToken({ accountId: "account-1", loginName: "member" });
+    const token = service.issueToken({ accountId: "account-1", loginName: "member", sessionId: "session-secret-1", credentialRevision: 0 });
     assert.equal(service.verifyToken(token).accountId, "account-1");
   });
 });

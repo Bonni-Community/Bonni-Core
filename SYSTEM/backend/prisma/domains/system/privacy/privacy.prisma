@@ -98,6 +98,9 @@ model ProtectedDataAccessGrant {
   subjectId          String?
   challengeId        String?
   grantedByAccountId String?
+  credentialRevision Int      @default(-1)
+  providerId         String   @default("legacy")
+  accessScope        String   @default("legacy")
   expiresAt          DateTime
   revokedAt          DateTime?
   createdAt          DateTime @default(now())

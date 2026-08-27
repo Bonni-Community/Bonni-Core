@@ -13,7 +13,28 @@ These scripts are intentionally simple wrappers around `docker compose -f docker
 - `switch-proxy-to-active.sh` points the proxy back to the active backend.
 - `stop-old-active.sh` stops the old active backend after a successful switch.
 
-The emergency backend remains available as the stable rescue backend. It should only be updated after the configured hold period, currently 14 days.
+The emergency backend remains available as the stable rescue backend. After a
+successful cutover the runner persists a private, generation-bound 14-day hold.
+During that hold the previous image pin and Emergency image are not advanced and
+every following Core update is rejected. The runner finalizes an expired hold
+automatically; an administrator can request the same idempotent operation early
+through `POST /api/system/update-center/deployment-lifecycle/finalize` with the
+currently published `holdId` and `generation`. The backend signs that command
+with the private runner HMAC secret; the identifiers alone grant no authority.
+
+This U10 runtime deliberately remains a single productive Active with an
+isolated Candidate preflight. It does not claim physical A/B or dual-writer
+semantics: module startup still has side effects for which no universal dynamic
+writer lease exists. A second productive backend on the central database would
+therefore be unsafe in this release. The public lifecycle reports the explicit
+mode `single-active-fail-closed-hold` so API/UI clients cannot mistake retained
+rollback evidence for a live switchable slot.
+
+Automatic production migrations accept only `migration:none` or an explicitly
+`backwardCompatible` `expand-contract` chain. The latter is deployed while the
+old Active remains online and is rechecked before cutover. Offline migrations
+and contract/destructive phases remain fail-closed; contract cleanup may happen
+only after the previous-version hold has ended in a separately controlled flow.
 
 Active, Emergency, Proxy and the runner deliberately use `restart: "no"`.
 Docker therefore cannot reopen an unconfirmed release after a host/daemon
@@ -95,6 +116,12 @@ host port and must be cleared/removed by the runner after a completed or failed
 transaction. Never use `docker compose down -v` for that cleanup because it
 would also remove the production `postgres_data` volume; target only the
 explicitly labelled Candidate volumes.
+
+When the hold is finalized, the runner first proves the current Active image and
+health, advances and recreates Emergency, advances the rollback pin to the
+confirmed target, and only then invokes the isolated exact-ID snapshot cleanup.
+A crash leaves the lifecycle in `finalizing`; the next runner pass resumes the
+same generation idempotently and keeps all new updates blocked until completion.
 
 `switch-proxy-to-active.sh` remains a manual recovery tool. A production update
 must use the external runner because it persists and reconciles the complete

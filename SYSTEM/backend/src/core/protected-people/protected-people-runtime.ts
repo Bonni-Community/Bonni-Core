@@ -2,11 +2,14 @@ import { createHash, createHmac, randomBytes } from "node:crypto";
 import type { Prisma, PrismaClient } from "@prisma/client";
 
 import { env } from "../config/env.js";
-import { getVerifiedRequestIdentity } from "../../platform/auth/request-identity/request-identity-context.js";
+import {
+  getVerifiedRequestIdentity,
+  getVerifiedRequestSessionAssurance,
+} from "../../platform/auth/request-identity/request-identity-context.js";
 import {
   consumeVerifiedChallenge,
   getStatus as getTwoFactorStatus,
-} from "../../platform/security/two-factor/services/two-factor.service.js";
+} from "../modules/security/two-factor/service.js";
 import { decryptAes256GcmToUtf8, encryptAes256Gcm } from "../../platform/security/crypto/symmetric.js";
 import {
   deleteProtectedDocument,
@@ -18,11 +21,19 @@ export const PROTECTED_PEOPLE_CONTRACT_VERSION = "bonni.protected-people/v1" as 
 const PRIVATE_PURPOSE = "MODULE_PRIVATE_DATA_ACCESS";
 const CIPHERTEXT_PREFIX = "people1";
 const MAX_GRANT_MINUTES = 10;
+const KONTOR_MANAGER_PRIVATE_PURPOSE = "KONTOR.MANAGER.PRIVATE_DATA";
+const KONTOR_MEMBER_PAYMENT_PURPOSE = "KONTOR.MEMBER.PRIVATE_PAYMENT";
+const SESSION_MFA_ACCESS_TOKEN = "bonni-session-mfa-v1";
 
 const moduleCapabilities = Object.freeze({
   "app.kontorapp": new Set(["ADDRESS", "BANK", "SEPA", "EMERGENCY", "DOCUMENTS"]),
   "app.stueberlapp": new Set(["ADDRESS"]),
 });
+
+type ProtectedPeopleRuntimeOptions = {
+  getTwoFactorStatus?: typeof getTwoFactorStatus;
+  consumeVerifiedChallenge?: typeof consumeVerifiedChallenge;
+};
 
 function fail(code: string, statusCode = 400): never {
   throw Object.assign(new Error(code), { code, statusCode });
@@ -58,6 +69,12 @@ function purpose(value: unknown) {
   const result = text(value, 120).toUpperCase();
   if (!/^[A-Z][A-Z0-9._:-]{2,119}$/.test(result)) fail("PROTECTED_PEOPLE_PURPOSE_INVALID");
   return result;
+}
+
+function canonicalAccessScope(normalizedPurpose: string) {
+  if (normalizedPurpose === KONTOR_MANAGER_PRIVATE_PURPOSE) return "ACCOUNTING_PAYMENT";
+  if (normalizedPurpose === KONTOR_MEMBER_PAYMENT_PURPOSE) return "SELF_PAYMENT";
+  fail("PROTECTED_PEOPLE_PURPOSE_SCOPE_UNSUPPORTED", 403);
 }
 
 function key(subjectId: string) {
@@ -153,17 +170,23 @@ export function createModuleProtectedPeopleRuntime(
   core: PrismaClient,
   people: PrismaClient,
   privacy: PrismaClient,
+  options: ProtectedPeopleRuntimeOptions = {},
 ) {
   const boundModuleKey = moduleKey(moduleKeyValue);
+  const readTwoFactorStatus = options.getTwoFactorStatus || getTwoFactorStatus;
+  const consumeChallenge = options.consumeVerifiedChallenge || consumeVerifiedChallenge;
 
   async function twoFactorProtectionState(accountId: string) {
-    const status = await getTwoFactorStatus(accountId);
+    const status = await readTwoFactorStatus(accountId);
     const available = status.enabled === true
-      && status.provider?.externallyManaged === true
-      && status.provider?.configured === true;
+      && status.available === true
+      && status.provider?.configured === true
+      && status.provider?.available !== false;
     return {
       available,
-      enrolled: status.privateDataProtectionEnrolled === true || available,
+      enrolled: status.privateDataProtectionEnrolled === true || status.enabled === true,
+      providerId: String(status.provider?.id || "").trim().toLowerCase(),
+      credentialRevision: Number(status.credentialRevision ?? -1),
     };
   }
 
@@ -219,6 +242,18 @@ export function createModuleProtectedPeopleRuntime(
     }
     const rawToken = text(input.token, 300);
     if (!rawToken) fail("PROTECTED_PEOPLE_2FA_GRANT_REQUIRED", 401);
+    if (rawToken === SESSION_MFA_ACCESS_TOKEN) {
+      const assurance = getVerifiedRequestSessionAssurance();
+      if (
+        boundModuleKey !== "app.kontorapp"
+        || assurance?.accountId !== current.accountId
+        || assurance.credentialRevision !== current.credentialRevision
+        || assurance.credentialRevision !== protection.credentialRevision
+        || !assurance.mfaVerifiedAt
+        || assurance.mfaProviderId !== protection.providerId
+      ) fail("PROTECTED_PEOPLE_SESSION_MFA_INVALID", 401);
+      return null;
+    }
     const grant = await privacy.protectedDataAccessGrant.findUnique({
       where: { tokenHash: tokenHash(rawToken) },
     });
@@ -228,6 +263,10 @@ export function createModuleProtectedPeopleRuntime(
       || grant.moduleKey !== boundModuleKey
       || grant.dataDomain !== "protected"
       || grant.purpose !== input.purpose
+      || grant.credentialRevision !== current.credentialRevision
+      || grant.credentialRevision !== protection.credentialRevision
+      || grant.providerId !== protection.providerId
+      || grant.accessScope !== canonicalAccessScope(input.purpose)
       || grant.revokedAt
       || grant.expiresAt <= new Date()
       || (grant.subjectId && grant.subjectId !== input.subjectId
@@ -247,14 +286,20 @@ export function createModuleProtectedPeopleRuntime(
     }) {
       const current = identity();
       const normalizedPurpose = purpose(input.purpose);
+      const accessScope = canonicalAccessScope(normalizedPurpose);
       const minutes = Math.min(Math.max(Number(input.minutes || MAX_GRANT_MINUTES), 1), MAX_GRANT_MINUTES);
-      await consumeVerifiedChallenge({
+      const consumed = await consumeChallenge({
         accountId: current.accountId,
         challengeId: text(input.challengeId),
         purpose: PRIVATE_PURPOSE,
         maxAgeMinutes: minutes,
-        metadata: { moduleKey: boundModuleKey },
+        moduleKey: boundModuleKey,
+        accessScope,
+        subjectId: input.subjectId || null,
       });
+      if (consumed.accessScope !== `${boundModuleKey}:${accessScope}`) {
+        fail("PROTECTED_PEOPLE_CHALLENGE_SCOPE_INVALID", 500);
+      }
       const rawToken = randomBytes(32).toString("base64url");
       const expiresAt = new Date(Date.now() + minutes * 60 * 1000);
       const grant = await privacy.protectedDataAccessGrant.create({
@@ -266,6 +311,9 @@ export function createModuleProtectedPeopleRuntime(
           purpose: normalizedPurpose,
           subjectId: text(input.subjectId) || null,
           challengeId: text(input.challengeId),
+          credentialRevision: consumed.credentialRevision,
+          providerId: consumed.providerId,
+          accessScope,
           expiresAt,
         },
       });

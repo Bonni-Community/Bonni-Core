@@ -13,6 +13,8 @@ import type {
 } from "../../module-manager/types.js";
 import { provisionAccountArchive } from "../../../system/routes/explorer/archive-account.service.js";
 import { hashPassword } from "../authentication/password-hash.helper.js";
+import { validateExactLocalPassword } from "../../../core/modules/identity/local-password-policy.js";
+import { advanceTwoFactorAfterPasswordChange } from "../../../core/modules/security/two-factor/password-change.js";
 import { createAccountId, createMemberId } from "../../security/crypto/id.js";
 import { describeTerminalAccountIdentity } from "../terminal-accounts/index.js";
 import { publishUsersNetworkRecords } from "../users/users-network-data-adapter.js";
@@ -391,6 +393,7 @@ function safeMemberDto(
   const accounts = personalAccounts(member).filter((account: any) => (
     !accountIsTechnical(account)
   ));
+  const passwordRecoveryLocked = accounts.some((account: any) => Boolean(account.passwordRecoveryLockedAt));
 
   return Object.freeze({
     id: member.id,
@@ -404,6 +407,11 @@ function safeMemberDto(
     notes: member.notes ?? null,
     createdAt: dateIso(member.createdAt),
     updatedAt: dateIso(member.updatedAt),
+    passwordRecovery: Object.freeze({
+      locked: passwordRecoveryLocked,
+      state: passwordRecoveryLocked ? "PASSWORD_RECOVERY_LOCKED" : "READY",
+      settlementOnly: passwordRecoveryLocked,
+    }),
     person: Object.freeze({
       id: member.personId,
       displayName: member.person?.displayName ?? null,
@@ -422,6 +430,8 @@ function safeMemberDto(
       type: account.type,
       isActive: Boolean(account.isActive),
       isSandbox: Boolean(account.isSandbox),
+      securityState: account.passwordRecoveryLockedAt ? "PASSWORD_RECOVERY_LOCKED" : "READY",
+      settlementOnly: Boolean(account.passwordRecoveryLockedAt),
       lastLoginAt: dateIso(account.lastLoginAt),
       accessProfiles: Object.freeze(roleKeys(account)
         .map((roleKey) => declaredRoles.get(roleKey))
@@ -1084,7 +1094,8 @@ export function createModuleMembersRuntime(
   async function resetLocalPassword(memberIdValue: unknown, passwordValue: unknown) {
     const memberId = cleanText(memberIdValue, 160);
     if (!memberId) fail("CORE_MEMBERS_MEMBER_ID_REQUIRED");
-    if (typeof passwordValue !== "string" || passwordValue.length < 12 || passwordValue.length > 512) {
+    const passwordValidation = validateExactLocalPassword(passwordValue);
+    if (!passwordValidation.ok || passwordValidation.characters < 12) {
       fail("CORE_MEMBERS_PASSWORD_INVALID");
     }
     const member = await prisma.memberProfile.findUnique({
@@ -1117,10 +1128,38 @@ export function createModuleMembersRuntime(
     if (accounts.length !== 1) {
       fail("CORE_MEMBERS_LOCAL_ACCOUNT_AMBIGUOUS", 409);
     }
-    const passwordHash = await passwordHasher(passwordValue);
-    await prisma.account.update({
-      where: { id: accounts[0].id },
-      data: { passwordHash },
+    if (accounts[0].passwordRecoveryLockedAt) {
+      fail("PASSWORD_RECOVERY_LOCKED", 423);
+    }
+    const passwordHash = await passwordHasher(passwordValidation.password);
+    await prisma.$transaction(async (transaction) => {
+      const updated = await transaction.account.updateMany({
+        where: {
+          id: accounts[0].id,
+          credentialRevision: accounts[0].credentialRevision,
+          passwordRecoveryLockedAt: null,
+        },
+        data: {
+          passwordHash,
+          credentialRevision: { increment: 1 },
+        },
+      });
+      if (updated.count !== 1) fail("CORE_MEMBERS_ACCOUNT_CHANGED", 409);
+      await advanceTwoFactorAfterPasswordChange(transaction, {
+        accountId: accounts[0].id,
+        previousRevision: accounts[0].credentialRevision,
+        nextRevision: accounts[0].credentialRevision + 1,
+        twoFactorProviderId: accounts[0].twoFactorProviderId,
+      });
+      const now = new Date();
+      await transaction.session.updateMany({
+        where: { accountId: accounts[0].id, endedAt: null },
+        data: { endedAt: now },
+      });
+      await transaction.refreshToken.updateMany({
+        where: { accountId: accounts[0].id, revokedAt: null },
+        data: { revokedAt: now },
+      });
     });
     return Object.freeze({
       memberId,

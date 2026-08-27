@@ -1,0 +1,109 @@
+// =====================================================
+// BONNI CORE / native account recovery
+// Password recovery is owned by Core Security + Identity. It is deliberately
+// separate from 2FA enrollment/reset and from Account.isActive.
+// =====================================================
+
+enum SecurityAccountRecoveryStatus {
+  PENDING
+  LOCKED
+  APPROVED
+  CONSUMED
+  EXPIRED
+  CANCELLED
+}
+
+enum SecurityAccountRecoveryDecisionValue {
+  APPROVE
+  REJECT
+}
+
+model SecurityAccountRecoveryRequest {
+  id                       String                        @id @default(cuid())
+  reference                String                        @unique
+  accountId                String
+  account                  Account                       @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  status                   SecurityAccountRecoveryStatus @default(PENDING)
+  activeSlot               String?                       @unique
+  requestRevision          Int                           @default(0)
+  targetCredentialRevision Int
+  lockedCredentialRevision Int?
+  thresholdSnapshot        Int
+  policyRevisionSnapshot   Int
+  reviewerAccountIdsSnapshot Json
+  initiatedByAccountId     String?
+  browserTokenHash         String?                       @unique
+  browserTokenExpiresAt    DateTime?
+  supportCodeHash          String?                       @unique
+  supportCodeExpiresAt     DateTime?
+  supportCodeIssuedAt      DateTime?
+  supportCodeUsedAt        DateTime?
+  lockedAt                 DateTime?
+  approvedAt               DateTime?
+  consumedAt               DateTime?
+  cancelledAt              DateTime?
+  expiresAt                DateTime
+  createdAt                DateTime                      @default(now())
+  updatedAt                DateTime                      @updatedAt
+
+  decisions SecurityAccountRecoveryDecision[]
+  audits    SecurityAccountRecoveryAuditLog[]
+
+  @@index([accountId, status])
+  @@index([status, expiresAt])
+  @@index([initiatedByAccountId, createdAt])
+}
+
+model SecurityAccountRecoveryDecision {
+  id                         String                               @id @default(cuid())
+  requestId                  String
+  request                    SecurityAccountRecoveryRequest       @relation(fields: [requestId], references: [id], onDelete: Cascade)
+  approverAccountId          String
+  decision                   SecurityAccountRecoveryDecisionValue
+  approverCredentialRevision Int
+  providerId                 String
+  challengeId                String                               @unique
+  decidedAt                  DateTime                             @default(now())
+
+  @@unique([requestId, approverAccountId])
+  @@index([requestId, decision])
+  @@index([approverAccountId, decidedAt])
+}
+
+model SecurityAccountRecoveryPolicy {
+  id                 String   @id @default("default")
+  reviewerAccountIds Json
+  threshold          Int      @default(3)
+  policyRevision     Int      @default(0)
+  updatedByAccountId String?
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+}
+
+model SecurityAccountRecoveryRateLimit {
+  bucketKey       String   @id
+  attempts        Int      @default(0)
+  windowStartedAt DateTime
+  updatedAt       DateTime @updatedAt
+
+  @@index([windowStartedAt])
+}
+
+model SecurityAccountRecoveryAuditLog {
+  id             String                         @id @default(cuid())
+  requestId      String?
+  request        SecurityAccountRecoveryRequest? @relation(fields: [requestId], references: [id], onDelete: SetNull)
+  targetAccountId String?
+  actorAccountId  String?
+  event           String
+  result          String
+  ipAddress       String?
+  userAgent       String?
+  metadataJson    Json?
+  createdAt       DateTime                       @default(now())
+
+  @@index([requestId, createdAt])
+  @@index([targetAccountId, createdAt])
+  @@index([actorAccountId, createdAt])
+  @@index([event, createdAt])
+}

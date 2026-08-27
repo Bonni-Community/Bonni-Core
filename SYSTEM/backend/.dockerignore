@@ -11,3 +11,7 @@ storage
 logs
 archives/logs
 *.zip
+SIGNATUR
+SIGNATUR/**
+**/SIGNATUR
+**/SIGNATUR/**

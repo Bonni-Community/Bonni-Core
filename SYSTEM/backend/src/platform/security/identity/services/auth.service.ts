@@ -1,11 +1,11 @@
-import bcrypt from "bcryptjs";
 import { AccountType } from "@prisma/client";
 import { prisma } from "../../../../core/database/database.js";
+import { verifyExactLocalPassword } from "../../../../core/modules/identity/local-password-policy.js";
 import { permissionsService } from "../../../permissions/permissions.service.js";
 import { createRefreshToken, hashToken, signAccessToken, verifyAccessToken } from "./token.service.js";
 import type { LoginInput, LoginTwoFactorInput, LogoutInput, RefreshInput } from "../schemas/auth.schemas.js";
 import { assertPersonalDataLoginAllowed } from "../../crypto/index.js";
-import * as twoFactorService from "../../two-factor/services/two-factor.service.js";
+import * as twoFactorService from "../../../../core/modules/security/two-factor/service.js";
 
 type RequestMeta = {
   ip?: string;
@@ -67,7 +67,7 @@ export async function login(input: LoginInput, req: RequestMeta) {
     throw Object.assign(new Error("INVALID_CREDENTIALS"), { statusCode: 401 });
   }
 
-  const passwordOk = await bcrypt.compare(input.password, account.passwordHash);
+  const passwordOk = await verifyExactLocalPassword(input.password, account.passwordHash);
 
   if (!passwordOk) {
     await prisma.authFailureLog.create({
@@ -82,6 +82,23 @@ export async function login(input: LoginInput, req: RequestMeta) {
     }).catch(() => undefined);
 
     throw Object.assign(new Error("INVALID_CREDENTIALS"), { statusCode: 401 });
+  }
+
+  if (account.passwordRecoveryLockedAt) {
+    throw Object.assign(new Error("PASSWORD_RECOVERY_LOCKED"), { code: "PASSWORD_RECOVERY_LOCKED", statusCode: 423 });
+  }
+
+  if (await twoFactorService.hasActiveTwoFactor(account.id)) {
+    const challenge = await twoFactorService.createChallenge(
+      account.id,
+      { purpose: "LOGIN" },
+      { ip: meta.ipAddress, userAgent: meta.userAgent },
+    );
+    return {
+      requiresTwoFactor: true,
+      challenge,
+      message: `Bitte die Zwei-Faktor-Authentifizierung (2FA) über ${challenge.providerLabel || "Bonni"} abschließen.`,
+    };
   }
 
   const roles = account.roles.map((entry) => entry.role.key);
@@ -104,7 +121,8 @@ export async function login(input: LoginInput, req: RequestMeta) {
   const accessToken = signAccessToken({
     accountId: account.id,
     loginName: account.loginName,
-    type: account.type
+    type: account.type,
+    credentialRevision: account.credentialRevision,
   });
 
   const refreshToken = createRefreshToken();
@@ -113,24 +131,39 @@ export async function login(input: LoginInput, req: RequestMeta) {
   const expiresAt = new Date();
   expiresAt.setDate(expiresAt.getDate() + 30);
 
-  await prisma.session.create({
-    data: {
-      accountId: account.id,
-      tokenHash: hashToken(accessToken),
-      ipAddress: meta.ipAddress,
-      userAgent: meta.userAgent,
-      terminalId: input.terminalId
+  await prisma.$transaction(async (transaction) => {
+    const unchanged = await transaction.account.updateMany({
+      where: {
+        id: account.id,
+        isActive: true,
+        credentialRevision: account.credentialRevision,
+        passwordRecoveryLockedAt: null,
+      },
+      data: { lastLoginAt: new Date() },
+    });
+    if (unchanged.count !== 1) {
+      throw Object.assign(new Error("TWO_FACTOR_CREDENTIAL_REVISION_MISMATCH"), { statusCode: 409 });
     }
-  });
-
-  await prisma.refreshToken.create({
-    data: {
-      accountId: account.id,
-      tokenHash: refreshTokenHash,
-      ipAddress: meta.ipAddress,
-      userAgent: meta.userAgent,
-      expiresAt
-    }
+    await transaction.session.create({
+      data: {
+        accountId: account.id,
+        tokenHash: hashToken(accessToken),
+        ipAddress: meta.ipAddress,
+        userAgent: meta.userAgent,
+        terminalId: input.terminalId,
+        credentialRevision: account.credentialRevision,
+      },
+    });
+    await transaction.refreshToken.create({
+      data: {
+        accountId: account.id,
+        tokenHash: refreshTokenHash,
+        ipAddress: meta.ipAddress,
+        userAgent: meta.userAgent,
+        expiresAt,
+        credentialRevision: account.credentialRevision,
+      },
+    });
   });
 
   await prisma.auditLog.create({
@@ -145,11 +178,6 @@ export async function login(input: LoginInput, req: RequestMeta) {
       severity: "INFO"
     }
   }).catch(() => undefined);
-
-  await prisma.account.update({
-    where: { id: account.id },
-    data: { lastLoginAt: new Date() }
-  });
 
   return {
     accessToken,
@@ -170,12 +198,27 @@ export async function login(input: LoginInput, req: RequestMeta) {
 
 export async function loginWithTwoFactor(input: LoginTwoFactorInput, req: RequestMeta) {
   const meta = getRequestMeta(req);
+  const pending = await prisma.securityTwoFactorChallenge.findUnique({
+    where: { id: input.challengeId },
+    select: { accountId: true, purpose: true },
+  });
+  const pendingAccount = pending?.purpose === "LOGIN"
+    ? await prisma.account.findUnique({ where: { id: pending.accountId }, select: { passwordRecoveryLockedAt: true } })
+    : null;
+  if (pendingAccount?.passwordRecoveryLockedAt) {
+    throw Object.assign(new Error("PASSWORD_RECOVERY_LOCKED"), { code: "PASSWORD_RECOVERY_LOCKED", statusCode: 423 });
+  }
   const verified = await twoFactorService.verifyLoginChallenge(
     input.challengeId,
-    { code: input.code, recoveryCode: input.recoveryCode },
+    {
+      code: input.code,
+      recoveryCode: input.recoveryCode,
+      token: input.token,
+      password: input.password,
+    },
     { ip: meta.ipAddress, userAgent: meta.userAgent },
   );
-  await twoFactorService.consumeVerifiedChallenge({
+  const consumed = await twoFactorService.consumeVerifiedChallenge({
     accountId: verified.accountId,
     challengeId: input.challengeId,
     purpose: "LOGIN",
@@ -188,7 +231,13 @@ export async function loginWithTwoFactor(input: LoginTwoFactorInput, req: Reques
       person: { include: { member: true } },
     },
   });
-  if (!account || !account.isActive || account.type === AccountType.SERVICE) {
+  if (
+    !account
+    || !account.isActive
+    || Boolean(account.passwordRecoveryLockedAt)
+    || account.type === AccountType.SERVICE
+    || account.credentialRevision !== consumed.credentialRevision
+  ) {
     throw Object.assign(new Error("INVALID_CREDENTIALS"), { statusCode: 401 });
   }
 
@@ -210,32 +259,46 @@ export async function loginWithTwoFactor(input: LoginTwoFactorInput, req: Reques
     accountId: account.id,
     loginName: account.loginName,
     type: account.type,
+    credentialRevision: consumed.credentialRevision,
   });
   const refreshToken = createRefreshToken();
   const expiresAt = new Date();
   expiresAt.setDate(expiresAt.getDate() + 30);
 
-  await prisma.$transaction([
-    prisma.session.create({
+  await prisma.$transaction(async (transaction) => {
+    const unchanged = await transaction.account.updateMany({
+      where: {
+        id: account.id,
+        isActive: true,
+        credentialRevision: consumed.credentialRevision,
+        passwordRecoveryLockedAt: null,
+      },
+      data: { lastLoginAt: new Date() },
+    });
+    if (unchanged.count !== 1) {
+      throw Object.assign(new Error("TWO_FACTOR_CREDENTIAL_REVISION_MISMATCH"), { statusCode: 409 });
+    }
+    await transaction.session.create({
       data: {
         accountId: account.id,
         tokenHash: hashToken(accessToken),
         ipAddress: meta.ipAddress,
         userAgent: meta.userAgent,
         terminalId: input.terminalId,
+        credentialRevision: consumed.credentialRevision,
       },
-    }),
-    prisma.refreshToken.create({
+    });
+    await transaction.refreshToken.create({
       data: {
         accountId: account.id,
         tokenHash: hashToken(refreshToken),
         ipAddress: meta.ipAddress,
         userAgent: meta.userAgent,
         expiresAt,
+        credentialRevision: consumed.credentialRevision,
       },
-    }),
-    prisma.account.update({ where: { id: account.id }, data: { lastLoginAt: new Date() } }),
-  ]);
+    });
+  });
   await prisma.auditLog.create({
     data: {
       category: "AUTH",
@@ -295,7 +358,10 @@ export async function refresh(input: RefreshInput, req: RequestMeta) {
     || storedToken.revokedAt
     || storedToken.expiresAt < new Date()
     || !storedToken.account.isActive
+    || Boolean(storedToken.account.passwordRecoveryLockedAt)
     || storedToken.account.type === AccountType.SERVICE
+    || storedToken.credentialRevision < 0
+    || storedToken.credentialRevision !== storedToken.account.credentialRevision
   ) {
     await prisma.tokenProblemLog.create({
       data: {
@@ -323,7 +389,8 @@ export async function refresh(input: RefreshInput, req: RequestMeta) {
   const accessToken = signAccessToken({
     accountId: storedToken.account.id,
     loginName: storedToken.account.loginName,
-    type: storedToken.account.type
+    type: storedToken.account.type,
+    credentialRevision: storedToken.account.credentialRevision,
   });
 
   return { accessToken };

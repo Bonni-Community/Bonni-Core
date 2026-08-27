@@ -1,6 +1,10 @@
 import { AccountType, AuthProviderType } from "@prisma/client";
 
 import { getPrismaClient } from "../../../core/database/database.js";
+import {
+  technicalAccountSecurityCleanupRequired,
+  transitionAccountSecurity,
+} from "../../../core/modules/security/two-factor/account-security-transition.js";
 
 export type EnsureServiceAccountInput = {
   key: string;
@@ -109,34 +113,48 @@ export async function ensureOwnedServiceAccount(
       },
     });
 
-    const account = existing
-      ? await transaction.account.update({
+    const accountData = {
+      loginName,
+      authProviderId: provider.id,
+      externalSubject: subject,
+      email: null,
+      personId: null,
+      isSandbox: false,
+    };
+    let account;
+    if (existing) {
+      const eligibilityChanged = existing.isActive !== enabled;
+      const securityCleanupRequired = await technicalAccountSecurityCleanupRequired(transaction, existing.id);
+      if (eligibilityChanged || securityCleanupRequired) {
+        await transitionAccountSecurity(transaction, {
+          accountId: existing.id,
+          previousRevision: existing.credentialRevision,
+          previousType: existing.type,
+          previousIsActive: existing.isActive,
+          nextType: AccountType.SERVICE,
+          nextIsActive: enabled,
+          twoFactorProviderId: existing.twoFactorProviderId,
+          force: !eligibilityChanged,
+          accountData,
+        });
+        account = await transaction.account.findUnique({ where: { id: existing.id } });
+        if (!account) throw new Error("SERVICE_ACCOUNT_SECURITY_TRANSITION_CONFLICT");
+      } else {
+        account = await transaction.account.update({
           where: { id: existing.id },
+          data: accountData,
+        });
+      }
+    } else {
+      account = await transaction.account.create({
           data: {
             type: AccountType.SERVICE,
-            loginName,
-            authProviderId: provider.id,
-            externalSubject: subject,
+            ...accountData,
             passwordHash: null,
-            email: null,
-            personId: null,
             isActive: enabled,
-            isSandbox: false,
-          },
-        })
-      : await transaction.account.create({
-          data: {
-            type: AccountType.SERVICE,
-            loginName,
-            authProviderId: provider.id,
-            externalSubject: subject,
-            passwordHash: null,
-            email: null,
-            personId: null,
-            isActive: enabled,
-            isSandbox: false,
           },
         });
+    }
 
     const role = await transaction.role.upsert({
       where: { key: managedRoleKey },

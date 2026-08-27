@@ -8,15 +8,15 @@ const backendRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "
 const systemRoot = path.resolve(backendRoot, "..");
 const appRoot = path.join(systemRoot, "app", "kontorapp");
 
-test("KontorApp 0.19.2 is a Core 0.1.19-owned non-standalone package", async () => {
+test("KontorApp 0.19.3 is a Core 0.1.19-owned non-standalone package", async () => {
   const pkg = JSON.parse(await fs.readFile(path.join(appRoot, "package.json"), "utf8"));
   const manifest = await fs.readFile(path.join(appRoot, "manifest.ts"), "utf8");
   const hasSource = (await fs.lstat(path.join(appRoot, "backend", "src")).catch(() => null))?.isDirectory() === true
     || (await fs.lstat(path.join(appRoot, "frontend", "src")).catch(() => null))?.isDirectory() === true;
-  assert.equal(pkg.version, "0.19.2");
+  assert.equal(pkg.version, "0.19.3");
   assert.equal(pkg.bonniCoreModule, true);
   if (hasSource) assert.equal(pkg.engines.node, ">=22");
-  assert.match(manifest, /version: "0\.19\.2"/u);
+  assert.match(manifest, /version: "0\.19\.3"/u);
   assert.match(manifest, /minimumCoreVersion: "0\.1\.19"/u);
   assert.match(manifest, /standalone: false/u);
   assert.match(manifest, /buildOwner: "core"/u);

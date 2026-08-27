@@ -11,8 +11,10 @@ Die gemeinsame IPC-Fläche (`BONNI_UPDATE_RUNNER_STATE_ROOT`) enthält nur:
 ```text
 system/update-runner/
 ├── requests/<requestId>.json
+├── requests/lifecycle/<commandId>.json
 ├── progress/<requestId>.json
 ├── results/<requestId>.json
+├── deployment-lifecycle.json
 └── heartbeat.json
 ```
 
@@ -56,16 +58,18 @@ werden.
 5. `db-candidate`, Candidate-Kopie und Candidate-Storage isoliert starten, die
    Zielmigration dort ausführen und den Candidate dreimal auf `ready`,
    Datenbank, Rolle und Zielversion prüfen.
-6. Proxy, Active, Emergency und alle produktiven Hilfsdienste stoppen. Der
+6. Falls erforderlich, ausschließlich die signierte, rückwärtskompatible
+   `expand-contract`-Migration online ausführen und den alten Active danach
+   erneut prüfen. `offline` und Contract/Löschphasen bleiben gesperrt.
+7. Proxy, Active, Emergency und alle produktiven Hilfsdienste stoppen. Der
    private Transaktions-Fence hält den Schreibstopp auch nach einem Absturz.
-7. Einen konsistenten Cutover-Snapshot aus PostgreSQL, `storage` und
+8. Einen konsistenten Cutover-Snapshot aus PostgreSQL, `storage` und
    `run_system` erstellen und vor jeder Produktionsmutation prüfen.
-8. Updates mit Datenbankmigration weiterhin fail-closed ablehnen, bis eine
-   echte versionierte, rückwärtskompatible Prisma-Migrationskette freigegeben
-   ist. Der kontrollierte Produktions-Migrator ist bereits vorbereitet.
-9. Kanonischen Active ersetzen, direkt prüfen und die Commit-Entscheidung
+9. Kanonischen Active ersetzen, direkt prüfen, den privaten 14-Tage-Hold
+   schreiben und erst danach die Commit-Entscheidung
    dauerhaft in Fence und privatem Journal sichern.
-10. Erst nach dieser Entscheidung Emergency und Proxy wieder freigeben; danach
+10. Erst nach dieser Entscheidung das unveränderte Emergency und den Proxy
+    wieder freigeben; danach
     Candidate-Container und nur eindeutig gelabelte, projektgescopte
     Candidate-Volumes entfernen.
 
@@ -79,11 +83,19 @@ Load setzt der Runner den kanonischen Active-Tag wieder auf den Rollback-Pin.
 Erst das vollständig erfolgreiche Candidate-Gate darf ihn auf das neue Image
 setzen.
 
-Der Rollback-Pin wird nach erfolgreichem Abschluss bewusst nicht gelöscht. Er
-bleibt als Rückkehrpunkt bis zum Beginn des nächsten Updates erhalten; dort
-wird derselbe projektgescopte Tag erst nach Prüfung des laufenden Active auf
-dessen aktuelle Image-ID weitergesetzt. Dadurch gibt es keine gefährliche,
-unkontrollierte Image-Löschung und mehrere Bonni-Instanzen kollidieren nicht.
+Der Rollback-Pin bleibt nach erfolgreichem Cutover exakt 14 Tage geschützt.
+Während dieses Holds blockiert der Runner jede weitere Update-Anfrage. Ein
+Administrator darf den Hold über einen HMAC-signierten Lifecycle-Befehl früher
+abschließen; abgelaufene Holds werden automatisch abgeschlossen. Erst nach
+erneuter Active-Health- und Image-ID-Prüfung setzt der Runner Emergency und den
+Rollback-Pin auf das Zielimage, löscht den exakten request-eigenen Snapshot und
+gibt Folgeupdates frei. `finalizing` ist ein crash-sicherer, idempotent
+fortsetzbarer Zustand. Es gibt keine unkontrollierte Image-Löschung.
+
+Dieser Vertrag ist ausdrücklich kein physisches A/B und kein Dual-Writer-Modell.
+Der Candidate bleibt isoliert; produktiv existiert genau ein Active. Der
+öffentliche Status bezeichnet den Modus deshalb als
+`single-active-fail-closed-hold`.
 
 Bei einem Fehler vor der dauerhaft gespeicherten Commit-Entscheidung werden die
 vorherige Image-ID sowie PostgreSQL, `storage` und `run_system` gemeinsam aus

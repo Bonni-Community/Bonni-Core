@@ -2,6 +2,7 @@ import {
   CONTROL_CENTER_MAIN_AREAS,
   CONTROL_CENTER_SECONDARY_AREAS,
 } from "./controlCenterNavigation.js";
+import { formatBonniCoreVersion } from "../update/localUpdatePresentation.js";
 
 function toNumber(value, fallback = 0) {
   if (typeof value === "number" && Number.isFinite(value)) return value;
@@ -168,7 +169,7 @@ function buildStatusCards(overview) {
       detail: `Uptime: ${formatUptime(backend.uptimeSeconds)}`,
       state: backend.online === false ? "critical" : "ok",
       status: backend.online === false ? "Fehler" : "OK",
-      footer: backend.version ? `Version ${backend.version}` : backend.node,
+      footer: backend.version ? `Version ${formatBonniCoreVersion(backend.version)}` : backend.node,
     },
   ];
 }

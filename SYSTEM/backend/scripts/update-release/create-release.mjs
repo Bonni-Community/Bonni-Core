@@ -7,6 +7,7 @@ import path from "node:path";
 
 import {
   assertReleaseArchiveTags,
+  bonniReleaseImageTag,
   signReleaseManifest,
   verifyReleaseManifest,
 } from "../../dist/system/update-release/index.js";
@@ -15,7 +16,7 @@ import { inspectDockerArchiveTags } from "../../src/system/update-runner/archive
 const ALLOWED_ARGUMENTS = new Set([
   "--archive", "--image", "--version", "--private-key", "--key-id", "--output-dir",
   "--title", "--description-de", "--description-en", "--migration", "--schema-from",
-  "--schema-to", "--expires-days",
+  "--schema-to", "--expires-days", "--artifact-url",
 ]);
 
 function argumentsMap() {
@@ -73,6 +74,7 @@ const imageMatch = /^([a-z0-9][a-z0-9._:/-]+)@(sha256:[a-f0-9]{64})$/.exec(image
 if (!imageMatch) throw new Error("--image muss repository@sha256:<Digest> sein.");
 const [, repository, digest] = imageMatch;
 const version = required(args, "--version");
+const imageTag = bonniReleaseImageTag(version);
 const privateKeyFile = path.resolve(required(args, "--private-key"));
 const keyId = args.get("--key-id") || "bonni-core-release";
 const outputDirectory = path.resolve(args.get("--output-dir") || path.join("releases", version));
@@ -81,15 +83,17 @@ if (!["none", "expand-contract", "offline"].includes(migrationStrategy)) throw n
 const migrationRequired = migrationStrategy !== "none";
 const schemaFrom = args.get("--schema-from") || version;
 const schemaTo = args.get("--schema-to") || schemaFrom;
-const expiryDays = Number(args.get("--expires-days") || 30);
+const expiryDays = Number(args.get("--expires-days") || 90);
 if (!Number.isInteger(expiryDays) || expiryDays < 1 || expiryDays > 90) throw new Error("--expires-days muss zwischen 1 und 90 liegen.");
 
 const archiveStat = await fs.stat(archive);
 if (!archiveStat.isFile() || archiveStat.size <= 0) throw new Error("Das OCI-Archiv fehlt oder ist leer.");
 
-const archiveTags = await inspectDockerArchiveTags(archive, { tarBinary: "/bin/tar" });
+const archiveTags = await inspectDockerArchiveTags(archive, {
+  tarBinary: process.platform === "win32" ? "tar.exe" : "tar",
+});
 assertReleaseArchiveTags(
-  { repository, version },
+  { repository, version, imageTag },
   archiveTags,
   {
     forbiddenTags: [
@@ -102,11 +106,13 @@ assertReleaseArchiveTags(
 );
 
 await run("docker", ["image", "load", "--input", archive]);
-const versionTag = `${repository}:${version}`;
+const versionTag = `${repository}:${imageTag}`;
 const inspection = await run("docker", ["image", "inspect", "--format", "{{json .}}", versionTag], 60_000);
 const imageData = JSON.parse(inspection.stdout);
 if (!Array.isArray(imageData.RepoDigests)
-  || (imageData.RepoDigests.length > 0 && !imageData.RepoDigests.includes(image))) {
+  || (imageData.RepoDigests.length > 0
+    ? !imageData.RepoDigests.includes(image)
+    : imageData.Id !== digest)) {
   throw new Error("Das Archiv enthält nicht die angegebene, per Digest adressierte Image-Identität.");
 }
 if (imageData.Os !== "linux" || !["amd64", "arm64"].includes(imageData.Architecture)) {
@@ -114,7 +120,7 @@ if (imageData.Os !== "linux" || !["amd64", "arm64"].includes(imageData.Architect
 }
 
 await fs.mkdir(outputDirectory, { recursive: true, mode: 0o700 });
-const artifactName = `bonni-core-${version}.oci`;
+const artifactName = `bonni-core-${imageTag}.oci`;
 const outputArchive = path.join(outputDirectory, artifactName);
 if (path.resolve(archive) !== path.resolve(outputArchive)) await fs.copyFile(archive, outputArchive);
 const outputStat = await fs.stat(outputArchive);
@@ -131,7 +137,9 @@ const payload = {
     type: "oci-image-archive",
     sizeBytes: outputStat.size,
     sha256: await sha256(outputArchive),
-    source: { kind: "local", path: artifactName },
+    source: args.has("--artifact-url")
+      ? { kind: "https", url: required(args, "--artifact-url") }
+      : { kind: "local", path: artifactName },
     imageIdentity: {
       repository,
       digest,
@@ -151,7 +159,7 @@ const payload = {
   },
   issuedAt: canonicalUtc(issuedAt),
   expiresAt: canonicalUtc(expiresAt),
-  minimumRunnerVersion: "0.2.1",
+  minimumRunnerVersion: "0.3.0",
   releaseNotes: {
     title: args.get("--title") || `Bonni Core ${version}`,
     descriptions: {
@@ -167,7 +175,7 @@ verifyReleaseManifest(signed, {
   trustedKeys: { [keyId]: publicKey },
   expectedProduct: "bonni-core",
   expectedChannel: "stable",
-  runnerVersion: "0.2.1",
+  runnerVersion: "0.3.0",
   nodeEnv: "production",
 });
 

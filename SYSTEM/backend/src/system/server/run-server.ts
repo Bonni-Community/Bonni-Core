@@ -10,9 +10,18 @@ import {
 import { logger } from "../../core/logger/logger.js";
 import { getSystemRuntimeConfig } from "../runtime/index.js";
 import { preloadPersonalDataMasterKeyIfConfigured } from "../../platform/security/crypto/index.js";
-import { scheduleEmergencyAutoStart } from "../../platform/security/control/emergency-backend/index.js";
+import {
+  scheduleEmergencyAutoStart,
+  stopEmergencyBackend,
+} from "../../platform/security/control/emergency-backend/index.js";
 import { startCoreUpdateScheduler } from "../routes/control-api/update-center/index.js";
 import { seedSystemDatabase } from "../database/seed-system.js";
+import {
+  beginBoundedServerDrain,
+  completeLocalSupervisorShutdown,
+  isLocalUpdateSupervisorProcess,
+  sendIpcMessageAndWait,
+} from "./local-supervisor-shutdown.js";
 
 function errorDetails(error: unknown) {
   if (error instanceof Error) {
@@ -29,15 +38,39 @@ function errorDetails(error: unknown) {
 const runtime = getSystemRuntimeConfig();
 const servers: Server[] = [];
 let shuttingDown = false;
-
-await initializeDatabaseRouting();
+const localUpdateSupervisorChild = isLocalUpdateSupervisorProcess({
+  nodeEnv: env.NODE_ENV,
+  slotRole: runtime.slotRole,
+  supervisorFlag: process.env.BONNI_LOCAL_UPDATE_SUPERVISOR,
+  connected: Boolean(process.connected),
+});
 
 function registerServer(server: Server) {
   servers.push(server);
   return server;
 }
 
-async function shutdown(signal: NodeJS.Signals) {
+type ShutdownTrigger = NodeJS.Signals | "SUPERVISOR_UPDATE" | "SUPERVISOR_DISCONNECT";
+
+function requiresLocalProcessTreeShutdown(signal: ShutdownTrigger) {
+  return localUpdateSupervisorChild
+    && (signal === "SUPERVISOR_UPDATE" || signal === "SUPERVISOR_DISCONNECT");
+}
+
+async function sendSupervisorShutdownMessage(
+  type: "BONNI_BACKEND_SHUTDOWN_ACCEPTED" | "BONNI_BACKEND_SHUTDOWN_COMPLETE",
+  requestId?: string,
+) {
+  if (!process.connected || typeof process.send !== "function") {
+    throw new Error(`SUPERVISOR_IPC_UNAVAILABLE:${type}`);
+  }
+  await sendIpcMessageAndWait(
+    (message, callback) => process.send!(message, callback),
+    { type, requestId },
+  );
+}
+
+async function shutdown(signal: ShutdownTrigger, requestId?: string) {
   if (shuttingDown) {
     return;
   }
@@ -59,32 +92,104 @@ async function shutdown(signal: NodeJS.Signals) {
     ...metadata,
   });
 
-  await Promise.allSettled(
-    servers.map(
-      (server) =>
-        new Promise<void>((resolve) => {
-          server.close(() => resolve());
-        }),
-    ),
-  );
-
-  await disconnectPrismaClients();
+  let serverDrain;
+  if (requiresLocalProcessTreeShutdown(signal)) {
+    const completed = await completeLocalSupervisorShutdown({
+      servers,
+      stopEmergency: () => stopEmergencyBackend(
+        signal === "SUPERVISOR_UPDATE"
+          ? "local-source-update"
+          : "local-source-supervisor-disconnected",
+      ),
+      verifyEmergency: (result) => {
+        const emergency = result as Awaited<ReturnType<typeof stopEmergencyBackend>>;
+        if (emergency.health?.reachable !== false) {
+          throw new Error("LOCAL_EMERGENCY_BACKEND_STOP_NOT_VERIFIED");
+        }
+      },
+      disconnectPrisma: disconnectPrismaClients,
+    });
+    serverDrain = completed.serverDrain;
+    const emergency = completed.emergencyResult as Awaited<ReturnType<typeof stopEmergencyBackend>>;
+    logger.info("Lokal verwaltetes Emergency-Backend vor Core-Stopp beendet", {
+      module: "emergency-control",
+      signal,
+      stopped: emergency.stopped,
+      reason: emergency.reason,
+    });
+  } else {
+    serverDrain = await beginBoundedServerDrain(servers);
+    await disconnectPrismaClients();
+  }
 
   logger.info("Backend graceful shutdown completed", {
     module: "server",
     runtime: metadata.runtime,
+    serverDrain,
   });
+
+  if (signal === "SUPERVISOR_UPDATE") {
+    // ACK und COMPLETE werden erst nach Listener-Drain, nachgewiesenem Ende
+    // des Emergency-Prozessbaums und Prisma-Disconnect bestätigt versendet.
+    // Der send-Callback ist die letzte Barriere vor process.exit(), damit die
+    // Supervisor-Nachricht nicht im IPC-Puffer verloren geht.
+    await sendSupervisorShutdownMessage("BONNI_BACKEND_SHUTDOWN_ACCEPTED", requestId);
+    await sendSupervisorShutdownMessage("BONNI_BACKEND_SHUTDOWN_COMPLETE", requestId);
+  }
 
   process.exit(0);
 }
 
+function requestShutdown(signal: ShutdownTrigger, requestId?: string) {
+  void shutdown(signal, requestId).catch((error) => {
+    logger.error("Backend graceful shutdown failed; process remains fail-closed", {
+      module: "server",
+      signal,
+      requestId,
+      error: errorDetails(error),
+    });
+    // Insbesondere bei einem fehlgeschlagenen Emergency-Stopp werden weder
+    // Prisma/npm-ci freigegeben noch COMPLETE oder ein erfolgreicher Exit
+    // signalisiert. Der Supervisor muss den Auftrag damit sicher abbrechen.
+    process.exitCode = 1;
+  });
+}
+
+process.on("message", (message: unknown) => {
+  if (
+    !message
+    || typeof message !== "object"
+    || !("type" in message)
+    || message.type !== "BONNI_SUPERVISOR_SHUTDOWN"
+    || !("reason" in message)
+    || message.reason !== "local-source-update"
+  ) {
+    return;
+  }
+
+  const requestId = "requestId" in message && typeof message.requestId === "string"
+    ? message.requestId
+    : undefined;
+  requestShutdown("SUPERVISOR_UPDATE", requestId);
+});
+
 process.once("SIGTERM", (signal) => {
-  void shutdown(signal);
+  requestShutdown(signal);
 });
 
 process.once("SIGINT", (signal) => {
-  void shutdown(signal);
+  requestShutdown(signal);
 });
+
+if (localUpdateSupervisorChild) {
+  process.once("disconnect", () => {
+    logger.warn("Supervisor-Verbindung unerwartet getrennt; Core wird kontrolliert beendet", {
+      module: "server",
+      runtime,
+    });
+    requestShutdown("SUPERVISOR_DISCONNECT");
+  });
+}
 
 process.on("uncaughtException", (error) => {
   logger.error("Uncaught exception", {
@@ -102,6 +207,8 @@ process.on("unhandledRejection", (reason) => {
     error: errorDetails(reason),
   });
 });
+
+await initializeDatabaseRouting();
 
 const localSystemApp = await createLocalSystemApp();
 
@@ -170,6 +277,14 @@ try {
         module: "server",
         ...metadata,
       });
+
+      if (process.connected && typeof process.send === "function") {
+        process.send({
+          type: "BONNI_BACKEND_READY",
+          runtime: metadata.runtime,
+          port: metadata.port,
+        });
+      }
 
       if (runtime.slotRole === "active") {
         const updateScheduler = startCoreUpdateScheduler();

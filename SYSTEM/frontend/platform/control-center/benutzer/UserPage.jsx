@@ -6,6 +6,10 @@ import {
 } from "../../../system/api/controlCenterUsersApi.js";
 import { fetchControlCenterModules } from "../../../system/api/moduleControlApi.js";
 import { isForbiddenLoginName } from "../../../system/auth/systemAccountPolicy.js";
+import {
+  countUnicodeCodePoints,
+  validateExactSecret,
+} from "../../../core/modules/security/two-factor/model/exactSecretPolicy.js";
 import MemberActionWindow from "./window/member/MemberActionWindow.jsx";
 import NewMemberWindow from "./window/new-member/NewMemberWindow.jsx";
 import {
@@ -619,7 +623,7 @@ function buildCreateMemberPayloadFromDraft(draft, moduleCatalog) {
     loginName,
     displayName,
     email: String(draft.email || "").trim().toLowerCase() || null,
-    password: String(draft.password || ""),
+    password: draft.password,
     usage: draft.usage,
     surface: draft.surface,
     moduleAccess,
@@ -635,9 +639,10 @@ function validateNewMemberDraft(draft, moduleCatalog) {
   if (!/^[a-z0-9][a-z0-9._-]*$/.test(loginName)) return "Der Loginname enthält ungültige Zeichen.";
   if (isForbiddenLoginName(loginName)) return "Der Benutzername root ist für Systemzwecke gesperrt.";
   if (!isValidEmail(String(draft.email || "").trim())) return "Bitte eine gültige E-Mail-Adresse eingeben.";
-  if (!String(draft.password || "")) return "Bitte ein Startpasswort eingeben.";
-  if (String(draft.password || "").length < 6) return "Das Passwort muss mindestens 6 Zeichen haben.";
-  if (String(draft.password || "") !== String(draft.passwordRepeat || "")) return "Die Passwort-Wiederholung stimmt nicht überein.";
+  const passwordError = validateExactSecret(draft.password, { label: "Das Passwort" });
+  if (passwordError) return passwordError;
+  if (countUnicodeCodePoints(draft.password) < 6) return "Das Passwort muss mindestens 6 Zeichen haben.";
+  if (draft.password !== draft.passwordRepeat) return "Die Passwort-Wiederholung stimmt nicht überein.";
   if (!draft.usage) return "Bitte eine Verwendung auswählen.";
   if (!draft.surface) return "Bitte eine Oberfläche auswählen.";
   if (isTechnicalOnlySurface(draft.surface) && draft.usage !== TECHNICAL_USAGE) {

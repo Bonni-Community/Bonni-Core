@@ -17,6 +17,13 @@ export function spawnCommand(command, args, options = {}) {
     let stdout = "";
     let stderr = "";
     let settled = false;
+    const abort = () => {
+      if (settled) return;
+      child.kill("SIGTERM");
+      setTimeout(() => child.kill("SIGKILL"), 2_000).unref();
+    };
+    if (options.signal?.aborted) abort();
+    options.signal?.addEventListener("abort", abort, { once: true });
     const append = (current, chunk) => `${current}${String(chunk)}`.slice(-MAX_OUTPUT_BYTES);
     child.stdout.on("data", (chunk) => { stdout = append(stdout, chunk); });
     child.stderr.on("data", (chunk) => { stderr = append(stderr, chunk); });
@@ -30,12 +37,14 @@ export function spawnCommand(command, args, options = {}) {
     child.once("error", (error) => {
       settled = true;
       clearTimeout(timer);
+      options.signal?.removeEventListener("abort", abort);
       reject(error);
     });
     child.once("close", (code, signal) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      options.signal?.removeEventListener("abort", abort);
       const result = { code: code ?? -1, signal, stdout: stdout.trim(), stderr: stderr.trim() };
       if (code === 0) resolve(result);
       else {
@@ -66,6 +75,11 @@ export class DockerCli {
     this.execute = config.execute || spawnCommand;
     this.commandTimeoutMs = Number(config.commandTimeoutMs ?? 30 * 60_000);
     this.tarBinary = config.tarBinary || "/bin/tar";
+    this.leaseAbortSignal = null;
+  }
+
+  setLeaseAbortSignal(signal) {
+    this.leaseAbortSignal = signal || null;
   }
 
   run(args, options = {}) {
@@ -73,6 +87,7 @@ export class DockerCli {
       cwd: this.cwd,
       env: { ...this.baseEnv, ...(options.env || {}) },
       timeoutMs: options.timeoutMs ?? this.commandTimeoutMs,
+      signal: options.signal || this.leaseAbortSignal || undefined,
     });
   }
 

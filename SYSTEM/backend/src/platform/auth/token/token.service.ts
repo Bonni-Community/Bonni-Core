@@ -5,6 +5,7 @@ export type AccessTokenPayload = {
   accountId: string;
   loginName: string;
   type?: string;
+  credentialRevision: number;
 };
 
 export function signAccessToken(payload: AccessTokenPayload): string {
@@ -22,13 +23,14 @@ export function verifyAccessToken(token: string): AccessTokenPayload {
 
   const payload = decoded as Partial<AccessTokenPayload>;
 
-  if (!payload.accountId || !payload.loginName) {
+  if (!payload.accountId || !payload.loginName || !Number.isInteger(payload.credentialRevision) || Number(payload.credentialRevision) < 0) {
     throw new Error("INVALID_TOKEN_PAYLOAD");
   }
 
   return {
     accountId: payload.accountId,
     loginName: payload.loginName,
-    type: payload.type
+    type: payload.type,
+    credentialRevision: Number(payload.credentialRevision),
   };
 }

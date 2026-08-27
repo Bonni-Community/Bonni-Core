@@ -10,3 +10,6 @@ export {
   createStagedModuleTwoFactorProviderRuntime,
   TWO_FACTOR_PROVIDER_CONTRACT_VERSION,
 } from "./two-factor-provider-registry.js";
+// Kompatibilitaetsoberflaeche: fachliche Ownership bleibt im Core-Modul.
+// Der Export sorgt dafuer, dass der bisherige Runtime-Pfad weiter gebaut wird.
+export * from "./services/totp.js";

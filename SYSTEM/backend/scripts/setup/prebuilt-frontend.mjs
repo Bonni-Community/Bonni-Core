@@ -4,7 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 export const PREBUILT_FRONTEND_MARKER = ".bonni-prebuilt-release.json";
-export const CORE_VERSION = "0.1.19";
+export const CORE_VERSION = "0.1.20";
 const MAX_FILES = 20_000;
 const MAX_TOTAL_BYTES = 512 * 1024 * 1024;
 
@@ -29,7 +29,10 @@ export async function bindFrontendCoreVersion(root) {
   const state = await fs.lstat(indexPath).catch(() => null);
   if (!state?.isFile() || state.isSymbolicLink()) throw new Error("SETUP_PREBUILT_FRONTEND_INDEX_MISSING");
   const source = await fs.readFile(indexPath, "utf8");
-  const withoutOldBinding = source.replace(/\?core=\d+\.\d+\.\d+/gu, "");
+  const withoutOldBinding = source.replace(
+    /\?core=\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?/gu,
+    "",
+  );
   let count = 0;
   const bound = withoutOldBinding.replace(
     /((?:src|href)=["']\/assets\/[^"'?]+\.(?:js|css))(["'])/gu,
@@ -106,7 +109,8 @@ export async function verifyPrebuiltFrontend(root) {
     || !/^[a-f0-9]{64}$/u.test(String(marker.treeSha256 || ""))
   ) throw new Error("SETUP_PREBUILT_FRONTEND_MARKER_INVALID");
   const index = await fs.readFile(path.join(root, "index.html"), "utf8");
-  if (!index.includes(`?core=${CORE_VERSION}`) || /\?core=(?!0\.1\.19)\d+\.\d+\.\d+/u.test(index)) {
+  const coreBindings = [...index.matchAll(/\?core=([0-9A-Za-z.+-]+)/gu)].map((match) => match[1]);
+  if (!coreBindings.length || coreBindings.some((version) => version !== CORE_VERSION)) {
     throw new Error("SETUP_PREBUILT_FRONTEND_CORE_VERSION_MISMATCH");
   }
   const actual = await collectFrontendTree(root);

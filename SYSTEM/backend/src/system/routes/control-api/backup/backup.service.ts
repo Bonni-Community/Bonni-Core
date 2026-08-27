@@ -7,6 +7,7 @@ import path from "node:path";
 import { env } from "../../../../core/config/env.js";
 import { prisma } from "../../../../core/database/prisma.js";
 import { getSystemRuntimeConfig } from "../../../runtime/runtime.config.js";
+import { resolvePostgreSqlTool } from "./postgres-tool.service.js";
 
 export type SystemBackupComponentStatus = "pending" | "running" | "completed" | "failed" | "skipped";
 
@@ -19,6 +20,7 @@ export type SystemBackupManifest = {
   createdAt: string;
   finishedAt?: string;
   error?: string;
+  errorCode?: string;
   components: Array<{
     key: "database" | "configuration" | "storage";
     label: string;
@@ -161,6 +163,15 @@ function databaseProcessEnvironment() {
   };
 }
 
+type BackupToolError = Error & {
+  code?: string;
+  technicalMessage?: string;
+};
+
+function backupToolError(code: string, message: string, technicalMessage?: string): BackupToolError {
+  return Object.assign(new Error(message), { code, technicalMessage });
+}
+
 function runCommand(command: string, args: string[], commandEnv: NodeJS.ProcessEnv) {
   return new Promise<void>((resolve, reject) => {
     const child = spawn(command, args, {
@@ -172,23 +183,65 @@ function runCommand(command: string, args: string[], commandEnv: NodeJS.ProcessE
     child.stderr.on("data", (chunk) => {
       stderr = `${stderr}${String(chunk)}`.slice(-8_000);
     });
-    child.once("error", reject);
+    child.once("error", (error: NodeJS.ErrnoException) => {
+      if (error.code === "ENOENT") {
+        reject(backupToolError(
+          "POSTGRESQL_CLIENT_TOOLS_NOT_INSTALLED",
+          "Das PostgreSQL-Sicherungswerkzeug wurde beim Start nicht gefunden. Hinterlege den vollständigen Pfad in PG_DUMP_PATH und versuche die Aktualisierung erneut.",
+          error.message,
+        ));
+        return;
+      }
+      if (error.code === "EACCES") {
+        reject(backupToolError(
+          "POSTGRESQL_TOOL_NOT_EXECUTABLE",
+          "Das gefundene PostgreSQL-Sicherungswerkzeug darf nicht ausgeführt werden. Prüfe die Dateiberechtigungen oder PG_DUMP_PATH.",
+          error.message,
+        ));
+        return;
+      }
+      reject(backupToolError(
+        "POSTGRESQL_BACKUP_PROCESS_FAILED",
+        "Das PostgreSQL-Sicherungswerkzeug konnte nicht gestartet werden.",
+        error.message,
+      ));
+    });
     child.once("close", (code) => {
       if (code === 0) resolve();
-      else reject(new Error(stderr.trim() || `${command} wurde mit Status ${code} beendet.`));
+      else reject(backupToolError(
+        "POSTGRESQL_DATABASE_BACKUP_FAILED",
+        "Die PostgreSQL-Datenbank konnte nicht gesichert werden. Prüfe, ob PostgreSQL läuft und die hinterlegten Datenbankzugänge stimmen.",
+        stderr.trim() || `${path.basename(command)} wurde mit Status ${code} beendet.`,
+      ));
     });
   });
 }
 
 async function dumpDatabase(target: string) {
+  const tool = resolvePostgreSqlTool("pg_dump");
+  if (!tool.ok) throw backupToolError(tool.code, tool.message);
+
   await fs.mkdir(path.dirname(target), { recursive: true });
-  await runCommand("pg_dump", [
-    "--format=custom",
-    "--no-owner",
-    "--no-privileges",
-    "--file",
-    target,
-  ], databaseProcessEnvironment());
+  const temporary = `${target}.${process.pid}.${crypto.randomBytes(6).toString("hex")}.partial`;
+  try {
+    await runCommand(tool.command, [
+      "--format=custom",
+      "--no-owner",
+      "--no-privileges",
+      "--file",
+      temporary,
+    ], databaseProcessEnvironment());
+    const stat = await fs.stat(temporary).catch(() => null);
+    if (!stat?.isFile() || stat.size === 0) {
+      throw backupToolError(
+        "POSTGRESQL_DATABASE_BACKUP_EMPTY",
+        "PostgreSQL hat keine verwertbare Sicherungsdatei erstellt. Die Aktualisierung wurde sicher abgebrochen.",
+      );
+    }
+    await fs.rename(temporary, target);
+  } finally {
+    await fs.rm(temporary, { force: true }).catch(() => undefined);
+  }
 }
 
 async function safeDatabaseRecord(data: Record<string, unknown>) {
@@ -299,6 +352,8 @@ export async function createSystemBackup(options: {
     return { ok: true, backup: manifest };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
+    const errorCode = String((error as BackupToolError | null)?.code || "BACKUP_FAILED");
+    const technicalMessage = (error as BackupToolError | null)?.technicalMessage;
     const running = manifest.components.find((component) => component.status === "running");
     if (running) {
       running.status = "failed";
@@ -311,12 +366,20 @@ export async function createSystemBackup(options: {
     }
     manifest.status = "failed";
     manifest.error = message;
+    manifest.errorCode = errorCode;
     manifest.finishedAt = new Date().toISOString();
     await writeJson(manifestPath(id), manifest).catch(() => undefined);
     if (databaseRecordId) {
       await safeDatabaseRecord({ action: "finish", id: databaseRecordId, status: "failed", finishedAt: new Date() });
     }
-    return { ok: false, error: "BACKUP_FAILED", message, backup: manifest };
+    return {
+      ok: false,
+      error: "BACKUP_FAILED",
+      causeCode: errorCode,
+      message,
+      technicalMessage,
+      backup: manifest,
+    };
   } finally {
     activeBackupId = null;
   }
@@ -327,7 +390,27 @@ export async function listSystemBackups() {
   const entries = await fs.readdir(systemBackupsRoot(), { withFileTypes: true });
   const backups = (await Promise.all(entries
     .filter((entry) => entry.isDirectory() && BACKUP_ID_PATTERN.test(entry.name))
-    .map((entry) => readJson<SystemBackupManifest>(manifestPath(entry.name)))))
+    .map(async (entry) => {
+      // The update page polls while its mandatory safety backup is being
+      // created. A concurrently replaced, stale or damaged manifest must not
+      // take the complete update-status endpoint down with HTTP 500. Backup
+      // validation remains fail-closed; this tolerant read is only used for
+      // the non-authoritative overview.
+      const value = await readJson<SystemBackupManifest>(manifestPath(entry.name)).catch(() => null);
+      if (
+        !value
+        || value.schemaVersion !== 1
+        || value.id !== entry.name
+        || !["running", "completed", "failed"].includes(String(value.status))
+        || typeof value.reason !== "string"
+        || typeof value.coreVersion !== "string"
+        || typeof value.createdAt !== "string"
+        || !Number.isFinite(Date.parse(value.createdAt))
+        || !Array.isArray(value.components)
+        || !Array.isArray(value.files)
+      ) return null;
+      return value;
+    })))
     .filter((entry): entry is SystemBackupManifest => Boolean(entry));
 
   return backups.sort((left, right) => right.createdAt.localeCompare(left.createdAt));

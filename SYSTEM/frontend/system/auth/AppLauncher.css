@@ -48,6 +48,7 @@
 }
 
 .bonni-launcher__logout,
+.bonni-launcher__settings,
 .bonni-launcher__additional button {
   border: 1px solid rgba(47, 36, 31, 0.2);
   border-radius: 999px;
@@ -61,8 +62,24 @@
   padding: 10px 16px;
 }
 
+.bonni-launcher__account-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 9px;
+}
+
+.bonni-launcher__settings {
+  padding: 10px 16px;
+  color: #fff;
+  border-color: #ef7a00;
+  background: #ef7a00;
+}
+
 .bonni-launcher__logout:hover,
 .bonni-launcher__logout:focus-visible,
+.bonni-launcher__settings:hover,
+.bonni-launcher__settings:focus-visible,
 .bonni-launcher__additional button:hover,
 .bonni-launcher__additional button:focus-visible {
   color: #fff;

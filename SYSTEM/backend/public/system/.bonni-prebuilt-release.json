@@ -1,0 +1,47 @@
+{
+  "schemaVersion": "bonni.prebuilt-frontend/v1",
+  "coreVersion": "0.1.20",
+  "files": [
+    {
+      "path": "assets/index-BEJ1WY9y.js",
+      "bytes": 619398,
+      "sha256": "ee6382f90e8e4ee203c956eb85312e823fc68a2aecd87ad0ed2b2fa2e78ea1b4"
+    },
+    {
+      "path": "assets/index-BLHrZRhu.css",
+      "bytes": 251740,
+      "sha256": "bd03c2d81bf6c75bb3e4f12b426c7fa723f233ddb899338896ad1098af27c092"
+    },
+    {
+      "path": "index.html",
+      "bytes": 419,
+      "sha256": "02b7b3dc1015a1c4d8133bf98eb9c110312df9870173c271db11373fc0cdecb9"
+    },
+    {
+      "path": "system/guides/2fa/01-provider.svg",
+      "bytes": 1384,
+      "sha256": "270169c0228e3e0be8949282524425a34449732eab5b6f17aa860982fbae7958"
+    },
+    {
+      "path": "system/guides/2fa/02-connection.svg",
+      "bytes": 1571,
+      "sha256": "0b30a9cfd6e953a4677d27d4b16dd9a84606ac2de8005b4ecaf4fab204cd656e"
+    },
+    {
+      "path": "system/guides/2fa/03-policy.svg",
+      "bytes": 1591,
+      "sha256": "cac18969873233c4f1c442779efed0041acc52c2509bed81697d0660ce107d67"
+    },
+    {
+      "path": "system/guides/2fa/04-qr-code.svg",
+      "bytes": 1574,
+      "sha256": "4a349d744c430e588127e541b62593a5977533cd1b7d2c58f2504462d4526aaf"
+    },
+    {
+      "path": "system/guides/2fa/05-finish.svg",
+      "bytes": 1625,
+      "sha256": "2ba1afe1dbe06b792968d00fb47344ec2157ef045102143c9495a0d1c746e21b"
+    }
+  ],
+  "treeSha256": "28cc89c0eaca19fe45a4fc5cb2dc1e77d02423a578abb787fcebfa00036175f2"
+}

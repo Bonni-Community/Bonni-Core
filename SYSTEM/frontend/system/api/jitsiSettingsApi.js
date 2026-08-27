@@ -1,6 +1,22 @@
 import { apiRequest } from "./apiClient.js";
+import { buildExistingProof } from "../../core/modules/security/two-factor/model/twoFactorPayload.js";
 
 const BASE = "/api/system/integrations/jitsi";
+const NO_STORE_HEADERS = Object.freeze({
+  Accept: "application/json",
+  "Cache-Control": "no-store",
+  Pragma: "no-cache",
+});
+
+function securityRequest(path, options = {}) {
+  return apiRequest(path, {
+    ...options,
+    headers: { ...NO_STORE_HEADERS, ...(options.headers || {}) },
+    allowFailover: false,
+    cache: "no-store",
+    sensitive: true,
+  });
+}
 
 export function getJitsiSettings(token) {
   return apiRequest(BASE, { token });
@@ -11,21 +27,21 @@ export function testJitsiSettings(token, serverUrl) {
 }
 
 export function createJitsiAdminChallenge(token) {
-  return apiRequest("/api/security/2fa/challenge", {
+  return securityRequest("/api/security/2fa/challenge", {
     token,
     method: "POST",
-    body: { purpose: "ADMIN_ELEVATION", metadataJson: { action: "JITSI_SERVER_CONFIGURATION_CHANGED" } },
+    body: { purpose: "ADMIN_ELEVATION" },
   });
 }
 
 export function verifyJitsiAdminChallenge(token, challengeId, proof) {
-  return apiRequest(`/api/security/2fa/challenge/${encodeURIComponent(challengeId)}/verify`, {
+  return securityRequest(`/api/security/2fa/challenge/${encodeURIComponent(challengeId)}/verify`, {
     token,
     method: "POST",
-    body: proof,
+    body: buildExistingProof(proof),
   });
 }
 
 export function saveJitsiSettings(token, payload) {
-  return apiRequest(BASE, { token, method: "PUT", body: payload });
+  return securityRequest(BASE, { token, method: "PUT", body: payload });
 }

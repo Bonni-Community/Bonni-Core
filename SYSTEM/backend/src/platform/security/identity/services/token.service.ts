@@ -6,6 +6,7 @@ export type AccessTokenPayload = {
   accountId: string;
   loginName: string;
   type: string;
+  credentialRevision: number;
 };
 
 export function signAccessToken(payload: AccessTokenPayload): string {
@@ -15,7 +16,14 @@ export function signAccessToken(payload: AccessTokenPayload): string {
 }
 
 export function verifyAccessToken(token: string): AccessTokenPayload {
-  return jwt.verify(token, env.JWT_SECRET) as AccessTokenPayload;
+  const payload = jwt.verify(token, env.JWT_SECRET) as AccessTokenPayload;
+  if (
+    !payload.accountId
+    || !payload.loginName
+    || !Number.isInteger(payload.credentialRevision)
+    || payload.credentialRevision < 0
+  ) throw new Error("INVALID_ACCESS_TOKEN_CREDENTIAL_REVISION");
+  return payload;
 }
 
 export function createRefreshToken(): string {

@@ -4,6 +4,8 @@ import { requireRuntimeSecret } from "../../security/crypto/runtime-secret.js";
 export type CoreTokenPayload = {
   accountId: string;
   loginName: string;
+  sessionId: string;
+  credentialRevision: number;
   source?: string;
 };
 
@@ -18,7 +20,16 @@ export class CoreTokenService {
 
   verifyToken(token: string): CoreTokenPayload {
     const secret = getJwtSecret();
-    return jwt.verify(token, secret) as CoreTokenPayload;
+    const payload = jwt.verify(token, secret) as Partial<CoreTokenPayload>;
+    if (
+      !payload.accountId
+      || !payload.loginName
+      || typeof payload.sessionId !== "string"
+      || !/^[A-Za-z0-9][A-Za-z0-9_-]{7,179}$/u.test(payload.sessionId)
+      || !Number.isInteger(payload.credentialRevision)
+      || Number(payload.credentialRevision) < 0
+    ) throw new Error("INVALID_TOKEN_SESSION_OR_CREDENTIAL_REVISION");
+    return payload as CoreTokenPayload;
   }
 }
 

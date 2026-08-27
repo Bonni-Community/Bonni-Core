@@ -1,6 +1,10 @@
 import { AccountType, AuthProviderType } from "@prisma/client";
 
 import {
+  technicalAccountSecurityCleanupRequired,
+  transitionAccountSecurity,
+} from "../../../core/modules/security/two-factor/account-security-transition.js";
+import {
   MODULE_TERMINAL_ACCOUNT_CONTRACT_VERSION,
   describeTerminalAccountIdentity,
   normalizeDeclaredModuleTerminalAccounts,
@@ -162,13 +166,19 @@ async function reconcileOneDeclaredAccount(
     });
 
     const typeChanged = account.type !== AccountType.TERMINAL;
-    if (typeChanged) {
-      // Existing identities are preservation-only. Only the discriminator and
-      // the canonical module role are reconciled. Login, id, provider,
-      // passwordHash, person, sessions, tokens and unrelated roles stay intact.
-      await transaction.account.update({
-        where: { id: account.id },
-        data: { type: AccountType.TERMINAL },
+    const securityCleanupRequired = await technicalAccountSecurityCleanupRequired(transaction, account.id);
+    if (typeChanged || securityCleanupRequired) {
+      // Identity/profile ownership remains stable, but a technical principal
+      // must never inherit a browser password, live session or 2FA secret.
+      await transitionAccountSecurity(transaction, {
+        accountId: account.id,
+        previousRevision: account.credentialRevision,
+        previousType: account.type,
+        previousIsActive: account.isActive,
+        nextType: AccountType.TERMINAL,
+        nextIsActive: account.isActive,
+        twoFactorProviderId: account.twoFactorProviderId,
+        force: !typeChanged,
       });
     }
 

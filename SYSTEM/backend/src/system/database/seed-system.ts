@@ -5,7 +5,9 @@ import {
   MemberStatus,
   type Prisma,
 } from "@prisma/client";
-import bcrypt from "bcryptjs";
+import { hashExactLocalPassword } from "../../core/modules/identity/local-password-policy.js";
+import { advanceTwoFactorAfterPasswordChange } from "../../core/modules/security/two-factor/password-change.js";
+import { transitionAccountSecurity } from "../../core/modules/security/two-factor/account-security-transition.js";
 
 import {
   disconnectPrismaClients,
@@ -207,7 +209,7 @@ async function seedUser(
       });
     }
 
-    const passwordHash = await bcrypt.hash(user.password, 10);
+    const passwordHash = await hashExactLocalPassword(user.password, 10);
     account = await database.account.create({
       data: {
         id: createAccountId(),
@@ -242,22 +244,68 @@ async function seedUser(
       });
     }
 
-    const passwordPatch = user.replaceExistingPassword
-      ? { passwordHash: await bcrypt.hash(user.password, 10) }
-      : {};
-    account = await database.account.update({
-      where: {
-        id: account.id,
-      },
-      data: {
-        type: user.type,
-        authProviderId: localProviderId,
-        personId,
-        isActive: true,
-        isSandbox: user.isSandbox,
-        ...passwordPatch,
-      },
-    });
+    const accountPatch = {
+      authProviderId: localProviderId,
+      personId,
+      isSandbox: user.isSandbox,
+    };
+    const eligibilityChanged = account.type !== user.type || account.isActive !== true;
+    if (eligibilityChanged) {
+      await transitionAccountSecurity(database, {
+        accountId: account.id,
+        previousRevision: account.credentialRevision,
+        previousType: account.type,
+        previousIsActive: account.isActive,
+        nextType: user.type,
+        nextIsActive: true,
+        twoFactorProviderId: account.twoFactorProviderId,
+        accountData: accountPatch,
+      });
+      account = await database.account.findUniqueOrThrow({ where: { id: account.id } });
+    } else {
+      account = await database.account.update({
+        where: { id: account.id },
+        data: accountPatch,
+      });
+    }
+    if (user.replaceExistingPassword) {
+      if (account.passwordRecoveryLockedAt) {
+        throw new Error("BOOTSTRAP_ADMIN_PASSWORD_RECOVERY_LOCKED");
+      }
+      const previousCredentialRevision = account.credentialRevision;
+      const previousTwoFactorProviderId = account.twoFactorProviderId;
+      const passwordHash = await hashExactLocalPassword(user.password, 10);
+      const updated = await database.account.updateMany({
+        where: {
+          id: account.id,
+          credentialRevision: previousCredentialRevision,
+          passwordRecoveryLockedAt: null,
+        },
+        data: {
+          passwordHash,
+          credentialRevision: { increment: 1 },
+        },
+      });
+      if (updated.count !== 1) {
+        throw new Error("BOOTSTRAP_ADMIN_CREDENTIALS_CHANGED");
+      }
+      account = await database.account.findUniqueOrThrow({ where: { id: account.id } });
+      await advanceTwoFactorAfterPasswordChange(database, {
+        accountId: account.id,
+        previousRevision: previousCredentialRevision,
+        nextRevision: previousCredentialRevision + 1,
+        twoFactorProviderId: previousTwoFactorProviderId,
+      });
+      const now = new Date();
+      await database.session.updateMany({
+        where: { accountId: account.id, endedAt: null },
+        data: { endedAt: now },
+      });
+      await database.refreshToken.updateMany({
+        where: { accountId: account.id, revokedAt: null },
+        data: { revokedAt: now },
+      });
+    }
     passwordUpdated = user.replaceExistingPassword === true;
   }
 

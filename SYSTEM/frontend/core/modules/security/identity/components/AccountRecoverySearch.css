@@ -1,0 +1,16 @@
+.bonni-account-recovery__reference-search {
+  display: grid;
+  gap: 10px;
+  max-width: 620px;
+  margin-top: 16px;
+}
+
+.bonni-account-recovery__reference-search .bonni-2fa-actions {
+  margin-top: 0;
+}
+
+.bonni-account-recovery__search-note {
+  display: block;
+  margin-top: 6px;
+  color: #77727a;
+}

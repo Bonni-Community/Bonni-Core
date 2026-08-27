@@ -1,9 +1,12 @@
-import bcrypt from "bcryptjs";
+import {
+  hashExactLocalPassword,
+  verifyExactLocalPassword,
+} from "../../../core/modules/identity/local-password-policy.js";
 
 export async function hashPassword(password: string) {
-  return bcrypt.hash(password, 12);
+  return hashExactLocalPassword(password, 12);
 }
 
 export async function verifyPassword(password: string, passwordHash: string) {
-  return bcrypt.compare(password, passwordHash);
+  return verifyExactLocalPassword(password, passwordHash);
 }

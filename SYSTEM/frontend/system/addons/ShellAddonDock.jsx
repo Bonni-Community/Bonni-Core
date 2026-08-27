@@ -33,6 +33,7 @@ function ShellAddonFrame({
   onClose,
   onLogout,
   onChangeWorkspace,
+  onOpenMySettings,
 }) {
   const frameRef = useRef(null);
   const moduleId = addonKey(addon);
@@ -64,12 +65,13 @@ function ShellAddonFrame({
       if (action === "change-workspace") {
         onChangeWorkspace?.(event.data?.payload?.workspace);
       }
+      if (action === "open-my-settings") onOpenMySettings?.();
     }
 
     window.addEventListener("message", receiveMessage);
     sendContext();
     return () => window.removeEventListener("message", receiveMessage);
-  }, [entryUrl.origin, moduleId, onChangeWorkspace, onClose, onLogout, sendContext]);
+  }, [entryUrl.origin, moduleId, onChangeWorkspace, onClose, onLogout, onOpenMySettings, sendContext]);
 
   return (
     <iframe
@@ -91,6 +93,7 @@ export default function ShellAddonDock({
   allowedWorkspaces,
   onLogout,
   onChangeWorkspace,
+  onOpenMySettings,
 }) {
   const [addon, setAddon] = useState(null);
   const [open, setOpen] = useState(false);
@@ -164,6 +167,7 @@ export default function ShellAddonDock({
             onClose={close}
             onLogout={onLogout}
             onChangeWorkspace={onChangeWorkspace}
+            onOpenMySettings={onOpenMySettings}
           />
         </aside>
       ) : (

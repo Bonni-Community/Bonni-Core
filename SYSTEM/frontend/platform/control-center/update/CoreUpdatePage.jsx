@@ -1,0 +1,1109 @@
+import { useEffect, useMemo, useRef, useState } from "react";
+
+import {
+  checkCoreUpdate,
+  checkLocalSourceUpdate,
+  fetchCoreUpdateStatus,
+  finalizeCoreDeploymentLifecycle,
+  installCoreUpdate,
+  installLocalSourceUpdate,
+  rollbackCoreDeploymentLifecycle,
+} from "../../../system/api/coreUpdateApi.js";
+import {
+  ACCEPTED_UPDATE_STATUS_TIMEOUT_MS,
+  ACCEPTED_UPDATE_TRANSITION_MAX_AGE_MS,
+  deploymentLifecycleInstallationBlock,
+  formatBonniCoreVersion,
+  formatUpdateTime,
+  hasAcceptedUpdateStatusTimedOut,
+  hasObservedAcceptedUpdate,
+  isUpdateBusy,
+  isUpdateFailed,
+  localUpdateError,
+  localUpdateReleaseNotes,
+  localUpdateStateLabel,
+  normalizeAcceptedUpdateTransition,
+  normalizeDeploymentLifecycle,
+  normalizeUpdateActionError,
+  normalizeUpdateState,
+  normalizeUpdateSteps,
+  UPDATE_ACTION_ERROR_STORAGE_KEY,
+  updateExecutionObservation,
+  updateProgressPercent,
+  updateStepSymbol,
+} from "./localUpdatePresentation.js";
+import {
+  fetchInstallationUpdateStatus,
+  INSTALLATION_MONITOR_ACCESS_STORAGE_KEY,
+  installationMonitorRequestsCoreSwitch,
+  mergeInstallationMonitorStatus,
+  normalizeInstallationMonitorAccess,
+} from "./localUpdateMonitorApi.js";
+import DeploymentLifecyclePanel from "./DeploymentLifecyclePanel.jsx";
+import CoreReleaseOverview from "./CoreReleaseOverview.jsx";
+import "./CoreUpdatePage.css";
+
+const POLL_INTERVAL_MS = 2_500;
+const MAX_TIMELINE_ENTRIES = 60;
+const ACCEPTED_UPDATE_TRANSITION_STORAGE_KEY = "bonni.core-update.accepted-transition";
+const ACCEPTED_UPDATE_TIMEOUT_WARNING = "Der Installationsauftrag wurde angenommen, aber innerhalb einer Minute wurde kein neuer Update-Status gemeldet. Der zuletzt gemeldete Zustand bleibt sichtbar; bitte prüfe die Verbindung oder den Update-Dienst.";
+const ACCEPTED_UPDATE_TIMEOUT_CONNECTION = "Der Installationsauftrag wurde angenommen, aber Bonni Core meldet weiterhin keinen neuen Status.";
+
+function storageKey(updateId) {
+  return `bonni.local-update.timeline:${updateId || "current"}`;
+}
+
+function dismissedErrorKey(updateId) {
+  return `bonni.local-update.dismissed-error:${updateId || "current"}`;
+}
+
+function actionErrorKey(updateId) {
+  return `bonni.local-update.action-error:${updateId || "current"}`;
+}
+
+function readSessionValue(key, fallback) {
+  try {
+    const value = window.sessionStorage.getItem(key);
+    return value ? JSON.parse(value) : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function writeSessionValue(key, value) {
+  try {
+    window.sessionStorage.setItem(key, JSON.stringify(value));
+  } catch {
+    // Die Ansicht funktioniert auch dann, wenn Sitzungsspeicher gesperrt ist.
+  }
+}
+
+function removeSessionValue(key) {
+  try {
+    window.sessionStorage.removeItem(key);
+  } catch {
+    // Die Ansicht funktioniert auch dann, wenn Sitzungsspeicher gesperrt ist.
+  }
+}
+
+function readAcceptedInstallTransition() {
+  const stored = readSessionValue(ACCEPTED_UPDATE_TRANSITION_STORAGE_KEY, null);
+  const normalized = normalizeAcceptedUpdateTransition(stored);
+  if (!normalized && stored) removeSessionValue(ACCEPTED_UPDATE_TRANSITION_STORAGE_KEY);
+  return normalized;
+}
+
+function readInstallationMonitorAccess() {
+  const stored = readSessionValue(INSTALLATION_MONITOR_ACCESS_STORAGE_KEY, null);
+  const normalized = normalizeInstallationMonitorAccess(stored);
+  if (!normalized && stored) removeSessionValue(INSTALLATION_MONITOR_ACCESS_STORAGE_KEY);
+  return normalized;
+}
+
+function appendUniqueEvents(previous, additions) {
+  const signatures = new Set(previous.map((event) => event.signature));
+  const next = [...previous];
+  let changed = false;
+  for (const event of additions) {
+    if (!event?.signature || signatures.has(event.signature)) continue;
+    signatures.add(event.signature);
+    next.push(event);
+    changed = true;
+  }
+  return changed ? next.slice(-MAX_TIMELINE_ENTRIES) : previous;
+}
+
+function statusKind(state) {
+  if (["completed", "already-installed"].includes(state)) return "success";
+  if (isUpdateFailed(state)) return "error";
+  if (isUpdateBusy(state)) return "running";
+  return "info";
+}
+
+function releaseNotesForStatus(status, localUpdate) {
+  if (localUpdate) return localUpdateReleaseNotes(localUpdate);
+  const releaseNotes = status?.manifest?.releaseNotes || {};
+  const rawChanges = releaseNotes.changes || releaseNotes.highlights || [];
+  return {
+    title: releaseNotes.title || "Was ändert sich?",
+    summary: releaseNotes.summary
+      || releaseNotes.descriptions?.de
+      || releaseNotes.descriptions?.en
+      || "Diese Version aktualisiert Bonni Core auf den angezeigten Stand.",
+    changes: rawChanges.map((entry, index) => typeof entry === "string"
+      ? { key: `release-${index}`, type: "Änderung", title: entry, detail: "" }
+      : {
+          key: entry?.key || `release-${index}`,
+          type: entry?.type || "Änderung",
+          title: entry?.title || entry?.label || "Technische Änderung",
+          detail: entry?.detail || entry?.description || "",
+        }),
+    supplied: Boolean(releaseNotes.title || releaseNotes.summary || rawChanges.length),
+  };
+}
+
+export default function CoreUpdatePage({ token, onBack }) {
+  const restoredAcceptedStart = useMemo(() => readAcceptedInstallTransition(), []);
+  const restoredMonitorAccess = useMemo(() => readInstallationMonitorAccess(), []);
+  const [status, setStatus] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [checking, setChecking] = useState(false);
+  const [installing, setInstalling] = useState(false);
+  const [confirmInstall, setConfirmInstall] = useState(false);
+  const [actionError, setActionError] = useState(() => readSessionValue(UPDATE_ACTION_ERROR_STORAGE_KEY, null));
+  const [connectionWarning, setConnectionWarning] = useState(
+    restoredAcceptedStart?.expired ? ACCEPTED_UPDATE_TIMEOUT_CONNECTION : "",
+  );
+  const [timeline, setTimeline] = useState([]);
+  const [timelineUpdateId, setTimelineUpdateId] = useState("");
+  const [dismissedError, setDismissedError] = useState("");
+  const [copied, setCopied] = useState(false);
+  const [copyFallbackText, setCopyFallbackText] = useState("");
+  const [optimisticStart, setOptimisticStart] = useState(restoredAcceptedStart);
+  const [startTransitionWarning, setStartTransitionWarning] = useState(
+    restoredAcceptedStart?.expired ? ACCEPTED_UPDATE_TIMEOUT_WARNING : "",
+  );
+  const [monitorAccess, setMonitorAccess] = useState(restoredMonitorAccess);
+  const [statusSource, setStatusSource] = useState(restoredMonitorAccess ? "installation" : "core");
+  const [lifecycleFinalizing, setLifecycleFinalizing] = useState(false);
+  const [lifecycleRollingBack, setLifecycleRollingBack] = useState(false);
+  const [confirmLifecycleFinalize, setConfirmLifecycleFinalize] = useState(false);
+  const [confirmLifecycleRollback, setConfirmLifecycleRollback] = useState(false);
+  const [lifecycleActionError, setLifecycleActionError] = useState("");
+  const [acknowledgedLifecycleHold, setAcknowledgedLifecycleHold] = useState("");
+  const [showLifecycleStatus, setShowLifecycleStatus] = useState(false);
+  const mountedRef = useRef(true);
+  const statusRef = useRef(null);
+  const statusSequenceRef = useRef(0);
+  const statusInFlightRef = useRef(0);
+  const confirmationPrimaryRef = useRef(null);
+  const startButtonRef = useRef(null);
+  const confirmationDialogRef = useRef(null);
+  const confirmationWasOpenRef = useRef(false);
+  const optimisticStartRef = useRef(restoredAcceptedStart);
+  const monitorAccessRef = useRef(restoredMonitorAccess);
+  const frontendReloadScheduledRef = useRef(false);
+
+  function setAcceptedInstallTransition(value) {
+    optimisticStartRef.current = value;
+    setOptimisticStart(value);
+    if (value) writeSessionValue(ACCEPTED_UPDATE_TRANSITION_STORAGE_KEY, value);
+    else removeSessionValue(ACCEPTED_UPDATE_TRANSITION_STORAGE_KEY);
+  }
+
+  function setInstallationMonitorAccess(value) {
+    const normalized = value ? normalizeInstallationMonitorAccess(value) : null;
+    monitorAccessRef.current = normalized;
+    setMonitorAccess(normalized);
+    if (normalized) writeSessionValue(INSTALLATION_MONITOR_ACCESS_STORAGE_KEY, normalized);
+    else removeSessionValue(INSTALLATION_MONITOR_ACCESS_STORAGE_KEY);
+  }
+
+  function commitStatus(payload, source) {
+    statusRef.current = payload;
+    setStatus(payload);
+    setStatusSource(source);
+  }
+
+  function scheduleUpdatedFrontendReload() {
+    if (frontendReloadScheduledRef.current) return;
+    frontendReloadScheduledRef.current = true;
+    window.setTimeout(() => window.location.reload(), 0);
+  }
+
+  async function loadStatus({ scan = false, initial = false, poll = false } = {}) {
+    if (!token) return { ok: false, error: new Error("Keine aktive Sitzung.") };
+    if (poll && statusInFlightRef.current > 0) return { ok: false, skipped: true };
+    const sequence = ++statusSequenceRef.current;
+    statusInFlightRef.current += 1;
+    if (initial) setLoading(true);
+    let monitorError = null;
+    try {
+      const monitor = monitorAccessRef.current;
+      if (monitor) {
+        try {
+          const monitorPayload = await fetchInstallationUpdateStatus(monitor);
+          if (!mountedRef.current || sequence !== statusSequenceRef.current) return { ok: false, stale: true };
+          const monitoredStatus = mergeInstallationMonitorStatus(statusRef.current, monitorPayload);
+          commitStatus(monitoredStatus, "installation");
+          setConnectionWarning("");
+          const acceptedStart = optimisticStartRef.current;
+          if (hasObservedAcceptedUpdate(monitoredStatus, acceptedStart)) {
+            setAcceptedInstallTransition(null);
+            setStartTransitionWarning("");
+          }
+
+          const shouldReturnToCore = installationMonitorRequestsCoreSwitch(monitorPayload);
+          if (!shouldReturnToCore) return { ok: true, payload: monitoredStatus, source: "installation" };
+
+          try {
+            const corePayload = await fetchCoreUpdateStatus(token);
+            if (!mountedRef.current || sequence !== statusSequenceRef.current) return { ok: false, stale: true };
+            commitStatus(corePayload, "core");
+            setInstallationMonitorAccess(null);
+            setAcceptedInstallTransition(null);
+            setStartTransitionWarning("");
+            setConnectionWarning("");
+            scheduleUpdatedFrontendReload();
+            return { ok: true, payload: corePayload, source: "core" };
+          } catch {
+            setConnectionWarning(monitorPayload.progress?.status === "failed"
+              ? "Der Installationsserver bleibt erreichbar. Bonni Core konnte noch nicht wieder übernommen werden."
+              : "Bonni Core wird geprüft. Danach wechselt die Aktualisierungsseite automatisch zurück.");
+            return { ok: true, payload: monitoredStatus, source: "installation" };
+          }
+        } catch (error) {
+          monitorError = error;
+          if (error?.message === "INSTALLATION_MONITOR_ACCESS_INVALID") {
+            setInstallationMonitorAccess(null);
+          } else {
+            // Solange der begrenzte Monitorzugang gueltig ist, bleibt der
+            // Installationsserver die verbindliche Statusquelle. Ein noch
+            // antwortender alter Core-Stand darf den Fortschritt nicht
+            // kurzzeitig ueberschreiben.
+            throw error;
+          }
+        }
+      }
+
+      if (scan && !monitorAccessRef.current) await checkLocalSourceUpdate(token).catch(() => null);
+      const payload = await fetchCoreUpdateStatus(token);
+      if (!mountedRef.current || sequence !== statusSequenceRef.current) return { ok: false, stale: true };
+      const acceptedStart = optimisticStartRef.current;
+      if (hasObservedAcceptedUpdate(payload, acceptedStart)) {
+        setAcceptedInstallTransition(null);
+        setStartTransitionWarning("");
+        setConnectionWarning("");
+      } else if (acceptedStart?.expired) {
+        // Ein erfolgreicher, aber unveränderter Status ist noch kein Beweis,
+        // dass der zuvor angenommene Auftrag nicht mehr in der Queue liegt.
+        // Erst ein neuer Ausführungsstatus oder die explizite Prüfung unten
+        // darf einen erneuten Installationsstart freigeben.
+        setConnectionWarning(ACCEPTED_UPDATE_TIMEOUT_CONNECTION);
+      } else {
+        setConnectionWarning("");
+      }
+      commitStatus(payload, "core");
+      return { ok: true, payload, source: "core" };
+    } catch (error) {
+      if (mountedRef.current && sequence === statusSequenceRef.current) {
+        const acceptedStart = optimisticStartRef.current;
+        setConnectionWarning(monitorAccessRef.current
+          ? "Der Installationsserver wird erneut verbunden. Der aktuelle Fortschritt bleibt erhalten."
+          : acceptedStart
+            ? acceptedStart.expired
+              ? ACCEPTED_UPDATE_TIMEOUT_CONNECTION
+              : acceptedStart.kind === "release"
+                ? "Der isolierte Candidate wird vorbereitet. Der aktive Stand bleibt erreichbar …"
+                : "Der Installationsserver übernimmt. Die Fortschrittsverbindung wird automatisch hergestellt …"
+            : monitorError?.message || error?.message || "Die Verbindung zu Bonni Core wird wiederhergestellt …");
+      }
+      return { ok: false, error: monitorError || error };
+    } finally {
+      statusInFlightRef.current = Math.max(0, statusInFlightRef.current - 1);
+      if (initial && mountedRef.current && sequence === statusSequenceRef.current) setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    mountedRef.current = true;
+    loadStatus({ scan: true, initial: true });
+    const interval = window.setInterval(() => loadStatus({ poll: true }), POLL_INTERVAL_MS);
+    return () => {
+      mountedRef.current = false;
+      statusSequenceRef.current += 1;
+      window.clearInterval(interval);
+    };
+  }, [token]);
+
+  useEffect(() => {
+    if (!optimisticStart) return undefined;
+    const startedAt = Date.parse(String(optimisticStart.startedAt || ""));
+    const elapsed = Number.isFinite(startedAt) ? Math.max(0, Date.now() - startedAt) : ACCEPTED_UPDATE_STATUS_TIMEOUT_MS;
+    let statusTimeout;
+    if (!optimisticStart.expired) {
+      const remaining = Math.max(0, ACCEPTED_UPDATE_STATUS_TIMEOUT_MS - elapsed);
+      statusTimeout = window.setTimeout(() => {
+        const current = optimisticStartRef.current;
+        if (
+          !current
+          || current.expired
+          || current.startedAt !== optimisticStart.startedAt
+          || !hasAcceptedUpdateStatusTimedOut(current)
+        ) return;
+        setAcceptedInstallTransition({ ...current, expired: true });
+        setConnectionWarning(ACCEPTED_UPDATE_TIMEOUT_CONNECTION);
+        setStartTransitionWarning(ACCEPTED_UPDATE_TIMEOUT_WARNING);
+      }, remaining);
+    }
+    const storageRemaining = Math.max(0, ACCEPTED_UPDATE_TRANSITION_MAX_AGE_MS - elapsed);
+    const storageTimeout = window.setTimeout(() => {
+      if (optimisticStartRef.current?.startedAt === optimisticStart.startedAt) {
+        removeSessionValue(ACCEPTED_UPDATE_TRANSITION_STORAGE_KEY);
+      }
+    }, storageRemaining);
+    return () => {
+      if (statusTimeout) window.clearTimeout(statusTimeout);
+      window.clearTimeout(storageTimeout);
+    };
+  }, [optimisticStart]);
+
+  const localUpdate = status?.localSourceUpdate || null;
+  const localProgress = localUpdate?.progress || null;
+  const localState = normalizeUpdateState(localUpdate?.state);
+  const progressState = normalizeUpdateState(localProgress?.status || localProgress?.phase, "idle");
+  const displayState = !["none", "idle"].includes(progressState) ? progressState : localState;
+  const localBusy = isUpdateBusy(localState, progressState);
+  const localFailed = isUpdateFailed(localState, progressState);
+  const localCompleted = !localFailed
+    && (["completed", "already-installed"].includes(localState) || progressState === "completed");
+  const localRelevant = Boolean(localUpdate && (
+    localBusy
+    || (
+      status?.updateKind !== "release"
+      && (
+        status?.updateKind === "local-source"
+        || localUpdate?.updateAvailable
+        || localFailed
+        || (!status?.updateKind && localCompleted)
+      )
+    )
+  ));
+  const deploymentLifecycle = useMemo(
+    () => !status?.deploymentLifecycle
+      ? null
+      : normalizeDeploymentLifecycle(status.deploymentLifecycle, Date.now(), {
+          currentVersion: status?.currentVersion,
+        }),
+    [status?.currentVersion, status?.deploymentLifecycle],
+  );
+  const workflowState = normalizeUpdateState(status?.workflow?.status, status?.updateAvailable ? "available" : "none");
+  const optimisticRunning = Boolean(optimisticStart && !optimisticStart.expired);
+  const observedBusy = localRelevant ? localBusy : isUpdateBusy(workflowState);
+  const observedFailed = localRelevant ? localFailed : isUpdateFailed(workflowState);
+  const observedCompleted = localRelevant ? localCompleted : workflowState === "completed";
+  const pageState = optimisticRunning ? "running" : localRelevant ? displayState : workflowState;
+  const busy = optimisticRunning || observedBusy;
+  const failed = !optimisticRunning && observedFailed;
+  const completed = !optimisticRunning && observedCompleted;
+  const localAvailable = Boolean(localUpdate?.updateAvailable)
+    || ["available", "ready"].includes(localState);
+  const releaseAvailable = Boolean(status?.updateAvailable && status?.updateKind !== "local-source");
+  const updateAvailable = localRelevant ? localAvailable : releaseAvailable;
+  const localRunnerUnavailable = Boolean(localRelevant && localAvailable && localUpdate?.runner?.available !== true);
+  const localMonitorUnavailable = Boolean(
+    localRelevant
+    && localAvailable
+    && localUpdate?.runner?.available === true
+    && localUpdate?.runner?.monitor?.available !== true,
+  );
+  const lifecycleBlock = deploymentLifecycleInstallationBlock({
+    lifecycle: deploymentLifecycle,
+    localRelevant,
+    updateAvailable,
+    installation: status?.installation,
+  });
+  const localLifecycleBlocked = lifecycleBlock.localLifecycleBlocked;
+  const connectionInstallationBlocked = Boolean(
+    !optimisticRunning
+    && (connectionWarning || startTransitionWarning),
+  );
+  const installationBlocked = !optimisticRunning && (
+    connectionInstallationBlocked
+    || localRunnerUnavailable
+    || localMonitorUnavailable
+    || lifecycleBlock.blocked
+  );
+  const installationBlockedReason = connectionInstallationBlocked
+    ? monitorAccess && statusSource === "installation"
+      ? "Der Installationsserver ist vorübergehend nicht erreichbar. Eine erneute Installation bleibt gesperrt, bis sein Status wieder bestätigt wurde."
+      : "Der aktuelle Update-Status ist nicht erreichbar. Eine erneute Installation bleibt gesperrt, bis Bonni Core wieder erfolgreich antwortet."
+    : localRunnerUnavailable
+    ? localUpdate?.runner?.reason || "Der Update-Dienst ist nicht erreichbar."
+    : localMonitorUnavailable
+      ? "Der unabhängige Installationsserver ist noch nicht aktiv. Bitte Bonni Core einmal vollständig beenden und anschließend mit npm start neu starten."
+    : lifecycleBlock.blocked
+      ? lifecycleBlock.reason
+      : "";
+  const activeProgress = optimisticRunning
+    ? {
+        status: "running",
+        message: optimisticStart?.kind === "release"
+          ? "Der Installationsauftrag wurde angenommen. Der isolierte Candidate wird vorbereitet."
+          : "Der Installationsauftrag wurde angenommen. Der Installationsserver übernimmt.",
+        updatedAt: optimisticStart.startedAt,
+        steps: [{
+          key: optimisticStart?.kind === "release" ? "candidate" : "accepted-install",
+          label: optimisticStart?.kind === "release" ? "Isolierten Candidate vorbereiten" : "Installationsserver übernimmt",
+          detail: optimisticStart?.kind === "release"
+            ? "Der aktive Stand bleibt erreichbar; der Candidate wird ausschließlich mit einer isolierten Testkopie geprüft."
+            : "Die Fortschrittsanzeige wechselt jetzt vom normalen Bonni Core zum unabhängigen Installationsserver.",
+          status: "running",
+        }],
+      }
+    : localRelevant ? localProgress : status?.workflow;
+  const steps = normalizeUpdateSteps(activeProgress, { kind: localRelevant ? "local-source" : "release" });
+  const observedProgressPercent = updateProgressPercent(activeProgress, steps);
+  const progressPercent = optimisticRunning ? Math.max(5, observedProgressPercent) : observedProgressPercent;
+  const currentStep = steps.find((step) => step.status === "running")
+    || steps.find((step) => step.status === "failed")
+    || steps.find((step) => step.status === "waiting")
+    || (completed ? steps.at(-1) : null);
+  const currentStepLabel = currentStep?.label
+    || (completed ? "Bonni Core ist wieder einsatzbereit" : localUpdateStateLabel(pageState));
+  const currentStepDetail = currentStep?.detail
+    || activeProgress?.message
+    || (busy
+      ? localRelevant
+        ? "Der Installationsdienst meldet den nächsten Schritt automatisch."
+        : "Der serverseitige Deployment-Lifecycle meldet den nächsten bestätigten Schritt automatisch."
+      : "Nach dem Start wird der jeweils ausgeführte Schritt hier angezeigt.");
+  const stepsSignature = JSON.stringify(steps.map((step) => [step.key, step.status, step.detail]));
+  const updateId = optimisticStart?.updateId || (localRelevant
+    ? localUpdate?.updateId || "current"
+    : status?.workflow?.id || status?.manifest?.id || status?.targetVersion || "current");
+  const releaseNotes = useMemo(
+    () => releaseNotesForStatus(status, localRelevant ? localUpdate : null),
+    [status, localRelevant, localUpdate],
+  );
+  const stateNeedsError = localRelevant
+    ? failed
+    : failed || ["rolling-back", "rolled-back"].includes(workflowState) || Boolean(status?.workflow?.error);
+  const stateError = stateNeedsError
+    ? localRelevant
+      ? localUpdateError(localUpdate)
+      : localUpdateError({
+          errorCode: status?.workflow?.errorCode,
+          error: status?.workflow?.error,
+          message: status?.workflow?.message,
+          progress: status?.workflow,
+        })
+    : null;
+  const currentError = completed
+    ? null
+    : actionError
+      ? localUpdateError(localRelevant ? localUpdate : {}, actionError)
+      : stateError;
+  const visibleError = currentError && currentError.signature !== dismissedError ? currentError : null;
+  const canRetry = Boolean(updateAvailable && !busy && !installationBlocked);
+
+  useEffect(() => {
+    if (!updateId || updateId === timelineUpdateId) return;
+    setTimelineUpdateId(updateId);
+    setTimeline(readSessionValue(storageKey(updateId), []));
+    setDismissedError(readSessionValue(dismissedErrorKey(updateId), ""));
+    const scopedError = readSessionValue(actionErrorKey(updateId), null);
+    const sharedError = readSessionValue(UPDATE_ACTION_ERROR_STORAGE_KEY, null);
+    const sharedApplies = sharedError && (
+      !sharedError.updateId
+      || sharedError.updateId === "current"
+      || sharedError.updateId === updateId
+    );
+    setActionError(scopedError || (sharedApplies ? sharedError : null));
+  }, [timelineUpdateId, updateId]);
+
+  useEffect(() => {
+    if (!status || !updateId || timelineUpdateId !== updateId) return;
+    if (!localRelevant && !status?.workflow && !status?.updateAvailable) return;
+    const timestamp = activeProgress?.updatedAt || status?.checkedAt || new Date().toISOString();
+    const detail = localRelevant
+      ? localProgress?.message || localUpdate?.message || ""
+      : status?.workflow?.message || "";
+    const additions = [{
+      signature: `state:${pageState}:${detail}`,
+      time: timestamp,
+      kind: statusKind(pageState),
+      title: localUpdateStateLabel(pageState),
+      detail,
+    }];
+    for (const step of steps) {
+      if (step.status === "pending") continue;
+      additions.push({
+        signature: `step:${step.key}:${step.status}:${step.detail}`,
+        time: timestamp,
+        kind: step.status === "completed" ? "success" : step.status === "failed" ? "error" : "running",
+        title: step.label,
+        detail: step.detail,
+      });
+    }
+    setTimeline((previous) => {
+      const next = appendUniqueEvents(previous, additions);
+      writeSessionValue(storageKey(updateId), next);
+      return next;
+    });
+  }, [
+    activeProgress?.message,
+    activeProgress?.updatedAt,
+    localRelevant,
+    localUpdate?.message,
+    pageState,
+    status?.checkedAt,
+    status?.updateAvailable,
+    stepsSignature,
+    timelineUpdateId,
+    updateId,
+  ]);
+
+  useEffect(() => {
+    let frame;
+    if (confirmInstall) {
+      confirmationWasOpenRef.current = true;
+      frame = window.requestAnimationFrame(() => confirmationPrimaryRef.current?.focus());
+    } else if (confirmationWasOpenRef.current && !installing) {
+      confirmationWasOpenRef.current = false;
+      frame = window.requestAnimationFrame(() => startButtonRef.current?.focus());
+    }
+    return () => {
+      if (frame) window.cancelAnimationFrame(frame);
+    };
+  }, [confirmInstall, installing]);
+
+  useEffect(() => {
+    setCopied(false);
+    setCopyFallbackText("");
+  }, [visibleError?.signature]);
+
+  useEffect(() => {
+    setConfirmLifecycleFinalize(false);
+    setConfirmLifecycleRollback(false);
+    setLifecycleActionError("");
+    setShowLifecycleStatus(false);
+    const holdId = deploymentLifecycle?.phase === "observation" ? deploymentLifecycle.holdId : "";
+    setAcknowledgedLifecycleHold(
+      holdId && readSessionValue(`bonni.core-update.activated:${holdId}`, false) ? holdId : "",
+    );
+  }, [deploymentLifecycle?.generation, deploymentLifecycle?.holdId, deploymentLifecycle?.status]);
+
+  function persistActionError(normalized) {
+    const value = { ...normalized, updateId };
+    setActionError(value);
+    writeSessionValue(actionErrorKey(updateId), value);
+    writeSessionValue(UPDATE_ACTION_ERROR_STORAGE_KEY, value);
+  }
+
+  function clearActionError() {
+    setActionError(null);
+    removeSessionValue(actionErrorKey(updateId));
+    removeSessionValue(UPDATE_ACTION_ERROR_STORAGE_KEY);
+  }
+
+  async function handleCheck() {
+    if (!token || checking || installing || lifecycleFinalizing || lifecycleRollingBack) return;
+    setChecking(true);
+    setDismissedError("");
+    writeSessionValue(dismissedErrorKey(updateId), "");
+    try {
+      const checks = await Promise.allSettled([checkCoreUpdate(token), checkLocalSourceUpdate(token)]);
+      const statusResult = await loadStatus();
+      const rejected = checks.find((result) => result.status === "rejected");
+      if (rejected?.status === "rejected") throw rejected.reason;
+      if (!statusResult.ok) {
+        throw statusResult.error || new Error("Der aktuelle Update-Status konnte nicht bestätigt werden.");
+      }
+      setAcceptedInstallTransition(null);
+      setStartTransitionWarning("");
+      setConnectionWarning("");
+      clearActionError();
+    } catch (error) {
+      persistActionError(normalizeUpdateActionError(error, "Updateprüfung fehlgeschlagen.", updateId));
+    } finally {
+      setChecking(false);
+    }
+  }
+
+  async function handleInstall() {
+    if (!token || installing || busy || lifecycleFinalizing || lifecycleRollingBack || installationBlocked) return;
+    setInstalling(true);
+    setConfirmInstall(false);
+    clearActionError();
+    setDismissedError("");
+    writeSessionValue(dismissedErrorKey(updateId), "");
+    try {
+      const kind = localRelevant ? "local-source" : "release";
+      const baselineObservation = updateExecutionObservation(status, kind);
+      const acceptedTransition = {
+        kind,
+        updateId,
+        targetVersion: kind === "release"
+          ? String(status?.targetVersion || baselineObservation.targetVersion || "")
+          : "",
+        baselineSignature: baselineObservation.signature,
+        startedAt: new Date().toISOString(),
+      };
+      let monitorAccessError = null;
+      if (localRelevant) {
+        if (!localUpdate.updateId || !localUpdate.manifestSha256) {
+          throw new Error("Das Testupdate ist nicht eindeutig identifiziert. Bitte erneut prüfen.");
+        }
+        const installation = await installLocalSourceUpdate(token, {
+          updateId: localUpdate.updateId,
+          manifestSha256: localUpdate.manifestSha256,
+        });
+        const access = normalizeInstallationMonitorAccess(installation?.monitor);
+        if (!access) {
+          monitorAccessError = new Error("Der Installationsserver hat keinen sicheren Fortschrittszugang bereitgestellt.");
+        } else {
+          setInstallationMonitorAccess(access);
+          setStatusSource("installation");
+        }
+      } else {
+        await installCoreUpdate(token, status?.targetVersion);
+      }
+      setStartTransitionWarning("");
+      setAcceptedInstallTransition(acceptedTransition);
+      setConnectionWarning(localRelevant
+        ? "Der Installationsserver übernimmt den Fortschritt. Bonni Core kann jetzt sicher neu gestartet werden …"
+        : "Der isolierte Candidate wird vorbereitet. Der aktive Bonni-Core-Stand bleibt während der Prüfung erreichbar …");
+      if (monitorAccessError) throw monitorAccessError;
+      await loadStatus();
+    } catch (error) {
+      persistActionError(normalizeUpdateActionError(
+        error,
+        "Die Aktualisierung konnte nicht gestartet werden.",
+        updateId,
+      ));
+    } finally {
+      setInstalling(false);
+    }
+  }
+
+  async function handleFinalizeLifecycle() {
+    if (
+      !token
+      || lifecycleFinalizing
+      || !deploymentLifecycle?.canFinalize
+      || !deploymentLifecycle.holdId
+      || !Number.isSafeInteger(deploymentLifecycle.generation)
+      || deploymentLifecycle.generation <= 0
+    ) return;
+    setLifecycleFinalizing(true);
+    setLifecycleActionError("");
+    try {
+      await finalizeCoreDeploymentLifecycle(token, {
+        holdId: deploymentLifecycle.holdId,
+        generation: deploymentLifecycle.generation,
+      });
+      const refreshed = await loadStatus();
+      if (!refreshed.ok) {
+        throw refreshed.error || new Error("Der abgeschlossene Lifecycle konnte noch nicht bestätigt werden.");
+      }
+      setConfirmLifecycleFinalize(false);
+    } catch (error) {
+      setLifecycleActionError(
+        error?.message || "Der Rückfallstand konnte nicht serverseitig abgeschlossen werden.",
+      );
+    } finally {
+      setLifecycleFinalizing(false);
+    }
+  }
+
+  async function handleRollbackLifecycle() {
+    if (
+      !token
+      || lifecycleRollingBack
+      || lifecycleFinalizing
+      || !deploymentLifecycle?.canRollback
+      || !deploymentLifecycle.holdId
+      || !Number.isSafeInteger(deploymentLifecycle.generation)
+      || deploymentLifecycle.generation <= 0
+    ) return;
+    setLifecycleRollingBack(true);
+    setLifecycleActionError("");
+    try {
+      const result = await rollbackCoreDeploymentLifecycle(token, {
+        holdId: deploymentLifecycle.holdId,
+        generation: deploymentLifecycle.generation,
+      });
+      const access = normalizeInstallationMonitorAccess(result?.monitor);
+      if (!access) throw new Error("Der Installationsserver hat keinen sicheren Fortschrittszugang bereitgestellt.");
+      setInstallationMonitorAccess(access);
+      setStatusSource("installation");
+      setAcceptedInstallTransition({
+        kind: "local-source",
+        updateId: access.updateId,
+        targetVersion: deploymentLifecycle.previousVersion || "",
+        baselineSignature: updateExecutionObservation(status, "local-source").signature,
+        startedAt: new Date().toISOString(),
+      });
+      setConnectionWarning("Der gesicherte Vorgängerstand wird vorbereitet. Der Installationsserver übernimmt den Fortschritt …");
+      setConfirmLifecycleRollback(false);
+      await loadStatus();
+    } catch (error) {
+      setLifecycleActionError(error?.message || "Der gesicherte Vorgängerstand konnte nicht gestartet werden.");
+    } finally {
+      setLifecycleRollingBack(false);
+    }
+  }
+
+  function acknowledgeActivatedVersion({ openStatus = false } = {}) {
+    const holdId = deploymentLifecycle?.holdId;
+    if (holdId) {
+      writeSessionValue(`bonni.core-update.activated:${holdId}`, true);
+      setAcknowledgedLifecycleHold(holdId);
+    }
+    if (openStatus) setShowLifecycleStatus(true);
+    else onBack?.();
+  }
+
+  function dismissCurrentError() {
+    if (!currentError) return;
+    setDismissedError(currentError.signature);
+    writeSessionValue(dismissedErrorKey(updateId), currentError.signature);
+    clearActionError();
+  }
+
+  function errorDetailsText() {
+    if (!currentError) return "";
+    return [
+      currentError.title,
+      currentError.explanation,
+      currentError.code ? `Fehlercode: ${currentError.code}` : "",
+      `Update: ${updateId}`,
+      currentError.technical ? `Technische Details: ${currentError.technical}` : "",
+    ].filter(Boolean).join("\n");
+  }
+
+  async function copyErrorDetails() {
+    const text = errorDetailsText();
+    if (!text) return;
+    try {
+      if (!navigator.clipboard?.writeText) throw new Error("CLIPBOARD_API_UNAVAILABLE");
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+      setCopyFallbackText("");
+      window.setTimeout(() => setCopied(false), 2_000);
+    } catch {
+      let copiedWithFallback = false;
+      try {
+        const textarea = document.createElement("textarea");
+        textarea.value = text;
+        textarea.setAttribute("readonly", "");
+        textarea.style.position = "fixed";
+        textarea.style.opacity = "0";
+        document.body.appendChild(textarea);
+        textarea.select();
+        copiedWithFallback = Boolean(document.execCommand?.("copy"));
+        textarea.remove();
+      } catch {
+        copiedWithFallback = false;
+      }
+      setCopied(copiedWithFallback);
+      setCopyFallbackText(copiedWithFallback ? "" : text);
+      if (copiedWithFallback) window.setTimeout(() => setCopied(false), 2_000);
+    }
+  }
+
+  function handleConfirmationKeyDown(event) {
+    if (event.key === "Escape" && !installing) {
+      event.preventDefault();
+      setConfirmInstall(false);
+    }
+  }
+
+  const counts = localRelevant ? localUpdate?.counts || {} : {};
+  const fileCount = Number(counts.files ?? counts.fileCount ?? 0) || 0;
+  const inventoryCount = Number(counts.inventory ?? counts.inventoryCount ?? 0) || 0;
+  const deleteCount = Number(counts.delete ?? counts.deletions ?? counts.deleteCount ?? 0) || 0;
+  const currentCoreVersion = formatBonniCoreVersion(
+    localRelevant ? localUpdate?.from?.coreVersion : status?.currentVersion,
+  );
+  const targetCoreVersion = formatBonniCoreVersion(
+    localRelevant ? localUpdate?.to?.coreVersion : status?.targetVersion,
+  );
+  const hasCoreTarget = targetCoreVersion !== "—";
+  const lifecycleObservationActive = deploymentLifecycle?.phase === "observation";
+  const lifecycleActivatedVisible = Boolean(
+    lifecycleObservationActive
+    && deploymentLifecycle.holdId
+    && acknowledgedLifecycleHold !== deploymentLifecycle.holdId
+    && !showLifecycleStatus,
+  );
+  const displayCurrentVersion = lifecycleObservationActive
+    ? formatBonniCoreVersion(deploymentLifecycle.previousVersion)
+    : currentCoreVersion;
+  const displayTargetVersion = lifecycleObservationActive
+    ? formatBonniCoreVersion(deploymentLifecycle.targetVersion)
+    : targetCoreVersion;
+  const showVersionTransition = lifecycleObservationActive
+    || (hasCoreTarget && (localRelevant || releaseAvailable));
+  const compactProgressSteps = [
+    { key: "package", label: "Updatepaket geprüft", status: "completed" },
+    { key: "backup", label: "Sicherung erstellt", status: "completed" },
+    {
+      key: "prepare",
+      label: "Neues System vorbereitet",
+      status: progressPercent >= 45 ? "completed" : "running",
+    },
+    {
+      key: "install",
+      label: "Aktualisierung",
+      status: progressPercent >= 100 ? "completed" : progressPercent >= 45 ? "running" : "pending",
+    },
+  ];
+
+  if (loading && !status) {
+    return <section className="cc-core-update-page"><div className="cc-update-page-loading">Aktualisierungsstatus wird geladen …</div></section>;
+  }
+
+  return (
+    <section className="cc-core-update-page" aria-label="Bonni-Core-Aktualisierung">
+      <header className="cc-update-page-hero">
+        <div className="cc-update-page-hero__topline">
+          <span>Bonni Core · Aktualisierung</span>
+          <button type="button" onClick={onBack} aria-label="Aktualisierung schließen">×</button>
+        </div>
+        <div className="cc-update-page-hero__content">
+          <div>
+            <span className={`cc-update-page-status is-${statusKind(pageState)}`}>
+              {optimisticRunning ? "Aktualisierung gestartet" : localUpdateStateLabel(pageState)}
+            </span>
+            <h1>{showVersionTransition
+              ? `Bonni Core ${displayCurrentVersion} → ${displayTargetVersion}`
+              : "Bonni Core-Systemupdate"}</h1>
+            <p>{showVersionTransition
+              ? `Paket ${displayTargetVersion}`
+              : "Geprüfte Aktualisierung des Bonni-Core-Systems"}</p>
+          </div>
+        </div>
+      </header>
+
+      {optimisticRunning || monitorAccess || startTransitionWarning || connectionWarning ? (
+        <div className="cc-update-page-connection" role="status">
+          <span aria-hidden="true" />
+          {startTransitionWarning || connectionWarning || (monitorAccess && statusSource === "installation"
+            ? "Installationsserver aktiv – der Fortschritt bleibt auch während des Core-Neustarts erreichbar."
+            : optimisticRunning
+              ? optimisticStart?.kind === "release"
+                ? "Der Installationsauftrag wurde angenommen. Der isolierte Candidate wird vorbereitet …"
+                : "Der Installationsauftrag wurde angenommen. Der Installationsserver übernimmt …"
+              : "Bonni Core startet neu. Die Verbindung wird automatisch wiederhergestellt …")}
+        </div>
+      ) : null}
+
+      {busy ? <section className="cc-update-page-card cc-update-page-progress-card is-running">
+        <div className="cc-update-page-section-title">
+          <div><span>Installation</span><h2 id="cc-update-progress-title">Fortschritt</h2></div>
+          <strong>{optimisticRunning ? "gestartet" : `${Math.round(progressPercent)} %`}</strong>
+        </div>
+        <div className="cc-update-page-current-step" aria-live="polite" aria-atomic="true">
+          <span>Aktueller Schritt</span>
+          <strong>{currentStepLabel}</strong>
+          <p>{currentStepDetail}</p>
+        </div>
+        <div
+          className="cc-update-page-progress"
+          role="progressbar"
+          aria-labelledby="cc-update-progress-title"
+          aria-valuemin="0"
+          aria-valuemax="100"
+          aria-valuenow={Math.round(progressPercent)}
+          aria-valuetext={optimisticRunning
+            ? optimisticStart?.kind === "release"
+              ? "Aktualisierung gestartet; isolierter Candidate wird vorbereitet"
+              : "Aktualisierung gestartet; Installationsserver übernimmt"
+            : `${Math.round(progressPercent)} Prozent Gesamtfortschritt`}
+        >
+          <span style={{ width: `${progressPercent}%` }} />
+        </div>
+        {compactProgressSteps.length ? (
+          <ol className="cc-update-page-steps">
+            {compactProgressSteps.map((step) => (
+              <li key={step.key} className={`is-${step.status}`}>
+                <span aria-hidden="true">{updateStepSymbol(step.status)}</span>
+                <div><strong>{step.label}</strong>{step.detail ? <p>{step.detail}</p> : null}</div>
+              </li>
+            ))}
+          </ol>
+        ) : (
+          <p className="cc-update-page-empty-progress">Der genaue Ablauf erscheint hier, sobald der Installationsdienst die Schritte meldet.</p>
+        )}
+      </section> : null}
+
+      {!busy && lifecycleObservationActive && !lifecycleActivatedVisible ? (
+        <DeploymentLifecyclePanel
+          lifecycle={deploymentLifecycle}
+          initialView={showLifecycleStatus ? "status" : "verification"}
+          finalizing={lifecycleFinalizing}
+          rollingBack={lifecycleRollingBack}
+          confirmFinalize={confirmLifecycleFinalize}
+          confirmRollback={confirmLifecycleRollback}
+          actionError={lifecycleActionError}
+          onRequestFinalize={() => {
+            setLifecycleActionError("");
+            setConfirmLifecycleRollback(false);
+            setConfirmLifecycleFinalize(true);
+          }}
+          onRequestRollback={() => {
+            setLifecycleActionError("");
+            setConfirmLifecycleFinalize(false);
+            setConfirmLifecycleRollback(true);
+          }}
+          onCancelAction={() => {
+            setConfirmLifecycleFinalize(false);
+            setConfirmLifecycleRollback(false);
+          }}
+          onFinalize={handleFinalizeLifecycle}
+          onRollback={handleRollbackLifecycle}
+        />
+      ) : null}
+
+      {visibleError ? (
+        <section className="cc-update-page-error" role="alert" aria-label="Fehler bei der Aktualisierung">
+          <div className="cc-update-page-error__icon" aria-hidden="true">!</div>
+          <div className="cc-update-page-error__body">
+            <span>Aktualisierung sicher angehalten</span>
+            <h2>{visibleError.title}</h2>
+            <p>{visibleError.explanation}</p>
+            <details open>
+              <summary>Technische Details</summary>
+              {visibleError.code ? <div><b>Fehlercode</b><code>{visibleError.code}</code></div> : null}
+              {visibleError.technical ? <pre>{visibleError.technical}</pre> : null}
+            </details>
+            <div className="cc-update-page-error__actions">
+              <button type="button" onClick={copyErrorDetails}>{copied ? "Kopiert" : "Fehler kopieren"}</button>
+              <button type="button" onClick={dismissCurrentError}>Hinweis schließen</button>
+              {canRetry ? (
+                <button type="button" className="is-primary" onClick={() => setConfirmInstall(true)}>
+                  Erneut versuchen
+                </button>
+              ) : null}
+            </div>
+            {copyFallbackText ? (
+              <div className="cc-update-page-copy-fallback" role="status">
+                <strong>Automatisches Kopieren ist nicht möglich. Text markieren und manuell kopieren:</strong>
+                <textarea
+                  aria-label="Fehlerdetails zum manuellen Kopieren"
+                  readOnly
+                  value={copyFallbackText}
+                  onFocus={(event) => event.currentTarget.select()}
+                />
+              </div>
+            ) : null}
+          </div>
+        </section>
+      ) : null}
+
+      {!busy && lifecycleActivatedVisible ? (
+        <section className="cc-update-activated" role="status" aria-labelledby="cc-update-activated-title">
+          <span className="cc-update-activated__check" aria-hidden="true">✓</span>
+          <div>
+            <h2 id="cc-update-activated-title">Neue Version ist jetzt aktiv</h2>
+            <strong>Bonni Core {displayTargetVersion} wird jetzt verwendet.</strong>
+            <p>Sie können das System wie gewohnt nutzen und die neue Version überprüfen.</p>
+            <p>Sollten Probleme auftreten, können Sie unter „Status“ zur vorherigen Version zurückkehren.</p>
+            <div className="cc-update-activated__actions">
+              <button type="button" onClick={() => acknowledgeActivatedVersion({ openStatus: true })}>Status öffnen</button>
+              <button type="button" className="is-primary" onClick={() => acknowledgeActivatedVersion()}>Verstanden</button>
+            </div>
+          </div>
+        </section>
+      ) : null}
+
+      {!busy && !lifecycleObservationActive ? <div className="cc-update-page-layout">
+        <main className="cc-update-page-main">
+          {!localRelevant ? <CoreReleaseOverview status={status} /> : null}
+
+          <section className="cc-update-page-card cc-update-page-changes">
+            <div className="cc-update-page-section-title">
+              <div><span>Versionsbeschreibung</span><h2>{releaseNotes.title}</h2></div>
+              {!releaseNotes.supplied ? <b>Technische Übersicht</b> : null}
+            </div>
+            <p className="cc-update-page-summary">{releaseNotes.summary}</p>
+            <div className="cc-update-page-change-list">
+              {releaseNotes.changes.length ? releaseNotes.changes.map((change) => (
+                <article key={change.key}>
+                  <span>{change.type}</span>
+                  <div><strong>{change.title}</strong>{change.detail ? <p>{change.detail}</p> : null}</div>
+                </article>
+              )) : <p>Für dieses Update wurden keine einzelnen Änderungspunkte hinterlegt.</p>}
+            </div>
+          </section>
+
+          <section className="cc-update-page-card cc-update-page-history">
+            <div className="cc-update-page-section-title"><div><span>Protokoll</span><h2>Bisheriger Verlauf</h2></div><b>{timeline.length} Einträge</b></div>
+            {timeline.length ? (
+              <ol>
+                {timeline.map((event) => (
+                  <li key={event.signature} className={`is-${event.kind}`}>
+                    <time>{formatUpdateTime(event.time)}</time>
+                    <span aria-hidden="true" />
+                    <div><strong>{event.title}</strong>{event.detail ? <p>{event.detail}</p> : null}</div>
+                  </li>
+                ))}
+              </ol>
+            ) : <p className="cc-update-page-empty-progress">Noch keine Installationsschritte protokolliert.</p>}
+          </section>
+        </main>
+
+        <aside className="cc-update-page-sidebar">
+          <section className="cc-update-page-card cc-update-page-package">
+            <span>Paketübersicht</span>
+            <dl>
+              <div><dt>Geänderte Dateien</dt><dd>{fileCount}</dd></div>
+              <div><dt>Geprüfte Indexeinträge</dt><dd>{inventoryCount || "—"}</dd></div>
+              <div><dt>Löschungen</dt><dd>{deleteCount}</dd></div>
+            </dl>
+            {localRelevant && Array.isArray(localUpdate?.components) && localUpdate.components.length ? (
+              <div className="cc-update-page-components">
+                <span>Betroffener Bereich</span>
+                <b>Bonni Core</b>
+              </div>
+            ) : null}
+          </section>
+
+          <section className="cc-update-page-card cc-update-page-start">
+            <span>Sicher aktualisieren</span>
+            <h2>{busy ? "Aktualisierung läuft" : completed ? "Bonni ist aktuell" : "Bereit zum Start"}</h2>
+            <ul>
+              <li>Paket und Dateihashes werden zuerst geprüft.</li>
+              <li>Vor Änderungen wird eine Sicherung erstellt.</li>
+              <li>{localRelevant
+                ? "Der Installationsserver hält den Fortschritt beim Core-Neustart erreichbar."
+                : "Der Candidate wird isoliert geprüft; erst danach erfolgt der kontrollierte Single-Active-Wechsel."}</li>
+            </ul>
+            {installationBlocked ? (
+              <p className="cc-update-page-runner-error" role="status">{installationBlockedReason}</p>
+            ) : null}
+            {confirmInstall && updateAvailable && !busy ? (
+              <div
+                ref={confirmationDialogRef}
+                className="cc-update-page-confirm"
+                role="group"
+                aria-labelledby="cc-update-confirm-title"
+                aria-describedby="cc-update-confirm-description"
+                onKeyDown={handleConfirmationKeyDown}
+              >
+                <strong id="cc-update-confirm-title">Aktualisierung wirklich starten?</strong>
+                <p id="cc-update-confirm-description">{localRelevant
+                  ? "Der Installationsserver übernimmt die Anzeige, während Bonni Core kontrolliert neu startet."
+                  : "Der aktive Stand bleibt während der isolierten Candidate-Prüfung erreichbar. Der Produktivzugriff wechselt erst nach bestandener Prüfung kontrolliert."}</p>
+                <button ref={confirmationPrimaryRef} type="button" onClick={handleInstall} disabled={installing || lifecycleFinalizing || installationBlocked}>
+                  {installing ? "Wird gestartet …" : "Installieren"}
+                </button>
+                <button type="button" onClick={() => setConfirmInstall(false)} disabled={installing}>Abbrechen</button>
+              </div>
+            ) : updateAvailable && !busy && !completed ? (
+              <div className="cc-update-offer-actions">
+                <button type="button" className="cc-update-page-secondary" onClick={onBack}>Überspringen</button>
+                <button
+                  ref={startButtonRef}
+                  type="button"
+                  className="cc-update-page-primary"
+                  onClick={() => setConfirmInstall(true)}
+                  disabled={installationBlocked || installing || lifecycleFinalizing || lifecycleRollingBack}
+                >
+                  {localLifecycleBlocked
+                    ? "Gesperrt bis Rückfallabschluss"
+                    : failed ? "Erneut installieren" : "Installieren"}
+                </button>
+              </div>
+            ) : null}
+            <button type="button" className="cc-update-page-secondary" onClick={handleCheck} disabled={checking || installing || lifecycleFinalizing || lifecycleRollingBack || busy}>
+              {checking ? "Prüfung läuft …" : "Erneut auf Updates prüfen"}
+            </button>
+          </section>
+        </aside>
+      </div> : null}
+    </section>
+  );
+}

@@ -10,11 +10,8 @@ import {
   runControlCenterRuntimeModuleLifecycle,
 } from "../../../system/api/controlCenterRuntimeApi.js";
 import {
-  confirmCurrentUserTotpSetup,
   getControlCenterSystemSettings,
-  getCurrentTwoFactorStatus,
   saveControlCenterSystemSettings,
-  startCurrentUserTotpSetup,
 } from "../../../system/api/systemSettingsApi.js";
 import { BONNI_CORE_VERSION } from "../../../system/version.js";
 
@@ -76,28 +73,28 @@ const STORE_FEEDBACK_CATEGORIES = Object.freeze([
 
 const TWO_FACTOR_INSTALLATION_GUIDE = Object.freeze({
   de: {
-    title: "Zwei-Faktor-Authentifizierung einrichten",
-    intro: "Diese Installationshilfe führt dich Schritt für Schritt durch die Einrichtung. Token und Passwörter werden von Bonni nicht gespeichert.",
+    title: "privacyIDEA-Adapter administrieren",
+    intro: "Diese Hilfe richtet den optionalen externen Anbieter ein. Persoenliche 2FA-Einrichtungen erfolgen ausschliesslich in den zentralen Bonni-Core-Einstellungen.",
     steps: [
-      ["Anbieter auswählen", "Wähle unter „Einrichtung“ eine gewöhnliche Authenticator-App oder privacyIDEA als externen Anbieter."],
-      ["Verbindung eintragen", "Bei privacyIDEA trägst du die HTTPS-Adresse deines Servers und – falls verwendet – den Realm ein."],
-      ["Sicherheitsregeln festlegen", "Lege Gültigkeit, erlaubte Versuche sowie die Reihenfolge von Token und Passwort fest. Empfohlen sind 60 Sekunden und 8 Versuche."],
-      ["QR-Code scannen", "Bei einer normalen Authenticator-App erzeugt Bonni den QR-Code für deinen Zugang. Bei privacyIDEA wird der Token zuerst im privacyIDEA-System zugeordnet; der dort angezeigte QR-Code wird anschließend mit der App gescannt."],
-      ["Prüfen und speichern", "Bestätige den ersten Einmalcode und bewahre ausgegebene Wiederherstellungscodes sicher und getrennt vom Gerät auf."],
+      ["Plugin installieren", "Installiere und aktiviere den privacyIDEA-Adapter im Bonni Store."],
+      ["Verbindung eintragen", "Trage die HTTPS-Adresse des privacyIDEA-Servers und – falls verwendet – den Realm ein."],
+      ["Sicherheitsregeln festlegen", "Lege Gueltigkeit, erlaubte Versuche sowie die vom Anbieter geforderten Prueffelder fest."],
+      ["Verbindung pruefen", "Speichere die Adapterkonfiguration und pruefe die Erreichbarkeit ohne Benutzergeheimnisse in Bonni zu uebernehmen."],
+      ["Benutzer zentral freigeben", "Administratoren stossen die 2FA-Einrichtung kontogenau an. Benutzer schliessen sie in „Meine Einstellungen“ ab."],
     ],
-    privacyIdeaNote: "Wichtig: Bonni darf keinen Ersatz-QR-Code für einen privacyIDEA-Token erfinden. Der geheime Schlüssel und der zugehörige QR-Code werden ausschließlich bei der Tokenausgabe durch privacyIDEA erzeugt.",
+    privacyIdeaNote: "Wichtig: Der Store zeigt niemals persoenliche Token, QR-Codes, Freigabepasswoerter oder Wiederherstellungscodes an.",
   },
   en: {
-    title: "Set up two-factor authentication",
-    intro: "This installation guide walks you through the setup step by step. Bonni does not store tokens or passwords.",
+    title: "Administer the privacyIDEA adapter",
+    intro: "This guide configures the optional external provider. Personal 2FA enrollment is available only in the central Bonni Core settings.",
     steps: [
-      ["Choose a provider", "Under “Setup”, select a regular authenticator app or privacyIDEA as an external provider."],
-      ["Enter the connection", "For privacyIDEA, enter the HTTPS address of your server and the realm if one is used."],
-      ["Set the security policy", "Choose the validity period, allowed attempts and the token/password order. The recommended defaults are 60 seconds and 8 attempts."],
-      ["Scan the QR code", "For a regular authenticator app, Bonni creates the QR code for your account. With privacyIDEA, assign the token in privacyIDEA first and scan the QR code shown there."],
-      ["Verify and save", "Confirm the first one-time code and keep the recovery codes in a safe place separate from the device."],
+      ["Install the plugin", "Install and activate the privacyIDEA adapter in the Bonni Store."],
+      ["Enter the connection", "Enter the HTTPS address of the privacyIDEA server and its realm if one is used."],
+      ["Set the security policy", "Choose validity, allowed attempts and the proof fields required by the provider."],
+      ["Test the connection", "Save the adapter configuration and test availability without importing user secrets into Bonni."],
+      ["Approve users centrally", "Administrators initiate 2FA for an exact account. Users finish it in My Settings."],
     ],
-    privacyIdeaNote: "Important: Bonni must not invent a replacement QR code for a privacyIDEA token. The secret and its QR code are created only when privacyIDEA issues the token.",
+    privacyIdeaNote: "Important: The Store never displays personal tokens, QR codes, enrollment passwords or recovery codes.",
   },
 });
 
@@ -565,13 +562,9 @@ function normalizeTwoFactorSettings(settings) {
   };
 }
 
-function StoreTwoFactorSetup({ token }) {
+function StoreTwoFactorProviderSetup({ token }) {
   const [systemSettings, setSystemSettings] = useState(null);
   const [draft, setDraft] = useState(() => normalizeTwoFactorSettings(null));
-  const [status, setStatus] = useState(null);
-  const [totpSetup, setTotpSetup] = useState(null);
-  const [confirmationCode, setConfirmationCode] = useState("");
-  const [recoveryCodes, setRecoveryCodes] = useState([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState("");
@@ -581,13 +574,9 @@ function StoreTwoFactorSetup({ token }) {
     setLoading(true);
     setError("");
     try {
-      const [nextSettings, nextStatus] = await Promise.all([
-        getControlCenterSystemSettings(token),
-        getCurrentTwoFactorStatus(token),
-      ]);
+      const nextSettings = await getControlCenterSystemSettings(token);
       setSystemSettings(nextSettings);
       setDraft(normalizeTwoFactorSettings(nextSettings));
-      setStatus(nextStatus);
     } catch (loadError) {
       setError(loadError?.message || "Die 2FA-Einstellungen konnten nicht geladen werden.");
     } finally {
@@ -600,9 +589,10 @@ function StoreTwoFactorSetup({ token }) {
   }, [token]);
 
   const externalProviders = draft.externalProviders || [];
-  const selectedExternal = externalProviders.find((provider) => provider.id === draft.provider) || null;
+  const selectedExternal = externalProviders.find((provider) => (
+    String(provider?.id || "").toLowerCase().includes("privacyidea")
+  )) || null;
   const values = selectedExternal?.configuration?.values || {};
-  const savedProvider = systemSettings?.twoFactor?.provider || "local";
 
   function patchProviderValue(name, value) {
     if (!selectedExternal) return;
@@ -634,8 +624,7 @@ function StoreTwoFactorSetup({ token }) {
       });
       setSystemSettings(result);
       setDraft(normalizeTwoFactorSettings(result));
-      setStatus(await getCurrentTwoFactorStatus(token));
-      setMessage("Die 2FA-Konfiguration wurde gespeichert.");
+      setMessage("Die privacyIDEA-Adapterkonfiguration wurde gespeichert.");
     } catch (saveError) {
       setError(saveError?.message || "Die 2FA-Konfiguration konnte nicht gespeichert werden.");
     } finally {
@@ -643,41 +632,7 @@ function StoreTwoFactorSetup({ token }) {
     }
   }
 
-  async function createQrCode() {
-    setMessage("");
-    setError("");
-    setRecoveryCodes([]);
-    try {
-      const result = await startCurrentUserTotpSetup(token, {
-        issuer: "Bonni Core",
-        includeManualSecret: true,
-      });
-      setTotpSetup(result);
-    } catch (setupError) {
-      setError(setupError?.message || "Der QR-Code konnte nicht erzeugt werden.");
-    }
-  }
-
-  async function confirmQrCode() {
-    if (!totpSetup?.credentialId || !confirmationCode.trim()) return;
-    setMessage("");
-    setError("");
-    try {
-      const result = await confirmCurrentUserTotpSetup(token, {
-        credentialId: totpSetup.credentialId,
-        code: confirmationCode.trim(),
-      });
-      setRecoveryCodes(result?.recoveryCodes || []);
-      setTotpSetup(null);
-      setConfirmationCode("");
-      setStatus(await getCurrentTwoFactorStatus(token));
-      setMessage("Die Authenticator-App wurde erfolgreich bestätigt.");
-    } catch (confirmError) {
-      setError(confirmError?.message || "Der Einmalcode konnte nicht bestätigt werden.");
-    }
-  }
-
-  if (loading) return <div className="store-detail-block"><p>2FA-Einstellungen werden geladen …</p></div>;
+  if (loading) return <div className="store-detail-block"><p>Adapterkonfiguration wird geladen …</p></div>;
 
   return (
     <div className="store-2fa-setup">
@@ -687,22 +642,14 @@ function StoreTwoFactorSetup({ token }) {
       <section className="store-detail-block">
         <div className="store-2fa-section-head">
           <div>
-            <h3>2FA-Anbieter auswählen</h3>
-            <p>Die Auswahl gilt für die Anmeldung an Bonni Core.</p>
+            <h3>privacyIDEA-Adapter</h3>
+            <p>Hier verwalten Administratoren nur die Verbindung und Richtlinie des externen Anbieters.</p>
           </div>
-          <span className={draft.configured ? "store-2fa-ready is-ready" : "store-2fa-ready"}>{draft.configured ? "Bereit" : "Unvollständig"}</span>
+          <span className={selectedExternal ? "store-2fa-ready is-ready" : "store-2fa-ready"}>{selectedExternal ? "Registriert" : "Nicht registriert"}</span>
         </div>
-        <div className="store-2fa-provider-grid">
-          <button type="button" className={draft.provider === "local" ? "is-selected" : ""} onClick={() => setDraft((current) => ({ ...current, provider: "local" }))}>
-            <strong>Authenticator-App (TOTP)</strong>
-            <span>Für 2FAS, Aegis, FreeOTP, Google Authenticator, Microsoft Authenticator und andere TOTP-Apps.</span>
-          </button>
-          {externalProviders.map((provider) => (
-            <button key={provider.id} type="button" className={draft.provider === provider.id ? "is-selected" : ""} onClick={() => setDraft((current) => ({ ...current, provider: provider.id }))}>
-              <strong>{provider.label}</strong>
-              <span>Externer 2FA-Anbieter über das installierte Plugin.</span>
-            </button>
-          ))}
+        <div className="store-2fa-provider-note">
+          <strong>Keine persoenlichen 2FA-Daten im Store</strong>
+          <p>Benutzerauftraege, Freigabepasswoerter, QR-Codes und Wiederherstellungscodes werden ausschliesslich in den dafuer vorgesehenen Core-Oberflaechen verarbeitet.</p>
         </div>
       </section>
 
@@ -716,48 +663,11 @@ function StoreTwoFactorSetup({ token }) {
             ))}
           </div>
         </section>
-      )) : null}
-
-      <section className="store-detail-block store-2fa-qr-card">
-        <h3>Authenticator-App und QR-Code</h3>
-        {selectedExternal ? (
-          <div className="store-2fa-provider-note">
-            <strong>Der Token wird durch {selectedExternal.label} ausgegeben.</strong>
-            <p>Ordne den Benutzer dort einem Token zu und scanne anschließend den von {selectedExternal.label} angezeigten QR-Code. Bonni erzeugt keinen Ersatzschlüssel und speichert weder Token noch Passwort.</p>
-          </div>
-        ) : savedProvider !== "local" ? (
-          <p>Speichere zuerst „Authenticator-App (TOTP)“ als Anbieter. Danach kann Bonni den persönlichen QR-Code sicher erzeugen.</p>
-        ) : status?.enabled ? (
-          <div className="store-2fa-provider-note is-success"><strong>Für deinen Zugang ist bereits eine Authenticator-App eingerichtet.</strong></div>
-        ) : totpSetup ? (
-          <div className="store-2fa-enrollment">
-            <img src={totpSetup.qrCodeDataUrl} alt="Persönlicher QR-Code für die 2FA-Einrichtung" />
-            <div>
-              <h4>1. QR-Code mit der Authenticator-App scannen</h4>
-              <p>Der QR-Code gehört nur zu deinem Benutzerkonto. Zeige ihn niemandem und speichere ihn nicht als Screenshot.</p>
-              {totpSetup.manualEntrySecret ? <details><summary>Schlüssel manuell eingeben</summary><code>{totpSetup.manualEntrySecret}</code></details> : null}
-              <label className="store-2fa-field">
-                <span>2. Angezeigten Einmalcode bestätigen</span>
-                <input value={confirmationCode} inputMode="numeric" autoComplete="one-time-code" maxLength={8} onChange={(event) => setConfirmationCode(event.target.value.replace(/\D/g, ""))} placeholder="123456" />
-              </label>
-              <button type="button" className="store-2fa-primary" onClick={confirmQrCode} disabled={!confirmationCode.trim()}>Einmalcode bestätigen</button>
-            </div>
-          </div>
-        ) : (
-          <button type="button" className="store-2fa-primary" onClick={createQrCode}>Persönlichen QR-Code erzeugen</button>
-        )}
-        {recoveryCodes.length ? (
-          <div className="store-2fa-recovery">
-            <strong>Wiederherstellungscodes – nur jetzt sichtbar</strong>
-            <p>Bewahre diese Codes sicher und getrennt vom Gerät auf.</p>
-            <pre>{recoveryCodes.join("\n")}</pre>
-          </div>
-        ) : null}
-      </section>
+      )) : <section className="store-detail-block"><p>Der privacyIDEA-Adapter ist noch nicht registriert. Installiere oder aktiviere zuerst das Plugin.</p></section>}
 
       <div className="store-2fa-footer">
         <button type="button" onClick={load} disabled={saving}>Neu laden</button>
-        <button type="button" className="store-2fa-primary" onClick={save} disabled={saving}>{saving ? "Speichert …" : "Konfiguration speichern"}</button>
+        <button type="button" className="store-2fa-primary" onClick={save} disabled={saving || !selectedExternal}>{saving ? "Speichert …" : "Adapterkonfiguration speichern"}</button>
       </div>
     </div>
   );
@@ -766,13 +676,6 @@ function StoreTwoFactorSetup({ token }) {
 function StoreTwoFactorGuide({ language, guideLanguage, onGuideLanguageChange }) {
   const resolvedLanguage = guideLanguage === "auto" ? (language === "de" ? "de" : "en") : guideLanguage;
   const guide = TWO_FACTOR_INSTALLATION_GUIDE[resolvedLanguage] || TWO_FACTOR_INSTALLATION_GUIDE.en;
-  const illustrations = [
-    "/system/guides/2fa/01-provider.svg",
-    "/system/guides/2fa/02-connection.svg",
-    "/system/guides/2fa/03-policy.svg",
-    "/system/guides/2fa/04-qr-code.svg",
-    "/system/guides/2fa/05-finish.svg",
-  ];
   return (
     <div className="store-2fa-guide" lang={resolvedLanguage}>
       <div className="store-2fa-guide__head">
@@ -789,7 +692,6 @@ function StoreTwoFactorGuide({ language, guideLanguage, onGuideLanguageChange })
       <ol className="store-2fa-guide__steps">
         {guide.steps.map(([title, description], index) => (
           <li key={title}>
-            <img src={illustrations[index]} alt="" aria-hidden="true" />
             <div><span>{index + 1}</span><h4>{title}</h4><p>{description}</p></div>
           </li>
         ))}
@@ -1008,7 +910,7 @@ function StoreDetail({ open, module, language, details, plan, result, busy, toke
           </nav>
         ) : null}
 
-        {activeTab === "setup" && isTwoFactorPlugin ? <StoreTwoFactorSetup token={token} /> : null}
+        {activeTab === "setup" && isTwoFactorPlugin ? <StoreTwoFactorProviderSetup token={token} /> : null}
         {activeTab === "guide" && isTwoFactorPlugin ? <StoreTwoFactorGuide language={language} guideLanguage={guideLanguage} onGuideLanguageChange={setGuideLanguage} /> : null}
         {activeTab === "feedback" && isTwoFactorPlugin ? <StorePluginFeedback module={module} language={language} support={support} /> : null}
 

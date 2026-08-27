@@ -1,3 +1,16 @@
+FROM node:22-bookworm-slim@sha256:6c74791e557ce11fc957704f6d4fe134a7bc8d6f5ca4403205b2966bd488f6b3 AS frontend-build
+
+WORKDIR /app/SYSTEM/frontend
+
+# A release source tree intentionally contains no generated backend/public
+# directory. Build the exact frontend from its lockfile inside BuildKit so a
+# fresh runtime never depends on host node_modules or an unpublished artifact.
+COPY SYSTEM/frontend/package*.json ./
+RUN npm ci
+COPY SYSTEM/frontend ./
+COPY SYSTEM/app /app/SYSTEM/app
+RUN npm run build
+
 FROM node:22-bookworm-slim@sha256:6c74791e557ce11fc957704f6d4fe134a7bc8d6f5ca4403205b2966bd488f6b3 AS backend-build
 
 WORKDIR /app/backend
@@ -7,22 +20,23 @@ RUN apt-get update \
   && rm -rf /var/lib/apt/lists/*
 
 # Build context is the repository root. The closed image includes:
-# - System/backend
-# - the exact-tree verified prebuilt System frontend
-# - installable module packages under System/app and System/addons
-COPY System/backend/package*.json ./
+# - SYSTEM/backend
+# - the exact-tree verified prebuilt SYSTEM frontend
+# - installable module packages under SYSTEM/app and SYSTEM/addons
+COPY SYSTEM/backend/package*.json ./
 RUN npm ci
 
-COPY System/backend/tsconfig.json ./
-COPY System/backend/tsconfig.seed.json ./
-COPY System/backend/prisma.config.ts ./
-COPY System/backend/prisma ./prisma
-COPY System/backend/config ./config
-COPY System/backend/scripts/modules ./scripts/modules
-COPY System/backend/scripts/setup ./scripts/setup
-COPY System/backend/src ./src
-COPY System/backend/public ./public
-COPY System/app /app/app
+COPY SYSTEM/backend/tsconfig.json ./
+COPY SYSTEM/backend/tsconfig.seed.json ./
+COPY SYSTEM/backend/prisma.config.ts ./
+COPY SYSTEM/backend/prisma ./prisma
+COPY SYSTEM/backend/config ./config
+COPY SYSTEM/backend/scripts/modules ./scripts/modules
+COPY SYSTEM/backend/scripts/runtime ./scripts/runtime
+COPY SYSTEM/backend/scripts/setup ./scripts/setup
+COPY SYSTEM/backend/src ./src
+COPY SYSTEM/app /app/app
+COPY --from=frontend-build /app/SYSTEM/frontend/dist ./public/system
 
 ENV NODE_ENV=production
 ENV RUN_SYSTEM_ROOT=/app/run_system
@@ -33,11 +47,12 @@ RUN npm run modules:build
 RUN npm run modules:verify
 RUN npm run modules:sync-legal-payloads
 RUN npm run modules:stage-runtime -- /app/runtime-packages
+RUN node scripts/setup/prebuilt-frontend.mjs --write public/system
 RUN node scripts/setup/prebuilt-frontend.mjs --verify public/system
 
 FROM node:22-bookworm-slim@sha256:6c74791e557ce11fc957704f6d4fe134a7bc8d6f5ca4403205b2966bd488f6b3 AS runtime
 
-ARG BONNI_CORE_VERSION=0.1.19
+ARG BONNI_CORE_VERSION=0.1.20
 ARG BONNI_CORE_REVISION=unknown
 
 LABEL org.opencontainers.image.title="Bonni Core" \
@@ -62,17 +77,18 @@ ENV BONNI_PROJECT_ROOT=/app
 ENV FRONTEND_DIST_ROOT=/app/public
 ENV BONNI_CORE_IMAGE_VERSION=${BONNI_CORE_VERSION}
 
-COPY System/backend/package*.json ./
+COPY SYSTEM/backend/package*.json ./
 RUN npm ci --omit=dev
 
-# System backend runtime.
+# SYSTEM backend runtime.
 COPY --from=backend-build /app/backend/dist ./dist
 COPY --from=backend-build /app/backend/prisma ./prisma
 COPY --from=backend-build /app/backend/prisma.config.ts ./prisma.config.ts
 COPY --from=backend-build /app/backend/config ./config
-COPY System/backend/scripts/auth ./scripts/auth
-COPY System/backend/scripts/backup ./scripts/backup
-COPY System/backend/scripts/runtime ./scripts/runtime
+COPY SYSTEM/backend/scripts/auth ./scripts/auth
+COPY SYSTEM/backend/scripts/backup ./scripts/backup
+COPY SYSTEM/backend/scripts/maintenance ./scripts/maintenance
+COPY SYSTEM/backend/scripts/runtime ./scripts/runtime
 COPY --from=backend-build /app/backend/node_modules/.prisma ./node_modules/.prisma
 COPY --from=backend-build /app/backend/node_modules/@prisma/client ./node_modules/@prisma/client
 

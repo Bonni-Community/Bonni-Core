@@ -14,7 +14,8 @@ function serviceBlock(source, name, nextName) {
 test("cutover helper mounts enforce immutable snapshot and separated restore receipt", async () => {
   const source = await fs.readFile(composePath, "utf8");
   const create = serviceBlock(source, "update-snapshot-create", "update-snapshot-restore");
-  const restore = serviceBlock(source, "update-snapshot-restore", "runtime-proxy");
+  const restore = serviceBlock(source, "update-snapshot-restore", "update-snapshot-cleanup");
+  const cleanup = serviceBlock(source, "update-snapshot-cleanup", "runtime-proxy");
   const runner = serviceBlock(source, "update-runner", null);
 
   assert.match(create, /update_rollback_snapshots:\/var\/lib\/bonni-rollback-snapshots\n/);
@@ -38,6 +39,13 @@ test("cutover helper mounts enforce immutable snapshot and separated restore rec
     assert.match(block, /update-cutover-snapshot\.mjs/);
   }
 
+  assert.match(cleanup, /update_rollback_snapshots:\/var\/lib\/bonni-rollback-snapshots\n/);
+  assert.match(cleanup, /update_rollback_results:\/var\/lib\/bonni-rollback-results\n/);
+  assert.match(cleanup, /update-cutover-retention\.mjs/);
+  assert.match(cleanup, /read_only: true/);
+  assert.match(cleanup, /cap_drop:\n      - ALL/);
+  assert.doesNotMatch(cleanup, /docker\.sock|ports:|runtime_frontend|runtime_database|runtime_update/);
+
   assert.match(runner, /update_rollback_snapshots:\/var\/lib\/bonni-rollback-snapshots:ro/);
   assert.match(runner, /update_rollback_results:\/var\/lib\/bonni-rollback-results:ro/);
   assert.match(source, /update_rollback_snapshots:\n    labels:/);
@@ -56,7 +64,7 @@ test("production database health and manual proxy switch respect crash recovery 
   assert.match(database, /maintenance=template1/);
   assert.match(switchScript, /update-transaction-fence\.json/);
   assert.match(switchScript, /if \[ -e "\$transaction_fence" \]/);
-  assert.match(startScript, /update-snapshot-create update-snapshot-restore/);
+  assert.match(startScript, /update-snapshot-create update-snapshot-restore update-snapshot-cleanup/);
   const gateIndex = startScript.indexOf("update-runner --once --boot-gate");
   const transportCloseIndex = startScript.indexOf("update-runner --network-transport-gate=close");
   const transportOpenIndex = startScript.indexOf("update-runner --network-transport-gate=open");

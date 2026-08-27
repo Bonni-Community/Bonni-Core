@@ -6,6 +6,12 @@ import * as authService from "../services/auth.service.js";
 import * as accountService from "../services/account.service.js";
 
 export const authRouter = Router();
+authRouter.use((_req, res, next) => {
+  res.setHeader("Cache-Control", "no-store, max-age=0");
+  res.setHeader("Pragma", "no-cache");
+  res.setHeader("Expires", "0");
+  next();
+});
 
 authRouter.post("/login", validate(loginSchema), async (req, res, next) => {
   try {
@@ -13,7 +19,7 @@ authRouter.post("/login", validate(loginSchema), async (req, res, next) => {
       ip: req.ip,
       headers: req.headers
     });
-    res.json(result);
+    res.status((result as any).requiresTwoFactor ? 202 : 200).json(result);
   } catch (error) {
     next(error);
   }

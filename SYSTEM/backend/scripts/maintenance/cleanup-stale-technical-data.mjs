@@ -3,7 +3,18 @@ import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 const GENERATED_ENTRY_ASSET = /^index-[A-Za-z0-9_-]+\.(?:js|css)(?:\.map)?$/;
-const MODULE_CONTAINER_DIRECTORIES = ["app", "add-on", "plug-in"];
+const MODULE_CONTAINER_DIRECTORIES = [
+  "app",
+  "apps",
+  "addons",
+  "add-on",
+  "addon",
+  "plugins",
+  "plug-in",
+  "plugin",
+  "bridges",
+  "bridge",
+];
 const KONTOR_CANONICAL_FILES = [
   "app/kontorapp/manifest.ts",
   "app/kontorapp/contracts/kontorapp-rpc.v1.json",
@@ -60,7 +71,8 @@ function assetReferences(html) {
 
 async function directoryExists(directory) {
   try {
-    return (await fs.stat(directory)).isDirectory();
+    const state = await fs.lstat(directory);
+    return state.isDirectory() && !state.isSymbolicLink();
   } catch {
     return false;
   }
@@ -68,15 +80,112 @@ async function directoryExists(directory) {
 
 async function regularFileExists(file) {
   try {
-    return (await fs.stat(file)).isFile();
+    const state = await fs.lstat(file);
+    return state.isFile() && !state.isSymbolicLink();
   } catch {
     return false;
   }
 }
 
+async function safeStateInside(rootDirectory, targetPath) {
+  const root = path.resolve(rootDirectory);
+  const target = path.resolve(targetPath);
+  if (target !== root && !target.startsWith(`${root}${path.sep}`)) return null;
+
+  const relative = path.relative(root, target);
+  let cursor = root;
+  const segments = relative ? relative.split(path.sep) : [];
+  const rootState = await fs.lstat(root).catch(() => null);
+  if (!rootState?.isDirectory() || rootState.isSymbolicLink()) return null;
+
+  for (let index = 0; index < segments.length; index += 1) {
+    cursor = path.join(cursor, segments[index]);
+    const state = await fs.lstat(cursor).catch(() => null);
+    if (!state || state.isSymbolicLink()) return null;
+    if (index < segments.length - 1 && !state.isDirectory()) return null;
+    if (index === segments.length - 1) return state;
+  }
+  return rootState;
+}
+
+async function safeDirectoryInside(systemRoot, directory) {
+  const state = await safeStateInside(systemRoot, directory);
+  return Boolean(state?.isDirectory());
+}
+
+async function safeRegularFileInside(systemRoot, file) {
+  const state = await safeStateInside(systemRoot, file);
+  return Boolean(state?.isFile());
+}
+
+async function removeGeneratedDirectory(systemRoot, directory) {
+  const root = path.resolve(systemRoot);
+  const target = path.resolve(directory);
+  if (!target.startsWith(`${root}${path.sep}`)) return null;
+  if (!await safeDirectoryInside(root, target)) return null;
+  await fs.rm(target, { recursive: true, force: true });
+  return target;
+}
+
+async function cleanupGeneratedBuildArtifacts(systemRoot) {
+  const removed = [];
+  const coreBackendRoot = path.join(systemRoot, "backend");
+  if (
+    await safeRegularFileInside(systemRoot, path.join(coreBackendRoot, "package.json"))
+    && await safeDirectoryInside(systemRoot, path.join(coreBackendRoot, "src"))
+  ) {
+    const coreBackendDist = await removeGeneratedDirectory(
+      systemRoot,
+      path.join(coreBackendRoot, "dist"),
+    );
+    if (coreBackendDist) removed.push(coreBackendDist);
+  }
+
+  const coreFrontendRoot = path.join(systemRoot, "frontend");
+  if (
+    await safeRegularFileInside(systemRoot, path.join(coreFrontendRoot, "package.json"))
+    && await safeDirectoryInside(systemRoot, path.join(coreFrontendRoot, "src"))
+  ) {
+    const coreFrontendDist = await removeGeneratedDirectory(
+      systemRoot,
+      path.join(coreFrontendRoot, "dist"),
+    );
+    if (coreFrontendDist) removed.push(coreFrontendDist);
+  }
+
+  for (const containerName of MODULE_CONTAINER_DIRECTORIES) {
+    const containerRoot = path.join(systemRoot, containerName);
+    if (!await safeDirectoryInside(systemRoot, containerRoot)) continue;
+    let modules = [];
+    try {
+      modules = await fs.readdir(containerRoot, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+
+    for (const moduleEntry of modules) {
+      if (!moduleEntry.isDirectory() || moduleEntry.isSymbolicLink()) continue;
+      const moduleRoot = path.join(containerRoot, moduleEntry.name);
+      for (const packageDirectory of ["backend", "frontend"]) {
+        const packageRoot = path.join(moduleRoot, packageDirectory);
+        const sourcePackage = await safeRegularFileInside(systemRoot, path.join(packageRoot, "package.json"));
+        const sourceDirectory = await safeDirectoryInside(systemRoot, path.join(packageRoot, "src"));
+        if (!sourcePackage || !sourceDirectory) continue;
+        const generatedDist = await removeGeneratedDirectory(
+          systemRoot,
+          path.join(packageRoot, "dist"),
+        );
+        if (generatedDist) removed.push(generatedDist);
+      }
+    }
+  }
+
+  return removed;
+}
+
 async function canonicalKontorLayoutExists(systemRoot) {
   const filesExist = await Promise.all(KONTOR_CANONICAL_FILES.map((relativePath) => (
-    regularFileExists(path.join(systemRoot, ...relativePath.split("/")))
+    safeRegularFileInside(systemRoot, path.join(systemRoot, ...relativePath.split("/")))
   )));
   if (filesExist.some((exists) => !exists)) return false;
 
@@ -98,21 +207,17 @@ async function cleanupLegacyKontorSources(systemRoot) {
   for (const relativePath of KONTOR_LEGACY_PATHS) {
     const target = path.resolve(systemRoot, ...relativePath.split("/"));
     if (!target.startsWith(`${path.resolve(systemRoot)}${path.sep}`)) continue;
-    try {
-      await fs.lstat(target);
-    } catch {
-      continue;
-    }
+    if (!await safeStateInside(systemRoot, target)) continue;
     await fs.rm(target, { recursive: true, force: true });
     removed.push(target);
   }
   return removed;
 }
 
-async function isLegacyVereinsAppPackage(packageRoot) {
+async function isLegacyVereinsAppPackage(systemRoot, packageRoot) {
   for (const manifestName of MANIFEST_NAMES) {
     const manifestPath = path.join(packageRoot, manifestName);
-    if (!await regularFileExists(manifestPath)) continue;
+    if (!await safeRegularFileInside(systemRoot, manifestPath)) continue;
     const source = await fs.readFile(manifestPath, "utf8");
     if (manifestName.endsWith(".json")) {
       try {
@@ -132,7 +237,7 @@ async function cleanupReplacedKontorPackage(systemRoot) {
   for (const relativePath of KONTOR_REPLACED_PACKAGE_PATHS) {
     const target = path.resolve(systemRoot, ...relativePath.split("/"));
     if (!target.startsWith(`${path.resolve(systemRoot)}${path.sep}`)) continue;
-    if (!await directoryExists(target) || !await isLegacyVereinsAppPackage(target)) continue;
+    if (!await safeDirectoryInside(systemRoot, target) || !await isLegacyVereinsAppPackage(systemRoot, target)) continue;
     await fs.rm(target, { recursive: true, force: true });
     removed.push(target);
   }
@@ -144,7 +249,7 @@ async function cleanupFailedInstallDirectories(systemRoot) {
   for (const relativePath of FAILED_INSTALL_DIRECTORIES) {
     const target = path.resolve(systemRoot, ...relativePath.split("/"));
     if (!target.startsWith(`${path.resolve(systemRoot)}${path.sep}`)) continue;
-    if (!await directoryExists(target)) continue;
+    if (!await safeDirectoryInside(systemRoot, target)) continue;
     await fs.rm(target, { recursive: true, force: true });
     removed.push(target);
   }
@@ -153,13 +258,15 @@ async function cleanupFailedInstallDirectories(systemRoot) {
 
 async function frontendDistDirectories(systemRoot) {
   const directories = [];
+  const sourceCoreFrontend = await safeRegularFileInside(systemRoot, path.join(systemRoot, "frontend", "package.json"));
   const coreDist = path.join(systemRoot, "frontend", "dist");
-  if (await directoryExists(coreDist)) directories.push(coreDist);
+  if (sourceCoreFrontend && await safeDirectoryInside(systemRoot, coreDist)) directories.push(coreDist);
   const publishedCoreDist = path.join(systemRoot, "backend", "public", "system");
-  if (await directoryExists(publishedCoreDist)) directories.push(publishedCoreDist);
+  if (sourceCoreFrontend && await safeDirectoryInside(systemRoot, publishedCoreDist)) directories.push(publishedCoreDist);
 
   for (const containerName of MODULE_CONTAINER_DIRECTORIES) {
     const containerRoot = path.join(systemRoot, containerName);
+    if (!await safeDirectoryInside(systemRoot, containerRoot)) continue;
     let modules = [];
     try {
       modules = await fs.readdir(containerRoot, { withFileTypes: true });
@@ -168,9 +275,9 @@ async function frontendDistDirectories(systemRoot) {
     }
 
     for (const moduleEntry of modules) {
-      if (!moduleEntry.isDirectory()) continue;
+      if (!moduleEntry.isDirectory() || moduleEntry.isSymbolicLink()) continue;
       const dist = path.join(containerRoot, moduleEntry.name, "frontend", "dist");
-      if (await directoryExists(dist)) directories.push(dist);
+      if (await safeDirectoryInside(systemRoot, dist)) directories.push(dist);
     }
   }
 
@@ -196,6 +303,8 @@ async function cleanupObsoleteModuleEntries(distRoot) {
 
 export async function cleanupFrontendDist(distDirectory) {
   const distRoot = path.resolve(distDirectory);
+  const realDistRoot = await fs.realpath(distRoot).catch(() => null);
+  if (!realDistRoot || path.resolve(realDistRoot) !== distRoot) return [];
   const assetsRoot = path.join(distRoot, "assets");
   if (!await directoryExists(assetsRoot)) return [];
 
@@ -228,10 +337,12 @@ export async function cleanupFrontendDist(distDirectory) {
   return removed;
 }
 
-export async function cleanupStaleTechnicalData(systemRoot) {
+export async function cleanupStaleTechnicalData(systemRoot, options = {}) {
   const resolvedSystemRoot = path.resolve(systemRoot);
+  const removed = options.beforeBuild === true
+    ? await cleanupGeneratedBuildArtifacts(resolvedSystemRoot)
+    : [];
   const distDirectories = await frontendDistDirectories(resolvedSystemRoot);
-  const removed = [];
 
   for (const distDirectory of distDirectories) {
     removed.push(...await cleanupFrontendDist(distDirectory));
@@ -247,7 +358,13 @@ export async function cleanupStaleTechnicalData(systemRoot) {
 async function main() {
   const scriptDirectory = path.dirname(fileURLToPath(import.meta.url));
   const systemRoot = path.resolve(scriptDirectory, "../../..");
-  const removed = await cleanupStaleTechnicalData(systemRoot);
+  const argumentsList = process.argv.slice(2);
+  if (argumentsList.some((argument) => argument !== "--before-build")) {
+    throw new Error(`TECHNICAL_CLEANUP_ARGUMENT_INVALID:${argumentsList.join(",")}`);
+  }
+  const removed = await cleanupStaleTechnicalData(systemRoot, {
+    beforeBuild: argumentsList.includes("--before-build"),
+  });
 
   if (!removed.length) {
     console.info("[technical-cleanup] Keine alten technischen Build-Dateien gefunden.");

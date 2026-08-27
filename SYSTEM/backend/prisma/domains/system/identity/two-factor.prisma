@@ -25,6 +25,9 @@ enum SecurityTwoFactorChallengePurpose {
   DSGVO_SUBJECT_DATA_DELETE
   DSGVO_DELETION_RULE_UPDATE
   MODULE_PRIVATE_DATA_ACCESS
+  ACCOUNT_RECOVERY_APPROVAL
+  ACCOUNT_RECOVERY_SUPPORT_CODE
+  ACCOUNT_RECOVERY_POLICY
 }
 
 enum SecurityTwoFactorChallengeStatus {
@@ -42,6 +45,37 @@ enum SecurityTwoFactorAuditResult {
   BLOCKED
 }
 
+enum SecurityTwoFactorEnrollmentStatus {
+  PENDING
+  CLAIMED
+  CONFIRMED
+  EXPIRED
+  FAILED
+  REVOKED
+}
+
+model SecurityTwoFactorEnrollment {
+  id                     String                             @id @default(cuid())
+  accountId              String                             @unique
+  account                Account                            @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  requestedByAccountId   String
+  providerId             String                             @default("local")
+  enrollmentPasswordHash String?
+  status                 SecurityTwoFactorEnrollmentStatus @default(PENDING)
+  attempts               Int                                @default(0)
+  maxAttempts            Int                                @default(8)
+  credentialRevision     Int                                @default(-1)
+  expiresAt              DateTime
+  claimedAt              DateTime?
+  confirmedAt            DateTime?
+  revokedAt              DateTime?
+  createdAt              DateTime                           @default(now())
+  updatedAt              DateTime                           @updatedAt
+
+  @@index([requestedByAccountId, createdAt])
+  @@index([status, expiresAt])
+}
+
 model SecurityTwoFactorCredential {
   id                   String                            @id @default(cuid())
   accountId            String
@@ -53,6 +87,9 @@ model SecurityTwoFactorCredential {
   externalCredentialId String?
   publicKeyJson        Json?
   status               SecurityTwoFactorCredentialStatus @default(PENDING)
+  credentialRevision   Int                               @default(-1)
+  enrollmentSlot       String?                           @unique
+  lastAcceptedTotpCounter Int?
   confirmedAt          DateTime?
   lastUsedAt           DateTime?
   disabledAt           DateTime?
@@ -73,6 +110,7 @@ model SecurityTwoFactorRecoveryCode {
   codeHash  String    @unique
   lastFour  String
   usedAt    DateTime?
+  credentialRevision Int @default(-1)
   createdAt DateTime  @default(now())
 
   @@index([accountId, usedAt])
@@ -88,7 +126,12 @@ model SecurityTwoFactorChallenge {
   credential   SecurityTwoFactorCredential?     @relation(fields: [credentialId], references: [id], onDelete: SetNull)
   status       SecurityTwoFactorChallengeStatus @default(PENDING)
   attempts     Int                              @default(0)
-  maxAttempts  Int                              @default(3)
+  maxAttempts  Int                              @default(8)
+  providerId   String                           @default("local")
+  credentialRevision Int                        @default(-1)
+  accessScope  String?
+  moduleKey    String?
+  subjectId    String?
   expiresAt    DateTime
   verifiedAt   DateTime?
   consumedAt   DateTime?

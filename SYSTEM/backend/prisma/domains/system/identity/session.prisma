@@ -12,6 +12,7 @@ model RefreshToken {
   ipAddress String?
   expiresAt DateTime
   revokedAt DateTime?
+  credentialRevision Int @default(-1)
   createdAt DateTime  @default(now())
 }
 
@@ -30,6 +31,10 @@ model Session {
   ipAddress  String?
   userAgent  String?
   terminalId String?
+  credentialRevision Int @default(-1)
+  mfaVerifiedAt DateTime?
+  mfaProviderId  String?
+  mfaMethod      String?
   startedAt  DateTime  @default(now())
   endedAt    DateTime?
 }

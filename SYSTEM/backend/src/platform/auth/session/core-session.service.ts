@@ -3,6 +3,7 @@ import { prisma } from "../../../core/database/prisma.js";
 type SessionInput = {
   accountId: string;
   loginName: string;
+  credentialRevision: number;
   expiresAt?: Date;
 };
 
@@ -14,6 +15,7 @@ export class CoreSessionService {
       return await prisma.session.create({
         data: {
           accountId: input.accountId,
+          credentialRevision: input.credentialRevision,
           startedAt: new Date(),
         },
       });
@@ -24,6 +26,7 @@ export class CoreSessionService {
         sessionId,
         accountId: input.accountId,
         loginName: input.loginName,
+        credentialRevision: input.credentialRevision,
         startedAt: new Date(),
         lastSeenAt: new Date(),
       };

@@ -12,7 +12,9 @@ const {
   assertSecureReleaseHttpsUrl,
   assertSecureReleaseRedirect,
   assertSecureReleaseSource,
+  bonniReleaseImageTag,
   canonicalizeReleasePayload,
+  compareBonniReleaseVersion,
   compareStrictSemVer,
   parseReleaseManifest,
   loadEd25519SpkiPublicKeyFile,
@@ -75,6 +77,14 @@ test("strict SemVer comparison follows prerelease precedence", () => {
   assert.equal(compareStrictSemVer("1.0.0", "1.0.0-rc.1"), 1);
   assert.equal(compareStrictSemVer("1.0.0-beta.10", "1.0.0-beta.2"), 1);
   assert.equal(compareStrictSemVer("1.0.0+build.2", "1.0.0+build.1"), 0);
+});
+
+test("Bonni maintenance builds have a total update order and a Docker-safe tag", () => {
+  assert.equal(compareBonniReleaseVersion("0.1.19+c", "0.1.19+d"), -1);
+  assert.equal(compareBonniReleaseVersion("0.1.19+d", "0.1.19+c"), 1);
+  assert.equal(compareBonniReleaseVersion("0.1.19+a", "0.1.19"), 1);
+  assert.equal(compareBonniReleaseVersion("0.1.19+aa", "0.1.19+z"), 1);
+  assert.equal(bonniReleaseImageTag("0.1.19+d"), "0.1.19-d");
 });
 
 test("Ed25519 signature binds every security-relevant release field", () => {

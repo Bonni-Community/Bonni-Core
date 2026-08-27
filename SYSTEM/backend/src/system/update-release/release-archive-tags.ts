@@ -1,6 +1,7 @@
 export type ReleaseArchiveTagIdentity = {
   repository: string;
   version: string;
+  imageTag?: string;
 };
 
 export type ReleaseArchiveTagPolicyOptions = {
@@ -22,7 +23,7 @@ export function assertReleaseArchiveTags(
     throw new Error("RELEASE_ARCHIVE_TAGS_INVALID");
   }
 
-  const expectedTag = `${identity.repository}:${identity.version}`;
+  const expectedTag = `${identity.repository}:${identity.imageTag || identity.version}`;
   if (actualTags.length !== 1) throw new Error("RELEASE_ARCHIVE_VERSION_TAG_REQUIRED");
   const forbiddenTags = new Set(options.forbiddenTags || []);
   const seen = new Set<string>();

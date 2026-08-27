@@ -76,7 +76,11 @@ export function compareStrictSemVer(left, right) {
   const parse = (value) => {
     const match = STRICT_SEMVER.exec(value);
     if (!match) throw new Error(`INVALID_STRICT_SEMVER:${String(value || "")}`);
-    return { main: [BigInt(match[1]), BigInt(match[2]), BigInt(match[3])], pre: match[4]?.split(".") || [] };
+    return {
+      main: [BigInt(match[1]), BigInt(match[2]), BigInt(match[3])],
+      pre: match[4]?.split(".") || [],
+      build: match[5]?.split(".") || [],
+    };
   };
   const a = parse(left);
   const b = parse(right);
@@ -101,6 +105,36 @@ export function compareStrictSemVer(left, right) {
   return 0;
 }
 
+function bonniRevision(value) {
+  const match = STRICT_SEMVER.exec(value);
+  if (!match) throw new Error(`INVALID_STRICT_SEMVER:${String(value || "")}`);
+  const build = match[5]?.split(".") || [];
+  if (!build.length) return 0n;
+  if (build.length !== 1 || !/^[a-z]+$/.test(build[0])) throw new Error(`INVALID_BONNI_RELEASE_REVISION:${value}`);
+  let revision = 0n;
+  for (const character of build[0]) revision = revision * 26n + BigInt(character.charCodeAt(0) - 96);
+  return revision;
+}
+
+export function compareBonniReleaseVersion(left, right) {
+  const standard = compareStrictSemVer(left, right);
+  if (standard !== 0) return standard;
+  const leftRevision = bonniRevision(left);
+  const rightRevision = bonniRevision(right);
+  if (leftRevision < rightRevision) return -1;
+  if (leftRevision > rightRevision) return 1;
+  return 0;
+}
+
+export function bonniReleaseImageTag(version) {
+  const match = STRICT_SEMVER.exec(version);
+  if (!match) throw new Error(`INVALID_STRICT_SEMVER:${String(version || "")}`);
+  bonniRevision(version);
+  const tag = `${match[1]}.${match[2]}.${match[3]}${match[4] ? `-${match[4]}` : ""}${match[5] ? `-${match[5]}` : ""}`;
+  if (!/^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$/.test(tag)) throw new Error(`INVALID_BONNI_RELEASE_IMAGE_TAG:${version}`);
+  return tag;
+}
+
 export function validateReleaseManifest(input) {
   const release = record(input, "release");
   exactKeys(release, [
@@ -111,6 +145,10 @@ export function validateReleaseManifest(input) {
   if (!["stable", "beta", "nightly"].includes(release.channel)) throw new Error("release.channel ist ungültig.");
   const version = requiredString(release.version, "release.version", STRICT_SEMVER, 128);
   if (release.channel === "stable" && version.includes("-")) throw new Error("Stable-Releases dürfen keine Vorabversion sein.");
+  const versionMatch = STRICT_SEMVER.exec(version);
+  if (release.channel === "stable" && versionMatch?.[5] && !/^[a-z]+$/.test(versionMatch[5])) {
+    throw new Error("Bonni-Wartungsversionen verwenden genau einen alphabetischen +Zusatz.");
+  }
 
   const artifact = record(release.artifact, "release.artifact");
   exactKeys(artifact, ["type", "sizeBytes", "sha256", "source", "imageIdentity"], "release.artifact");
@@ -238,13 +276,13 @@ export function validateUpdateRunnerRequest(input, options = {}) {
 
   const release = validateReleaseManifest(request.release);
   if (release.product !== request.product || release.version !== targetVersion) throw new Error("Request und Release stimmen nicht überein.");
-  if (compareStrictSemVer(targetVersion, currentVersion) <= 0) throw new Error("Zielversion ist nicht neuer als die laufende Version.");
-  if (options.enforceInstallPolicy !== false && (
-    release.migration.required
-    || release.migration.strategy !== "none"
-    || release.migration.backwardCompatible !== true
-  )) {
-    throw new Error("Automatische Updates bleiben ohne rückwärtskompatiblen Datenstand und versionierte Migrationskette fail-closed gesperrt.");
+  if (compareBonniReleaseVersion(targetVersion, currentVersion) <= 0) throw new Error("Zielversion ist nicht neuer als die laufende Version.");
+  const onlineMigrationAllowed = release.migration.backwardCompatible === true && (
+    (!release.migration.required && release.migration.strategy === "none")
+    || (release.migration.required && release.migration.strategy === "expand-contract")
+  );
+  if (options.enforceInstallPolicy !== false && !onlineMigrationAllowed) {
+    throw new Error("Automatische Updates erlauben nur migration:none oder ausdrücklich rückwärtskompatible expand-contract-Migrationen; offline/contract bleibt fail-closed gesperrt.");
   }
 
   let auth;

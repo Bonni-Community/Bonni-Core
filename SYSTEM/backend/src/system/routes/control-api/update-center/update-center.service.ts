@@ -9,10 +9,12 @@ import {
   assertReleaseArtifactIdentity,
   assertSecureReleaseHttpsUrl,
   assertSecureReleaseRedirect,
+  compareBonniReleaseVersion,
   compareStrictSemVer,
   loadEd25519SpkiPublicKeyFile,
   parseReleaseManifest,
   resolveSecureLocalReleaseArtifact,
+  signLifecycleCommand,
   signUpdateRunnerRequest,
   verifyReleaseManifest,
   type ReleaseManifest,
@@ -23,6 +25,21 @@ import {
   getSystemBackupOverview,
   validateSystemBackup,
 } from "../backup/index.js";
+import { getOfficialCoreReleaseSource } from "./github-release-source.js";
+import {
+  getLocalSourceUpdateStatus,
+  queueLocalSourceUpdate,
+} from "./local-source-inbox.service.js";
+import {
+  finalizeExpiredLocalSourceDeploymentLifecycle,
+  finalizeLocalSourceDeploymentLifecycle,
+  getLocalSourceDeploymentLifecycle,
+  isLocalSourceDeploymentLifecycleExpected,
+  rollbackLocalSourceDeploymentLifecycle,
+} from "./local-source-deployment.service.js";
+import { resolveLocalSourceDeploymentLifecycle } from "./local-source-lifecycle-policy.js";
+
+export { resolveLocalSourceDeploymentLifecycle } from "./local-source-lifecycle-policy.js";
 
 type UpdateStepStatus = "pending" | "running" | "completed" | "failed" | "waiting";
 type UpdateWorkflowStatus = "running" | "ready" | "installing" | "completed" | "rolling-back" | "rolled-back" | "failed";
@@ -89,7 +106,31 @@ type RunnerProgress = {
   steps?: Array<{ key?: string; status?: string; detail?: string }> | Record<string, { status?: string; detail?: string } | string>;
 };
 
-const UPDATE_RUNNER_PROTOCOL_VERSION = "0.2.1";
+export type DeploymentLifecycleStatus = {
+  protocol: "bonni-deployment-lifecycle/1";
+  schemaVersion: 1;
+  generation: number;
+  state: "idle" | "holding" | "finalizing" | "finalized";
+  holdId?: string;
+  workflowId?: string;
+  previousVersion?: string;
+  targetVersion?: string;
+  holdDays?: number;
+  activatedAt?: string;
+  holdUntil?: string;
+  finalizeReason?: string | null;
+  finalizeRequestedAt?: string | null;
+  finalizedAt?: string | null;
+  observedHoldMs: number;
+  autoFinalizeBlocked: boolean;
+  blockReason?: string | null;
+  blocksUpdates: boolean;
+  canFinalize: boolean;
+  mode: "single-active-fail-closed-hold";
+  updatedAt: string;
+};
+
+const UPDATE_RUNNER_PROTOCOL_VERSION = "0.3.0";
 const MAXIMUM_MANIFEST_BYTES = 256 * 1024;
 const RUNNER_HEARTBEAT_MAX_AGE_MS = 20_000;
 const DEFAULT_SETTINGS: UpdateSettings = {
@@ -174,6 +215,14 @@ function runnerProgressPath(workflowId: string) {
   return path.join(updateRunnerRoot(), "progress", `${workflowId}.json`);
 }
 
+function runnerLifecycleStatusPath() {
+  return path.join(updateRunnerRoot(), "deployment-lifecycle.json");
+}
+
+function runnerLifecycleRequestRoot() {
+  return path.join(updateRunnerRoot(), "requests", "lifecycle");
+}
+
 function updateRequestSecretPath() {
   return path.resolve(process.env.BONNI_UPDATE_REQUEST_SECRET_FILE || "/run/secrets/bonni-update/request.key");
 }
@@ -206,6 +255,44 @@ async function writeJson(file: string, value: unknown) {
   const temporary = `${file}.${process.pid}.${crypto.randomBytes(4).toString("hex")}.tmp`;
   await fs.writeFile(temporary, `${JSON.stringify(value, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
   await fs.rename(temporary, file);
+}
+
+async function readDeploymentLifecycleStatus(): Promise<DeploymentLifecycleStatus> {
+  const value = await readJson<DeploymentLifecycleStatus>(runnerLifecycleStatusPath());
+  if (!value) {
+    throw Object.assign(new Error("Der Docker-Deployment-Lifecycle ist für diese Installation nicht eingerichtet."), {
+      code: "RUNNER_DEPLOYMENT_LIFECYCLE_ABSENT",
+    });
+  }
+  const timestamp = (input: unknown) => typeof input === "string" && Number.isFinite(Date.parse(input));
+  if (value.protocol !== "bonni-deployment-lifecycle/1"
+    || value.schemaVersion !== 1
+    || !Number.isSafeInteger(value.generation) || value.generation < 0
+    || !["idle", "holding", "finalizing", "finalized"].includes(value.state)
+    || typeof value.blocksUpdates !== "boolean"
+    || typeof value.canFinalize !== "boolean"
+    || !Number.isSafeInteger(value.observedHoldMs) || value.observedHoldMs < 0
+    || typeof value.autoFinalizeBlocked !== "boolean"
+    || value.mode !== "single-active-fail-closed-hold"
+    || !timestamp(value.updatedAt)
+    || (value.state !== "idle" && (
+      typeof value.holdId !== "string"
+      || !/^[A-Za-z0-9][A-Za-z0-9._-]{7,127}$/.test(value.holdId)
+      || !Number.isSafeInteger(value.holdDays) || Number(value.holdDays) < 1
+      || value.holdDays !== 14
+      || !timestamp(value.holdUntil)
+    ))) {
+    throw Object.assign(new Error("Der sichere Deployment-Lifecycle-Status ist ungültig."), {
+      code: "RUNNER_DEPLOYMENT_LIFECYCLE_INVALID",
+    });
+  }
+  if (value.blocksUpdates !== !["idle", "finalized"].includes(value.state)
+    || value.canFinalize !== (value.state === "holding")) {
+    throw Object.assign(new Error("Der Deployment-Lifecycle-Status ist widersprüchlich."), {
+      code: "RUNNER_DEPLOYMENT_LIFECYCLE_INVALID",
+    });
+  }
+  return value;
 }
 
 function configuredAllowedOrigins() {
@@ -324,7 +411,7 @@ async function loadLocalOrCachedManifest(): Promise<SelectedRelease | null> {
       // Ein beschädigtes oder abgelaufenes Manifest verdeckt keinen anderen gültigen Eingang.
     }
   }
-  return loaded.sort((left, right) => compareStrictSemVer(right.manifest.version, left.manifest.version))[0] || null;
+  return loaded.sort((left, right) => compareBonniReleaseVersion(right.manifest.version, left.manifest.version))[0] || null;
 }
 
 async function fetchRemoteManifest(): Promise<SelectedRelease | null> {
@@ -502,8 +589,15 @@ function installationPolicy(manifest: ReleaseManifest | null, runner: Awaited<Re
   if (manifest.artifact.type !== "oci-image-archive") {
     return { allowed: false, reason: "Der Runner akzeptiert ausschließlich signierte OCI-Systemimages." };
   }
-  if (manifest.migration.required || manifest.migration.strategy !== "none" || manifest.migration.backwardCompatible !== true) {
-    return { allowed: false, reason: "Automatische Updates benötigen einen ausdrücklich rückwärtskompatiblen Datenstand; Datenbankänderungen bleiben bis zur versionierten Bonni-Migrationskette gesperrt." };
+  const migrationAllowed = manifest.migration.backwardCompatible === true && (
+    (!manifest.migration.required && manifest.migration.strategy === "none")
+    || (manifest.migration.required && manifest.migration.strategy === "expand-contract")
+  );
+  if (!migrationAllowed) {
+    return { allowed: false, reason: "Automatische Updates erlauben nur migration:none oder ausdrücklich rückwärtskompatible expand-contract-Migrationen; offline/contract bleibt gesperrt." };
+  }
+  if (runner.deploymentLifecycle.blocksUpdates) {
+    return { allowed: false, reason: `Der vorherige Stand wird bis ${runner.deploymentLifecycle.holdUntil || "zum sicheren Abschluss"} geschützt. Zuerst Hold abschließen.` };
   }
   if (!runner.available) return { allowed: false, reason: runner.reason };
   return { allowed: true, reason: null };
@@ -613,7 +707,7 @@ async function runPreparation(workflow: UpdateWorkflow, selected: SelectedReleas
     await updateStep(workflow, "preflight", "running");
     await verifyManifest(manifest);
     const preflight = preflightStorage(manifest);
-    if (compareStrictSemVer(manifest.version, workflow.currentVersion) <= 0) throw new Error("Die Zielversion ist nicht neuer als die aktive Version.");
+    if (compareBonniReleaseVersion(manifest.version, workflow.currentVersion) <= 0) throw new Error("Die Zielversion ist nicht neuer als die aktive Version.");
     await updateStep(workflow, "preflight", "completed", `${Math.round(preflight.freeBytes / 1024 / 1024)} MB frei`);
 
     await updateStep(workflow, "store", "running");
@@ -656,10 +750,26 @@ async function runPreparation(workflow: UpdateWorkflow, selected: SelectedReleas
 }
 
 async function getRunnerStatus() {
-  const [heartbeat, requestSecretError] = await Promise.all([
+  const [heartbeat, requestSecretError, lifecycleAttempt] = await Promise.all([
     readJson<RunnerHeartbeat>(runnerHeartbeatPath()).catch(() => null),
     loadUpdateRequestSecret().then(() => null).catch((error) => error instanceof Error ? error.message : String(error)),
+    readDeploymentLifecycleStatus()
+      .then((value) => ({ value, error: null as string | null, errorCode: null as string | null }))
+      .catch((error) => ({
+        value: null,
+        error: error instanceof Error ? error.message : String(error),
+        errorCode: typeof (error as { code?: unknown })?.code === "string"
+          ? String((error as { code: string }).code)
+          : "RUNNER_DEPLOYMENT_LIFECYCLE_INVALID",
+      })),
   ]);
+  const lifecycle = lifecycleAttempt.value;
+  const lifecycleError = lifecycleAttempt.error;
+  const lifecycleAuthority: "verified" | "absent" | "invalid" = lifecycle
+    ? "verified"
+    : lifecycleAttempt.errorCode === "RUNNER_DEPLOYMENT_LIFECYCLE_ABSENT"
+      ? "absent"
+      : "invalid";
   const updatedAt = heartbeat?.updatedAt ? Date.parse(heartbeat.updatedAt) : Number.NaN;
   const heartbeatAge = Date.now() - updatedAt;
   const heartbeatFresh = Number.isFinite(updatedAt)
@@ -673,22 +783,97 @@ async function getRunnerStatus() {
   } catch {
     versionCompatible = false;
   }
-  const available = heartbeatFresh && versionCompatible && heartbeat?.available !== false && state !== "error" && !requestSecretError;
+  const available = heartbeatFresh && versionCompatible && heartbeat?.available !== false
+    && state !== "error" && !requestSecretError && Boolean(lifecycle) && !lifecycleError;
+  const deploymentLifecycle = lifecycle || {
+    protocol: "bonni-deployment-lifecycle/1" as const,
+    schemaVersion: 1 as const,
+    generation: 0,
+    state: "idle" as const,
+    blocksUpdates: true,
+    canFinalize: false,
+    observedHoldMs: 0,
+    autoFinalizeBlocked: true,
+    blockReason: lifecycleError || "Der sichere Deployment-Lifecycle-Status ist nicht erreichbar.",
+    mode: "single-active-fail-closed-hold" as const,
+    updatedAt: new Date(0).toISOString(),
+  };
   return {
     available,
     mode: "isolated-docker-runner",
+    heartbeatFresh,
+    lifecycleAuthority,
+    lifecycleError,
     version,
     updatedAt: heartbeat?.updatedAt || null,
     state,
+    deploymentLifecycle,
     reason: available
       ? null
       : !heartbeatFresh
         ? "Der sichere Docker-Update-Runner ist nicht erreichbar."
         : requestSecretError
           ? requestSecretError
+        : lifecycleError
+          ? lifecycleError
         : !versionCompatible
           ? "Der Docker-Update-Runner ist zu alt."
           : heartbeat?.message || `Der Docker-Update-Runner meldet den Zustand ${state}.`,
+  };
+}
+
+export async function finalizeDeploymentLifecycle(input: { holdId: string; generation: number }) {
+  const localLifecycle = await getLocalSourceDeploymentLifecycle();
+  if (localLifecycle?.holdId === input.holdId || localLifecycle?.blocksUpdates) {
+    const localResult = await finalizeLocalSourceDeploymentLifecycle(input);
+    if (localResult) return localResult;
+  }
+  const runner = await getRunnerStatus();
+  const lifecycle = runner.deploymentLifecycle;
+  if (lifecycle.state === "finalized"
+    && lifecycle.holdId === input.holdId
+    && lifecycle.generation === input.generation) {
+    return { ok: true, accepted: false, existing: true, deploymentLifecycle: lifecycle };
+  }
+  if (!runner.available) return { ok: false, error: "RUNNER_NOT_READY", message: runner.reason };
+  if (lifecycle.holdId !== input.holdId || lifecycle.generation !== input.generation) {
+    return { ok: false, error: "DEPLOYMENT_HOLD_CHANGED", message: "Der angezeigte Hold ist nicht mehr aktuell." };
+  }
+  if (lifecycle.state === "finalizing") {
+    return { ok: true, accepted: false, existing: true, deploymentLifecycle: lifecycle };
+  }
+  if (lifecycle.state !== "holding" || !lifecycle.canFinalize) {
+    return { ok: false, error: "DEPLOYMENT_HOLD_NOT_FINALIZABLE", message: "Es gibt keinen abschließbaren Deployment-Hold." };
+  }
+
+  const now = new Date();
+  const commandId = `finalize-${now.getTime()}-${crypto.randomBytes(8).toString("hex")}`;
+  const command = signLifecycleCommand({
+    schemaVersion: 1,
+    commandId,
+    action: "finalize",
+    holdId: input.holdId,
+    generation: input.generation,
+    issuedAt: now.toISOString(),
+    expiresAt: new Date(now.getTime() + 10 * 60_000).toISOString(),
+    nonce: crypto.randomBytes(32).toString("base64url"),
+  }, await loadUpdateRequestSecret());
+  await writeJson(path.join(runnerLifecycleRequestRoot(), `${commandId}.json`), command);
+  return {
+    ok: true,
+    accepted: true,
+    commandId,
+    deploymentLifecycle: lifecycle,
+  };
+}
+
+export async function rollbackDeploymentLifecycle(input: { holdId: string; generation: number }) {
+  const localResult = await rollbackLocalSourceDeploymentLifecycle(input);
+  if (localResult) return localResult;
+  return {
+    ok: false,
+    error: "DEPLOYMENT_ROLLBACK_NOT_AVAILABLE",
+    message: "Für diesen Deployment-Stand ist kein sicherer manueller Rückfall freigegeben.",
   };
 }
 
@@ -730,18 +915,196 @@ function mergeRunnerProgress(workflow: UpdateWorkflow | null, progress: RunnerPr
 }
 
 export async function checkForCoreUpdate() {
+  const localSourceUpdate = await getLocalSourceUpdateStatus();
+  const releaseSource = getOfficialCoreReleaseSource();
   const remote = await fetchRemoteManifest().catch((error) => ({ error }));
   if (remote && "error" in remote) {
     const local = await loadLocalOrCachedManifest();
     return {
-      ok: Boolean(local),
+      ok: Boolean(local) || localSourceUpdate.state !== "invalid",
       checkedAt: new Date().toISOString(),
       warning: remote.error instanceof Error ? remote.error.message : String(remote.error),
       manifest: local?.manifest || null,
+      localSourceUpdate,
+      releaseSource,
     };
   }
   const selected = remote || await loadLocalOrCachedManifest();
-  return { ok: true, checkedAt: new Date().toISOString(), manifest: selected?.manifest || null };
+  return {
+    ok: true,
+    checkedAt: new Date().toISOString(),
+    manifest: selected?.manifest || null,
+    localSourceUpdate,
+    releaseSource,
+  };
+}
+
+export function checkForLocalSourceUpdate() {
+  return getLocalSourceUpdateStatus().then((localSourceUpdate) => ({
+    ok: localSourceUpdate.state !== "invalid",
+    checkedAt: new Date().toISOString(),
+    localSourceUpdate,
+  }));
+}
+
+type LocalSourceInstallDependencies = {
+  getStatus: typeof getLocalSourceUpdateStatus;
+  queue: typeof queueLocalSourceUpdate;
+  createBackup: typeof createSystemBackup;
+  validateBackup: typeof validateSystemBackup;
+  getDeploymentLifecycle?: () => Promise<{ blocksUpdates: boolean; holdUntil?: string | null } | null>;
+};
+
+const localSourceInstallDependencies: LocalSourceInstallDependencies = {
+  getStatus: getLocalSourceUpdateStatus,
+  queue: queueLocalSourceUpdate,
+  createBackup: createSystemBackup,
+  validateBackup: validateSystemBackup,
+  getDeploymentLifecycle: async () => {
+    const [local, localLifecycleExpected, runner] = await Promise.all([
+      getLocalSourceDeploymentLifecycle(),
+      isLocalSourceDeploymentLifecycleExpected(),
+      getRunnerStatus(),
+    ]);
+    return resolveLocalSourceDeploymentLifecycle(local, runner, { localLifecycleExpected });
+  },
+};
+
+function localSourceInstallException(
+  error: unknown,
+  operationError: string,
+  fallbackMessage: string,
+) {
+  const source = error as { code?: unknown; message?: unknown; technicalMessage?: unknown } | null;
+  const message = typeof source?.message === "string" && source.message.trim()
+    ? source.message.trim()
+    : fallbackMessage;
+  const rawCode = typeof source?.code === "string"
+    ? source.code.trim()
+    : message.split(":", 1)[0].trim();
+  const causeCode = /^[A-Z][A-Z0-9_]{2,127}$/u.test(rawCode)
+    ? rawCode
+    : "LOCAL_SOURCE_OPERATION_FAILED";
+  const technicalMessage = typeof source?.technicalMessage === "string" && source.technicalMessage.trim()
+    ? source.technicalMessage.trim()
+    : message;
+  return {
+    ok: false,
+    error: operationError,
+    causeCode,
+    message: fallbackMessage,
+    technicalMessage: technicalMessage.replace(/[\r\n\t]+/gu, " ").slice(0, 500),
+  };
+}
+
+export async function startLocalSourceUpdateInstallation(
+  input: { updateId?: string; manifestSha256?: string },
+  dependencies: LocalSourceInstallDependencies = localSourceInstallDependencies,
+) {
+  const current = await dependencies.getStatus();
+  const exactTarget = current.updateId === input.updateId
+    && current.manifestSha256 === input.manifestSha256;
+
+  // A repeated request is idempotent only for the exact package receipt. A
+  // matching ID alone is insufficient because the inbox content may have been
+  // replaced while an earlier request is still visible as in progress.
+  if (current.state === "in-progress" && exactTarget) {
+    return { ok: true, accepted: false, existing: true, localSourceUpdate: current };
+  }
+  const deploymentLifecycle = await dependencies.getDeploymentLifecycle?.();
+  if (deploymentLifecycle?.blocksUpdates) {
+    return {
+      ok: false,
+      error: "DEPLOYMENT_HOLD_ACTIVE",
+      message: `Der vorherige Stand wird bis ${deploymentLifecycle.holdUntil || "zum sicheren Abschluss"} geschützt. Zuerst Hold abschließen.`,
+      deploymentLifecycle,
+    };
+  }
+  if (!current.updateAvailable || !["available", "failed"].includes(current.state)) {
+    return {
+      ok: false,
+      error: current.errorCode || "LOCAL_SOURCE_UPDATE_NOT_AVAILABLE",
+      message: current.message,
+    };
+  }
+  if (!exactTarget) {
+    return {
+      ok: false,
+      error: "LOCAL_SOURCE_UPDATE_TARGET_CHANGED",
+      message: "Das Updatepaket wurde seit der Anzeige verändert.",
+    };
+  }
+  if (!current.runner.available || !current.runner.instanceId) {
+    return {
+      ok: false,
+      error: "LOCAL_SOURCE_SUPERVISOR_NOT_READY",
+      message: current.runner.reason,
+    };
+  }
+  if (!current.runner.monitor?.available || !current.runner.monitor.origin) {
+    return {
+      ok: false,
+      error: "LOCAL_SOURCE_INSTALLATION_MONITOR_NOT_READY",
+      message: "Der unabhängige Installationsserver ist nicht erreichbar.",
+    };
+  }
+
+  // The backup receipt itself records the immutable package identity. The
+  // subsequent queue call performs a fresh ID+SHA scan and therefore cannot
+  // silently switch to a different package after this proof was created.
+  const backupReason = `before-local-source-update:${current.updateId}:${current.manifestSha256}`;
+  let backup: Awaited<ReturnType<LocalSourceInstallDependencies["createBackup"]>>;
+  try {
+    backup = await dependencies.createBackup({ reason: backupReason });
+  } catch (error) {
+    return localSourceInstallException(
+      error,
+      "LOCAL_SOURCE_BACKUP_FAILED",
+      "Die Sicherung vor der lokalen Aktualisierung konnte nicht gestartet werden.",
+    );
+  }
+  if (!backup.ok || !backup.backup) {
+    return {
+      ok: false,
+      error: "LOCAL_SOURCE_BACKUP_FAILED",
+      causeCode: backup.causeCode || backup.error,
+      message: backup.message || "Die Sicherung vor der lokalen Aktualisierung ist fehlgeschlagen.",
+      technicalMessage: backup.technicalMessage,
+    };
+  }
+  let validation: Awaited<ReturnType<LocalSourceInstallDependencies["validateBackup"]>>;
+  try {
+    validation = await dependencies.validateBackup(backup.backup.id);
+  } catch (error) {
+    return localSourceInstallException(
+      error,
+      "LOCAL_SOURCE_BACKUP_INVALID",
+      "Die Sicherung vor der lokalen Aktualisierung konnte nicht vollständig geprüft werden.",
+    );
+  }
+  if (
+    !validation.ok
+    || validation.id !== backup.backup.id
+    || validation.backup?.id !== backup.backup.id
+    || validation.backup.reason !== backupReason
+  ) {
+    return {
+      ok: false,
+      error: "LOCAL_SOURCE_BACKUP_INVALID",
+      message: "Die Sicherung vor der lokalen Aktualisierung konnte nicht vollständig geprüft werden.",
+    };
+  }
+  let queued: Awaited<ReturnType<LocalSourceInstallDependencies["queue"]>>;
+  try {
+    queued = await dependencies.queue(input);
+  } catch (error) {
+    return localSourceInstallException(
+      error,
+      "LOCAL_SOURCE_UPDATE_QUEUE_FAILED",
+      "Der geprüfte Updateauftrag konnte nicht an den lokalen Update-Dienst übergeben werden.",
+    );
+  }
+  return queued.ok ? { ...queued, backupId: backup.backup.id } : queued;
 }
 
 async function beginPreparation(queueInstall: boolean, targetVersion?: string) {
@@ -750,7 +1113,7 @@ async function beginPreparation(queueInstall: boolean, targetVersion?: string) {
   if (!selected) return { ok: false, error: "NO_UPDATE_AVAILABLE" };
   if (targetVersion && targetVersion !== selected.manifest.version) return { ok: false, error: "UPDATE_TARGET_MISMATCH" };
   const currentVersion = getSystemRuntimeConfig().version;
-  if (compareStrictSemVer(selected.manifest.version, currentVersion) <= 0) return { ok: false, error: "NO_UPDATE_AVAILABLE" };
+  if (compareBonniReleaseVersion(selected.manifest.version, currentVersion) <= 0) return { ok: false, error: "NO_UPDATE_AVAILABLE" };
 
   const storedWorkflow = await readJson<UpdateWorkflow>(statePath());
   const existingProgress = storedWorkflow
@@ -793,34 +1156,111 @@ export function startCoreUpdateInstallation(targetVersion?: string) {
 
 export async function getCoreUpdateCenterStatus() {
   const currentVersion = getSystemRuntimeConfig().version;
-  const [selected, storedWorkflow, settings, backup, runner] = await Promise.all([
+  const [
+    selected,
+    storedWorkflow,
+    settings,
+    backup,
+    runner,
+    localSourceUpdate,
+    localDeploymentLifecycle,
+    localLifecycleExpected,
+  ] = await Promise.all([
     loadLocalOrCachedManifest(),
     readJson<UpdateWorkflow>(statePath()),
     loadSettings(),
     getSystemBackupOverview(),
     getRunnerStatus(),
+    getLocalSourceUpdateStatus(),
+    getLocalSourceDeploymentLifecycle(),
+    isLocalSourceDeploymentLifecycleExpected(),
   ]);
   const manifest = selected?.manifest || null;
-  const available = Boolean(manifest && compareStrictSemVer(manifest.version, currentVersion) > 0);
-  const compatibility = available && manifest ? await getInstalledModulesCompatibilityForCoreVersion(manifest.version) : null;
+  const releaseComparison = manifest ? compareBonniReleaseVersion(manifest.version, currentVersion) : null;
+  const releaseAvailable = releaseComparison !== null && releaseComparison > 0;
+  const localSourceAvailable = localSourceUpdate.updateAvailable;
+  const available = releaseAvailable || localSourceAvailable;
+  const compatibility = releaseAvailable && manifest ? await getInstalledModulesCompatibilityForCoreVersion(manifest.version) : null;
   const progress = storedWorkflow ? await readJson<RunnerProgress>(runnerProgressPath(storedWorkflow.id)).catch(() => null) : null;
   const workflow = mergeRunnerProgress(storedWorkflow, progress);
-  const policy = installationPolicy(manifest, runner);
+  const releasePolicy = installationPolicy(manifest, runner);
+  const localSourceDeploymentLifecycle = resolveLocalSourceDeploymentLifecycle(
+    localDeploymentLifecycle,
+    runner,
+    { localLifecycleExpected },
+  );
+  const deploymentLifecycle = localSourceAvailable
+    ? localSourceDeploymentLifecycle
+    : localDeploymentLifecycle || runner.deploymentLifecycle;
+  const localSourceBlocked = Boolean(localSourceDeploymentLifecycle?.blocksUpdates);
+  const localSourcePolicy = {
+    allowed: localSourceAvailable && localSourceUpdate.runner.available && !localSourceBlocked,
+    reason: localSourceAvailable
+      ? localSourceBlocked
+        ? `Der vorherige Stand wird bis ${localSourceDeploymentLifecycle?.holdUntil || "zum sicheren Abschluss"} geschützt. Zuerst Hold abschließen.`
+        : localSourceUpdate.runner.available
+        ? null
+        : localSourceUpdate.runner.reason
+      : localSourceUpdate.errorCode
+        ? localSourceUpdate.message
+        : null,
+  };
+  const updateKind = localSourceAvailable ? "local-source" : releaseAvailable ? "release" : null;
+  const baseReleaseSource = getOfficialCoreReleaseSource();
+  const signedReleaseConnected = Boolean(
+    manifest?.signature
+    && manifest.artifact.source.kind === "https",
+  );
+  const releaseSource = {
+    ...baseReleaseSource,
+    signedCatalogConnected: signedReleaseConnected,
+    state: signedReleaseConnected ? "signed-release-connected" as const : baseReleaseSource.state,
+  };
+  const releasePlan = manifest && releaseComparison !== null && releaseComparison >= 0
+    ? {
+      currentVersion,
+      targetVersion: manifest.version,
+      batchInstallationSupported: false,
+      packages: [{
+        packageId: `bonni-core-${manifest.version}`,
+        fromVersion: currentVersion,
+        toVersion: manifest.version,
+        status: releaseComparison === 0
+          ? "installed"
+          : workflow?.targetVersion === manifest.version
+            ? workflow.status
+            : "verified",
+      }],
+    }
+    : null;
 
   return {
     ok: true,
     area: "core-update",
     checkedAt: new Date().toISOString(),
     currentVersion,
-    targetVersion: available ? manifest?.version : null,
+    targetVersion: localSourceAvailable
+      ? localSourceUpdate.to?.coreVersion || currentVersion
+      : releaseAvailable
+        ? manifest?.version
+        : null,
     updateAvailable: available,
-    manifest: available ? manifest : null,
+    updateKind,
+    manifest: releaseAvailable ? manifest : null,
+    localSourceUpdate,
     compatibility,
-    installation: policy,
+    installation: localSourceAvailable ? localSourcePolicy : releasePolicy,
     settings,
     workflow,
     backup: { status: backup.status, latest: backup.latest, restoreRequest: backup.restoreRequest },
-    runner,
+    runner: localSourceAvailable ? localSourceUpdate.runner : runner,
+    releaseRunner: runner,
+    deploymentLifecycle,
+    releaseSource,
+    // Ein verifiziertes Einzelrelease wird exakt dargestellt. Mehrere
+    // aufeinanderfolgende Pakete werden erst nach einem eigenen, atomaren
+    // Batch-Vertrag ausgegeben und niemals aus Versionsnamen erfunden.
+    releasePlan,
   };
 }
 
@@ -828,6 +1268,7 @@ async function runAutomaticUpdateCycle() {
   if (automaticCycleRunning) return;
   automaticCycleRunning = true;
   try {
+    await finalizeExpiredLocalSourceDeploymentLifecycle();
     const settings = await loadSettings();
     if (!settings.automaticChecks) return;
     await checkForCoreUpdate();

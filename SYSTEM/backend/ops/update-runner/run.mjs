@@ -104,6 +104,7 @@ try {
   const runner = await createRunner();
   const once = process.argv.includes("--once");
   const bootGate = process.argv.includes("--boot-gate");
+  const runtimeDeactivationGate = process.argv.includes("--runtime-deactivation-gate");
   const transportGateArguments = process.argv
     .slice(2)
     .filter((value) => value.startsWith("--network-transport-gate="));
@@ -114,15 +115,20 @@ try {
   if (transportGate && !["close", "open"].includes(transportGate)) {
     throw new Error("--network-transport-gate akzeptiert nur close oder open.");
   }
-  if (transportGate && (once || bootGate)) {
-    throw new Error("--network-transport-gate darf nicht mit --once oder --boot-gate kombiniert werden.");
+  if (transportGate && (once || bootGate || runtimeDeactivationGate)) {
+    throw new Error("--network-transport-gate darf nicht mit einem anderen Einmal-Gate kombiniert werden.");
+  }
+  if (runtimeDeactivationGate && (once || bootGate)) {
+    throw new Error("--runtime-deactivation-gate darf nicht mit --once oder --boot-gate kombiniert werden.");
   }
   if (bootGate && !once) throw new Error("--boot-gate erfordert --once.");
   if (bootGate && !runner.config.bootRecovery) {
     throw new Error("--boot-gate erfordert BONNI_UPDATE_BOOT_RECOVERY=true.");
   }
   const pollMs = positiveNumber(process.env.BONNI_UPDATE_RUNNER_POLL_MS, 2_000);
-  if (transportGate) {
+  if (runtimeDeactivationGate) {
+    await runner.assertRuntimeDeactivationSafe();
+  } else if (transportGate) {
     await runner.initialize();
     if (transportGate === "close") {
       await runner.closeNetworkTransport("runtime-boot-preflight");

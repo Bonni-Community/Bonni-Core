@@ -10,7 +10,8 @@ import { terminalRouter } from "../../platform/terminals/index.js";
 import { timecapsuleRouter } from "../../platform/timecapsule/index.js";
 import { systemUsersRouter } from "../../platform/auth/users/index.js";
 import { updateRouter } from "../../platform/module-manager/update/index.js";
-import { twoFactorRouter } from "../../platform/security/index.js";
+import { twoFactorRouter } from "../../core/modules/security/two-factor/index.js";
+import { accountRecoveryRouter } from "../../core/modules/security/account-recovery/index.js";
 import { runtimeControlRouter } from "../runtime/runtime-control.routes.js";
 import { runContainerRouter } from "../runtime/run-container/index.js";
 import { healthRouter } from "./health.routes.js";
@@ -31,6 +32,7 @@ export function registerCoreRoutes(app: Express) {
   app.use("/api/terminals", terminalRouter);
   app.use("/api/notifications", notificationRouter);
   app.use("/api/security/2fa", twoFactorRouter);
+  app.use("/api/security/account-recovery", accountRecoveryRouter);
   app.use("/api/timecapsule", timecapsuleRouter);
   app.use("/api/system", systemRouter);
   app.use("/api/runtime", runtimeRouter);

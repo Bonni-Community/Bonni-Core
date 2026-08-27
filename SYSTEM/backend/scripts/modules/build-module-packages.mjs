@@ -75,21 +75,41 @@ for (const root of moduleRoots) {
   packageFiles.push(...await collectPackageFiles(realRoot, realRoot));
 }
 
-for (const packageFile of packageFiles.sort()) {
+const buildPackages = [];
+for (const packageFile of packageFiles) {
   const packageRoot = path.dirname(packageFile);
   const packageJson = JSON.parse(await fs.readFile(packageFile, "utf8"));
   if (!String(packageJson?.scripts?.build || "").trim()) continue;
 
   const lockFile = path.join(packageRoot, "package-lock.json");
   const hasLockFile = await fs.access(lockFile, fsConstants.R_OK).then(() => true, () => false);
+  const relativeRoot = path.relative(projectRoot, packageRoot);
+  const depth = relativeRoot.split(path.sep).filter(Boolean).length;
+  buildPackages.push({ packageRoot, hasLockFile, depth });
+}
+
+// Unterpakete werden vor ihren uebergeordneten App-Paketen gebaut. Vor allem
+// bleiben ihre Build-Abhaengigkeiten bis zum Ende der gesamten Build-Phase
+// erhalten: Ein App-Root darf dadurch gefahrlos `npm --prefix frontend run
+// build` delegieren, ohne dass dessen lokales Vite vorher entfernt wurde.
+buildPackages.sort((left, right) => (
+  right.depth - left.depth || left.packageRoot.localeCompare(right.packageRoot)
+));
+
+for (const { packageRoot, hasLockFile } of buildPackages) {
   await runNpm(
     packageRoot,
     hasLockFile
       ? ["ci", "--include=dev"]
       : ["install", "--include=dev"],
   );
-  await runNpm(packageRoot, ["run", "build"]);
+}
 
+for (const { packageRoot } of buildPackages) {
+  await runNpm(packageRoot, ["run", "build"]);
+}
+
+for (const { packageRoot } of buildPackages) {
   if (path.basename(packageRoot) === "backend") {
     await runNpm(packageRoot, ["prune", "--omit=dev"]);
   } else {

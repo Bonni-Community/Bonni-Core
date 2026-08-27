@@ -1,23 +1,10 @@
-function formatBytes(value) {
-  const bytes = Number(value || 0);
-  if (!bytes) return "";
-  const units = ["B", "KB", "MB", "GB"];
-  let size = bytes;
-  let index = 0;
-  while (size >= 1024 && index < units.length - 1) {
-    size /= 1024;
-    index += 1;
-  }
-  return `${size.toFixed(size >= 10 || index === 0 ? 0 : 1)} ${units[index]}`;
-}
-
-function stepSymbol(status) {
-  if (status === "completed") return "✓";
-  if (status === "running") return "◉";
-  if (status === "failed") return "×";
-  if (status === "waiting") return "◌";
-  return "○";
-}
+import {
+  formatBonniCoreVersion,
+  isUpdateBusy,
+  isUpdateFailed,
+  localUpdateStateLabel,
+  normalizeUpdateState,
+} from "./localUpdatePresentation.js";
 
 export default function CoreUpdatePopover({
   status,
@@ -25,100 +12,94 @@ export default function CoreUpdatePopover({
   action,
   error,
   onCheck,
-  onInstall,
   onNavigate,
 }) {
-  const currentVersion = status?.currentVersion || "—";
-  const targetVersion = status?.targetVersion;
-  const workflow = status?.workflow;
-  const updateAvailable = Boolean(status?.updateAvailable);
-  const compatibilityBlocked = status?.compatibility && !status.compatibility.ok;
-  const installationBlocked = status?.installation?.allowed === false;
-  const runnerUnavailable = status?.runner?.available === false;
-  const workflowBusy = ["running", "installing", "rolling-back"].includes(workflow?.status);
-  const downloadDetail = workflow?.totalBytes
-    ? `${formatBytes(workflow.downloadedBytes)} / ${formatBytes(workflow.totalBytes)}`
-    : formatBytes(workflow?.downloadedBytes);
+  const currentVersion = status?.currentVersion || "";
+  const localUpdate = status?.localSourceUpdate || null;
+  const localState = normalizeUpdateState(localUpdate?.state);
+  const progressState = normalizeUpdateState(
+    localUpdate?.progress?.status || localUpdate?.progress?.phase,
+    "idle",
+  );
+  const displayState = !["none", "idle"].includes(progressState) ? progressState : localState;
+  const localFailureState = isUpdateFailed(localState, progressState);
+  const localCompleted = !localFailureState
+    && (["completed", "already-installed"].includes(localState) || progressState === "completed");
+  const releaseAvailable = Boolean(status?.updateAvailable && status?.updateKind !== "local-source");
+  const localRelevant = Boolean(localUpdate && (
+    isUpdateBusy(localState, progressState)
+    || (
+      status?.updateKind !== "release"
+      && (localUpdate?.updateAvailable || isUpdateFailed(localState, progressState) || localCompleted)
+    )
+  ));
+  const localAttention = localRelevant;
+  const localBusy = localRelevant && isUpdateBusy(localState, progressState);
+  const localFailure = localRelevant && localFailureState;
+  const localSuccess = localRelevant && localCompleted;
+  const targetVersion = localRelevant ? localUpdate?.to?.coreVersion : releaseAvailable ? status?.targetVersion : null;
+  const currentVersionLabel = formatBonniCoreVersion(currentVersion);
+  const targetVersionLabel = targetVersion ? formatBonniCoreVersion(targetVersion) : null;
+  const showUpdateAction = releaseAvailable || localAttention;
+  const headerLabel = localAttention
+      ? localUpdateStateLabel(displayState)
+      : releaseAvailable
+        ? "Update verfügbar"
+      : "Aktuell";
 
   return (
-    <div className="cc-version-popover cc-update-popover" role="dialog" aria-label="Bonni-Core-Aktualisierung">
+    <div className="cc-version-popover cc-update-popover cc-update-popover--compact" role="dialog" aria-label="Bonni-Core-Aktualisierung">
       <div className="cc-update-popover__heading">
         <div>
           <span>Bonni Core</span>
           <strong>
-            {currentVersion}
-            {targetVersion ? <><b aria-hidden="true">→</b>{targetVersion}</> : null}
+            {currentVersionLabel}
+            {targetVersion && targetVersion !== currentVersion ? <><b aria-hidden="true">→</b>{targetVersionLabel}</> : null}
           </strong>
         </div>
-        <span className={`cc-update-state${updateAvailable ? " is-available" : ""}`}>
-          {updateAvailable ? "Update verfügbar" : "Aktuell"}
+        <span className={`cc-update-state${showUpdateAction ? " is-available" : ""}${localAttention && !releaseAvailable ? " is-local" : ""}`}>
+          {headerLabel}
         </span>
       </div>
 
-      {workflow ? (
-        <section className="cc-update-workflow" aria-label="Aktueller Updatefortschritt">
-          <div className="cc-update-download-row">
-            <span>Download</span>
-            <b>{Math.round(Number(workflow.progressPercent || 0))} %</b>
+      {showUpdateAction ? (
+        <section className={`cc-update-compact-card${localFailure ? " is-error" : ""}`}>
+          <div>
+            <span>{localRelevant ? "Paket" : "Neue Bonni-Core-Version"}</span>
+            <strong>{`Bonni Core ${targetVersionLabel}`}</strong>
           </div>
-          <div className="cc-update-progress" aria-label={`Download ${workflow.progressPercent || 0} Prozent`}>
-            <span style={{ width: `${Math.max(0, Math.min(100, Number(workflow.progressPercent || 0)))}%` }} />
-          </div>
-          {downloadDetail ? <small>{downloadDetail}</small> : null}
-
-          <ol className="cc-update-checklist">
-            {(workflow.steps || []).map((step) => (
-              <li key={step.key} className={`is-${step.status}`}>
-                <span aria-hidden="true">{stepSymbol(step.status)}</span>
-                <div><b>{step.label}</b>{step.detail ? <small>{step.detail}</small> : null}</div>
-              </li>
-            ))}
-          </ol>
-
-          {workflow.message ? (
-            <div className={`cc-update-message${["failed", "rolled-back"].includes(workflow.status) ? " is-error" : ""}`}>
-              {workflow.message}
-            </div>
-          ) : null}
+          <p>
+            {localSuccess
+              ? "Die Aktualisierung wurde erfolgreich abgeschlossen. Alle Details bleiben auf der Aktualisierungsseite nachvollziehbar."
+              : localFailure
+              ? "Die Aktualisierung benötigt deine Aufmerksamkeit. Der Fehler bleibt auf der Aktualisierungsseite sichtbar."
+              : localBusy
+                ? "Fortschritt und Neustart werden auf der Aktualisierungsseite angezeigt."
+                : "Änderungen, Sicherung und Installationsschritte vor dem Start ansehen."}
+          </p>
+          <button type="button" className="is-primary" onClick={() => onNavigate("update")}>
+            {localSuccess ? "Details ansehen" : localBusy ? "Fortschritt öffnen" : localFailure ? "Fehler ansehen" : "Aktualisieren"}
+          </button>
         </section>
+      ) : (
+        <div className="cc-update-compact-current">
+          <span aria-hidden="true">✓</span>
+          <div><strong>Bonni Core ist aktuell</strong><small>Derzeit ist keine Aktualisierung vorgemerkt.</small></div>
+        </div>
+      )}
+
+      {error ? (
+        <button type="button" className="cc-update-compact-error" onClick={() => onNavigate("update")}>
+          <span>Letzter Updatefehler</span>
+          <strong>{error}</strong>
+          <small>Details dauerhaft öffnen →</small>
+        </button>
       ) : null}
 
-      {compatibilityBlocked ? (
-        <div className="cc-update-message is-error">
-          Der Store hat das Update wegen einer inkompatiblen Erweiterung gesperrt.
-        </div>
-      ) : null}
-      {installationBlocked ? (
-        <div className="cc-update-message is-error">
-          {status.installation.reason || "Dieses Update benötigt einen manuellen Wartungsschritt."}
-        </div>
-      ) : null}
-      {updateAvailable && runnerUnavailable ? (
-        <div className="cc-update-message is-error">
-          {status.runner.reason || "Der sichere Docker-Update-Runner ist nicht erreichbar."}
-        </div>
-      ) : null}
-      {status?.versionMismatch ? (
-        <div className="cc-update-message is-error">
-          Die installierten Bonni-Core-Dateien stammen nicht aus derselben Version. Bitte die Installation prüfen.
-        </div>
-      ) : null}
-      {error ? <div className="cc-update-message is-error">{error}</div> : null}
-
-      <div className="cc-update-actions">
+      <div className="cc-update-actions cc-update-actions--compact">
         <button type="button" onClick={onCheck} disabled={loading || Boolean(action)}>
           {action === "check" ? "Prüfe …" : "Auf Updates prüfen"}
         </button>
-        {updateAvailable && !workflowBusy ? (
-          <button
-            type="button"
-            className="is-primary"
-            onClick={onInstall}
-            disabled={loading || Boolean(action) || compatibilityBlocked || installationBlocked || runnerUnavailable}
-          >
-            {action === "install" ? "Installation startet …" : workflow?.status === "ready" ? "Jetzt installieren" : "Update installieren"}
-          </button>
-        ) : null}
       </div>
 
       <nav className="cc-update-menu" aria-label="Update-Menü">

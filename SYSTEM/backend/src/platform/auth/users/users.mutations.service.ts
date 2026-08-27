@@ -8,6 +8,13 @@ import {
 
 import { getPrismaClient } from "../../../core/database/database.js";
 import { hashPassword } from "../authentication/password-hash.helper.js";
+import { validateExactLocalPassword } from "../../../core/modules/identity/local-password-policy.js";
+import { advanceTwoFactorAfterPasswordChange } from "../../../core/modules/security/two-factor/password-change.js";
+import {
+  AccountSecurityTransitionError,
+  technicalAccountSecurityCleanupRequired,
+  transitionAccountSecurity,
+} from "../../../core/modules/security/two-factor/account-security-transition.js";
 import {
   BOOTSTRAP_ADMIN_LOGIN_NAME,
   isBootstrapAdminLoginName,
@@ -30,6 +37,9 @@ type CurrentUserContext = {
   id?: string | null;
   loginName?: string | null;
 };
+
+const PERSONAL_ACCOUNT_TYPES = new Set<AccountType>([AccountType.MEMBER, AccountType.ADMIN]);
+const TECHNICAL_ACCOUNT_TYPES = new Set<AccountType>([AccountType.TERMINAL, AccountType.SERVICE]);
 
 type ModuleAccessInput = {
   kind?: unknown;
@@ -510,10 +520,12 @@ export async function createLocalMember(
     ? requestedLeftAt || new Date()
     : null;
   assertMembershipDates(joinedAt, leftAt);
-  const password = String(input.password || "");
+  const passwordValidation = createAccount ? validateExactLocalPassword(input.password) : null;
+  const password = passwordValidation?.ok ? passwordValidation.password : "";
   const moduleAccess = createAccount
     ? await resolveModuleAccessProfiles(normalizeModuleAccess(input))
     : [];
+  const accountType = createAccount ? accountTypeFor(input, moduleAccess) : AccountType.MEMBER;
 
   if (createAccount && !loginName) {
     throw new UserMutationError("LOCAL_MEMBER_LOGIN_REQUIRED", "Bitte einen Loginnamen eingeben.");
@@ -537,8 +549,15 @@ export async function createLocalMember(
   if (!isValidEmail(email || "")) {
     throw new UserMutationError("LOCAL_MEMBER_EMAIL_INVALID", "Bitte eine gültige E-Mail-Adresse eingeben.");
   }
-  if (createAccount && password.length < 6) {
+  if (createAccount && (!passwordValidation?.ok || passwordValidation.characters < 6)) {
     throw new UserMutationError("LOCAL_MEMBER_PASSWORD_TOO_SHORT", "Das Passwort muss mindestens 6 Zeichen haben.");
+  }
+  if (createAccount && !PERSONAL_ACCOUNT_TYPES.has(accountType)) {
+    throw new UserMutationError(
+      "TECHNICAL_ACCESS_REQUIRES_MANAGED_ACCOUNT",
+      "Technische Terminal- und Dienstkonten werden ausschließlich durch das zuständige Modul angelegt.",
+      409,
+    );
   }
   const existing = createAccount
     ? await prisma.account.findUnique({ where: { loginName } })
@@ -548,7 +567,6 @@ export async function createLocalMember(
   }
 
   const passwordHash = createAccount ? await hashPassword(password) : null;
-  const accountType = createAccount ? accountTypeFor(input, moduleAccess) : AccountType.MEMBER;
 
   try {
     const result = await prisma.$transaction(async (transaction) => {
@@ -929,14 +947,32 @@ export async function updateLocalMemberProfile(
         await transaction.accountMemberCapability.deleteMany({ where: { accountId } });
       }
 
-      const account = await transaction.account.update({
-        where: { id: accountId },
-        data: {
-          loginName,
-          isActive,
-          type: accountType,
-        },
-      });
+      const eligibilityChanged = existing.isActive !== isActive || existing.type !== accountType;
+      const technicalCleanupRequired = TECHNICAL_ACCOUNT_TYPES.has(accountType)
+        && await technicalAccountSecurityCleanupRequired(transaction, accountId);
+      const securityTransitionRequired = eligibilityChanged || technicalCleanupRequired;
+      if (securityTransitionRequired) {
+        await transitionAccountSecurity(transaction, {
+          accountId,
+          previousRevision: existing.credentialRevision,
+          previousType: existing.type,
+          previousIsActive: existing.isActive,
+          nextType: accountType,
+          nextIsActive: isActive,
+          twoFactorProviderId: existing.twoFactorProviderId,
+          force: !eligibilityChanged,
+          accountData: { loginName },
+        });
+      }
+      const account = securityTransitionRequired
+        ? await transaction.account.findUnique({ where: { id: accountId } })
+        : await transaction.account.update({
+            where: { id: accountId },
+            data: { loginName },
+          });
+      if (!account) {
+        throw new UserMutationError("LOCAL_MEMBER_NOT_FOUND", "Der Benutzer wurde nicht gefunden.", 404);
+      }
 
       if (existing.personId) {
         await transaction.person.update({
@@ -999,6 +1035,16 @@ export async function updateLocalMemberProfile(
     if (error?.code === "P2002") {
       throw new UserMutationError("LOCAL_MEMBER_ALREADY_EXISTS", "Dieser Loginname existiert bereits.", 409);
     }
+    if (
+      error instanceof AccountSecurityTransitionError
+      || error?.code === "TWO_FACTOR_CREDENTIAL_STATE_AMBIGUOUS"
+    ) {
+      throw new UserMutationError(
+        "LOCAL_MEMBER_SECURITY_STATE_CHANGED",
+        "Der Sicherheitszustand des Zugangs wurde gleichzeitig geändert. Bitte erneut laden.",
+        409,
+      );
+    }
     throw error;
   }
 }
@@ -1039,6 +1085,20 @@ export async function updateLocalMemberAccess(
 
   let passwordHash: string | undefined;
   if (updatesPassword) {
+    if (existing.passwordRecoveryLockedAt) {
+      throw new UserMutationError(
+        "PASSWORD_RECOVERY_LOCKED",
+        "Das Passwort darf nur über den laufenden Wiederherstellungsvorgang gesetzt werden.",
+        423,
+      );
+    }
+    if (!PERSONAL_ACCOUNT_TYPES.has(existing.type)) {
+      throw new UserMutationError(
+        "TECHNICAL_ACCOUNT_PASSWORD_FORBIDDEN",
+        "Technische Terminal- und Dienstkonten dürfen kein interaktives Passwort besitzen.",
+        409,
+      );
+    }
     if (existing.authProvider.type !== AuthProviderType.LOCAL) {
       throw new UserMutationError(
         "LOCAL_MEMBER_PASSWORD_PROVIDER_INVALID",
@@ -1046,28 +1106,65 @@ export async function updateLocalMemberAccess(
         409,
       );
     }
-    const password = String(input.password || "");
-    if (password.length < 6) {
+    const passwordValidation = validateExactLocalPassword(input.password);
+    if (!passwordValidation.ok || passwordValidation.characters < 6) {
       throw new UserMutationError("LOCAL_MEMBER_PASSWORD_TOO_SHORT", "Das Passwort muss mindestens 6 Zeichen haben.");
     }
-    passwordHash = await hashPassword(password);
+    passwordHash = await hashPassword(passwordValidation.password);
   }
 
-  const account = await prisma.account.update({
-    where: { id: accountId },
-    data: {
-      ...(updatesEmail ? { email } : {}),
-      ...(passwordHash ? { passwordHash } : {}),
-    },
-    select: {
-      id: true,
-      loginName: true,
-      email: true,
-      type: true,
-      isActive: true,
-      personId: true,
-    },
+  const account = await prisma.$transaction(async (transaction) => {
+    const updated = await transaction.account.updateMany({
+      where: {
+        id: accountId,
+        credentialRevision: existing.credentialRevision,
+        ...(passwordHash ? { passwordRecoveryLockedAt: null } : {}),
+      },
+      data: {
+        ...(updatesEmail ? { email } : {}),
+        ...(passwordHash ? {
+          passwordHash,
+          credentialRevision: { increment: 1 },
+        } : {}),
+      },
+    });
+    if (updated.count !== 1) {
+      throw new UserMutationError(
+        "LOCAL_MEMBER_ACCESS_CHANGED",
+        "Die Zugangsdaten wurden gleichzeitig geändert. Bitte erneut laden.",
+        409,
+      );
+    }
+    if (passwordHash) {
+      await advanceTwoFactorAfterPasswordChange(transaction, {
+        accountId,
+        previousRevision: existing.credentialRevision,
+        nextRevision: existing.credentialRevision + 1,
+        twoFactorProviderId: existing.twoFactorProviderId,
+      });
+      const now = new Date();
+      await transaction.session.updateMany({
+        where: { accountId, endedAt: null },
+        data: { endedAt: now },
+      });
+      await transaction.refreshToken.updateMany({
+        where: { accountId, revokedAt: null },
+        data: { revokedAt: now },
+      });
+    }
+    return transaction.account.findUnique({
+      where: { id: accountId },
+      select: {
+        id: true,
+        loginName: true,
+        email: true,
+        type: true,
+        isActive: true,
+        personId: true,
+      },
+    });
   });
+  if (!account) throw new UserMutationError("LOCAL_MEMBER_NOT_FOUND", "Der Benutzer wurde nicht gefunden.", 404);
 
   await publishUsersNetworkRecords({ accountIds: [account.id] }, {
     accountId: currentUser?.accountId || currentUser?.id || null,
