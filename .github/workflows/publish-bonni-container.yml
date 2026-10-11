@@ -1,0 +1,139 @@
+name: Publish Bonni Core container
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_id:
+        description: Draft release identifier
+        required: true
+        type: string
+      asset_id:
+        description: Signed Bonni container asset identifier
+        required: true
+        type: string
+      asset_sha256:
+        description: Expected SHA-256 of the signed asset
+        required: true
+        type: string
+      version:
+        description: Bonni Core version
+        required: true
+        type: string
+      image:
+        description: Fully qualified lower-case GHCR image name
+        required: true
+        type: string
+      platforms:
+        description: Selected container architectures
+        required: true
+        default: linux/amd64,linux/arm64
+        type: choice
+        options:
+          - linux/amd64
+          - linux/arm64
+          - linux/amd64,linux/arm64
+
+permissions:
+  contents: write
+  packages: write
+
+concurrency:
+  group: bonni-container-${{ inputs.version }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Build selected container architectures
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Validate selected architectures
+        env:
+          PLATFORMS: ${{ inputs.platforms }}
+        run: |
+          set -euo pipefail
+          case "${PLATFORMS}" in
+            linux/amd64|linux/arm64|linux/amd64,linux/arm64) ;;
+            *) echo "Unsupported container architectures" >&2; exit 1 ;;
+          esac
+
+      - name: Download signed Bonni package
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ASSET_ID: ${{ inputs.asset_id }}
+          ASSET_SHA256: ${{ inputs.asset_sha256 }}
+          PLATFORMS: ${{ inputs.platforms }}
+        run: |
+          set -euo pipefail
+          gh api --method GET             -H "Accept: application/octet-stream"             "/repos/${GITHUB_REPOSITORY}/releases/assets/${ASSET_ID}" > bonni-container.zip
+          printf '%s  %s\n' "${ASSET_SHA256}" bonni-container.zip | sha256sum --check --strict
+          mkdir release
+          unzip -q bonni-container.zip -d release
+          test -f release/PAYLOAD/SYSTEM/backend/Dockerfile
+          test -f release/PAYLOAD/SYSTEM/backend/package.json
+          test ! -e release/PAYLOAD/SYSTEM/backend/.env
+          if [ -f release/PAYLOAD/SYSTEM/backend/bonni-container-build.json ]; then
+            node -e 'const fs = require("node:fs"); const plan = JSON.parse(fs.readFileSync("release/PAYLOAD/SYSTEM/backend/bonni-container-build.json", "utf8")); if (plan.schema !== "bonni.container-build/v1" || !Array.isArray(plan.platforms) || plan.platforms.join(",") !== process.env.PLATFORMS) throw new Error("Container architecture selection differs from the signed package");'
+          fi
+
+      - name: Enable emulation
+        uses: docker/setup-qemu-action@v3
+
+      - name: Prepare Docker Buildx
+        id: bonni_builder
+        uses: docker/setup-buildx-action@v3
+
+      - name: Sign in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: Build and publish the finished container
+        uses: docker/build-push-action@v6
+        with:
+          context: release/PAYLOAD
+          file: release/PAYLOAD/SYSTEM/backend/Dockerfile
+          platforms: ${{ inputs.platforms }}
+          push: true
+          provenance: mode=max
+          sbom: true
+          tags: |
+            ${{ inputs.image }}:${{ inputs.version }}
+            ${{ inputs.image }}:stable
+
+      - name: Export and verify downloadable Docker TAR images
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_ID: ${{ inputs.release_id }}
+          PLATFORMS: ${{ inputs.platforms }}
+          VERSION: ${{ inputs.version }}
+          BUILDER: ${{ steps.bonni_builder.outputs.name }}
+        run: |
+          set -euo pipefail
+          RELEASE_TAG=$(gh api "/repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}" --jq '.tag_name')
+          for PLATFORM in ${PLATFORMS//,/ }; do
+            ARCH=${PLATFORM#linux/}
+            ARCH_LABEL=${ARCH^^}
+            FILE="Bonni-Core-${VERSION}-${ARCH_LABEL}.tar"
+            IMAGE_TAG="bonni-core:${VERSION}-${ARCH}"
+            docker buildx build --builder "${BUILDER}" --platform "${PLATFORM}" \
+              --file release/PAYLOAD/SYSTEM/backend/Dockerfile --provenance=false \
+              --tag "${IMAGE_TAG}" --output "type=docker,dest=${FILE}" release/PAYLOAD
+            tar -xOf "${FILE}" manifest.json > image-manifest.json
+            CONFIG=$(IMAGE_TAG="${IMAGE_TAG}" node -e 'const m = require("./image-manifest.json"); if (!Array.isArray(m) || m.length !== 1 || !Array.isArray(m[0].RepoTags) || !m[0].RepoTags.includes(process.env.IMAGE_TAG) || !/^blobs\/sha256\/[a-f0-9]{64}$|^[a-f0-9]{64}\.json$/.test(m[0].Config)) process.exit(1); process.stdout.write(m[0].Config);')
+            tar -xOf "${FILE}" "${CONFIG}" > image-config.json
+            DETECTED=$(node -e 'const c = require("./image-config.json"); process.stdout.write(c.os + "/" + c.architecture);')
+            test "${DETECTED}" = "${PLATFORM}"
+            sha256sum "${FILE}" > "${FILE}.sha256"
+            gh release upload "${RELEASE_TAG}" "${FILE}" "${FILE}.sha256" --repo "${GITHUB_REPOSITORY}" --clobber
+          done
+
+      - name: Publish GitHub release after successful image build
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_ID: ${{ inputs.release_id }}
+        run: |
+          set -euo pipefail
+          gh api --method PATCH "/repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}"             -F draft=false -F prerelease=false >/dev/null
