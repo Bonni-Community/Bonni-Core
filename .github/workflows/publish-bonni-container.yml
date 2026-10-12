@@ -112,7 +112,7 @@ jobs:
             const expected = platforms.flatMap(platform => {
               const name = "Bonni-Core-v" + coreVersion + "-" + platform.split("/")[1].toUpperCase();
               return [name + ".yml", name + ".yml.sha256", name + ".tar", name + ".tar.sha256"];
-            }).concat("Bonni-Core-v" + coreVersion + "-QNAP-Anleitung.txt");
+            }).concat("Bonni-Core-v" + coreVersion + "-Docker-Anleitung.txt");
             const phase = env.BONNI_RELEASE_PHASE || "validate";
             const {release, plan} = await validate();
             if (phase === "validate") {
@@ -362,25 +362,34 @@ jobs:
           tags: |
             ${{ inputs.image }}:build-${{ github.run_id }}-${{ github.run_attempt }}
 
-      - name: Create versioned QNAP files pinned to the built image
+      - name: Create versioned Compose files pinned to platform images
         env:
           VERSION: ${{ inputs.version }}
           PLATFORMS: ${{ inputs.platforms }}
           IMAGE: ${{ inputs.image }}
           DIGEST: ${{ steps.bonni_image.outputs.digest }}
+          DATABASE_IMAGE: postgres:16-alpine@sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777
         run: |
           set -euo pipefail
+          docker buildx imagetools inspect "${IMAGE}@${DIGEST}" --raw > core-image-index.json
+          docker buildx imagetools inspect "${DATABASE_IMAGE}" --raw > postgres-image-index.json
           node --input-type=module <<'BONNI_COMPOSE_SCRIPT'
           import fs from "node:fs/promises";
           import {randomBytes,createHash} from "node:crypto";
-          function buildContainerCompose({ version, platform, image }) {
+          function buildContainerCompose({ version, platform, image, databaseImage }) {
+            // Verified children of the existing, unchanged PostgreSQL 16 image index.
+            databaseImage ??= {
+              "linux/amd64": "postgres:16-alpine@sha256:7a396fd264a2067788b6551122b50f162bf6136312c7fc9d74381cb92c648382",
+              "linux/arm64": "postgres:16-alpine@sha256:7ae1143a9f249af815f056751a122a86d7e44ddce0926f2b227e3d5c434444f4",
+            }[platform];
             if (!/^\d+\.\d+\.\d+(?:[+-][a-z])?$/.test(version)
               || !["linux/amd64", "linux/arm64"].includes(platform)
-              || !/^[a-z0-9][a-z0-9._:/@-]{1,255}$/.test(image)) {
+              || !/^[a-z0-9][a-z0-9._:/@-]{1,255}$/.test(image)
+              || !/^postgres(?::[a-z0-9._-]+)?@sha256:[a-f0-9]{64}$/.test(databaseImage)) {
               throw new Error("CONTAINER_COMPOSE_INPUT_INVALID");
             }
             return `# Bonni Core v${version} – ${platform.split("/")[1].toUpperCase()}
-          # QNAP Container Station 3: Anwendung erstellen, diese YAML einfügen.
+          # Docker Compose: passende Architektur wählen und diese YAML verwenden.
           # Vor dem Start die DREI BITTE-Werte unten durch eigene Werte ersetzen.
           # DB-Kennwort: mindestens 24 Zeichen. MASTER_KEY: mindestens 43 Zeichen.
           # Admin: mindestens 16 Zeichen, Groß-/Kleinbuchstaben, Zahl und Sonderzeichen.
@@ -411,7 +420,7 @@ jobs:
           
           services:
             db:
-              image: postgres:16-alpine@sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777
+              image: ${databaseImage}
               platform: ${platform}
               restart: unless-stopped
               environment:
@@ -488,22 +497,33 @@ jobs:
             return `Bonni-Core-v${version}-${platform.split("/")[1].toUpperCase()}.yml`;
           }
           function buildContainerReadme(version) {
-            return `Bonni Core v${version} – QNAP / Docker Compose
+            return `Bonni Core v${version} – Docker / Compose
+          
+          PostgreSQL muss nicht vorinstalliert werden. Diese Compose-Datei startet die
+          Datenbank automatisch als eigenen Container und speichert ihre Daten dauerhaft
+          im Volume postgres_data. Bonni Core v${version} benötigt derzeit PostgreSQL;
+          eine vorhandene MySQL-Datenbank kann noch nicht als Bonni-Datenbank dienen.
           
           1. Auf GitHub Actions warten, bis der Auftrag vollständig grün ist.
-          2. Die YML für die NAS-Architektur herunterladen: AMD64 (Intel/AMD) oder ARM64.
-          3. In QNAP Container Station 3 eine Anwendung namens bonni-core erstellen.
-          4. Den YML-Inhalt einfügen und die drei BITTE-Werte am Anfang ersetzen.
+          2. Die YML für die Host-Architektur herunterladen: AMD64 (Intel/AMD) oder ARM64.
+             Voraussetzung: Docker Engine mit Linux-Containern und Docker Compose v2
+             oder eine Verwaltung, die Docker-Compose-Dateien unterstützt.
+          3. Die YML in einem dauerhaften Installationsordner ablegen. Bei einer grafischen
+             Container-Verwaltung den YML-Inhalt als Compose-Anwendung importieren.
+          4. Die drei BITTE-Werte am Anfang der YML ersetzen.
              Datenbank-Kennwort: mindestens 24 zufällige Zeichen.
              MASTER_KEY: mindestens 43 zufällige Zeichen; sicher und dauerhaft aufbewahren.
              Admin-Kennwort: mindestens 16 Zeichen mit Groß-/Kleinbuchstaben, Zahl und
              Sonderzeichen (z. B. !). Kein Dollarzeichen verwenden.
-          5. Anwendung erstellen. Danach http://NAS-IP:4000 öffnen; Benutzername: admin.
+          5. Anwendung mit gleichbleibendem Projektnamen bonni-core starten, z. B. AMD64:
+             docker compose -p bonni-core -f Bonni-Core-v${version}-AMD64.yml up -d
+             Für ARM64 den Dateinamen auf Bonni-Core-v${version}-ARM64.yml ändern.
+             Danach http://SERVER-IP:4000 öffnen; Benutzername: admin.
              Die Startprüfung kann mehrere Minuten dauern. Einrichtung und 2FA abschließen.
           
           Diese YML startet den Einzelbetrieb mit Core und PostgreSQL. Der bestehende
           Host-Stack mit externem Update-Runner, Proxy und automatischem Notbetrieb wird
-          weiterhin über runtime:start eingerichtet; er ist nicht Teil dieser QNAP-YML.
+          weiterhin über runtime:start eingerichtet; er ist nicht Teil dieser Compose-YML.
           Diese Vorlage ist für eine neue Installation. Keine bestehende Host-Installation
           oder Datenbank einfach darauf umstellen. Versionswechsel brauchen Sicherung und
           die zur Version passenden Datenbankmigrationen. Die YML allein migriert nicht.
@@ -515,12 +535,14 @@ jobs:
           
           GitHub liefert zusätzlich je Architektur eine echte Docker-TAR-Datei und deren
           SHA-256-Prüfsumme. ZIP = signierte Bauquelle, TAR = importierbares Container-Image,
-          YML = Anwendungskonfiguration. Für den normalen QNAP-Start genügt die YML plus
-          erreichbare Registry. Die veröffentlichten YML-Dateien sind an den Image-Digest
-          gebunden; sie wechseln nicht unbemerkt auf eine andere Version.
+          YML = Anwendungskonfiguration. Für den normalen Compose-Start genügt die YML plus
+          erreichbare Registry. In den von GitHub erzeugten YML-Dateien sind Bonni und
+          PostgreSQL an die Image-Digests der jeweiligen Architektur gebunden; sie wechseln
+          nicht unbemerkt auf eine andere Version.
           
-          Wenn QNAP bei ghcr.io Zugriff verweigert: den passenden Registry-Zugang in
-          Container Station hinterlegen oder das Paket auf GitHub bewusst öffentlich
+          Wenn ghcr.io Zugriff verweigert: mit docker login ghcr.io anmelden oder den
+          Registry-Zugang in der Container-Verwaltung hinterlegen. Alternativ das Paket
+          auf GitHub bewusst öffentlich
           freigeben. Ein öffentliches Repository macht ein GHCR-Paket nicht automatisch
           öffentlich. Der Ablauf ändert die Sichtbarkeit nicht.
           
@@ -530,14 +552,34 @@ jobs:
           kein vollständig netzunabhängiges Installationspaket.
           `;
           }
+          function resolvePlatformImage(image, index, platform) {
+            if (!/^[a-z0-9][a-z0-9._:/-]*@sha256:[a-f0-9]{64}$/.test(image)
+              || !["linux/amd64", "linux/arm64"].includes(platform)
+              || index?.schemaVersion !== 2 || !Array.isArray(index.manifests)) {
+              throw new Error("CONTAINER_IMAGE_INDEX_INVALID");
+            }
+            const [os, architecture] = platform.split("/");
+            const matches = index.manifests.filter(entry => entry.platform?.os === os
+              && entry.platform?.architecture === architecture
+              && (!entry.platform.variant || (architecture === "arm64" && entry.platform.variant === "v8"))
+              && entry.annotations?.["vnd.docker.reference.type"] !== "attestation-manifest");
+            if (matches.length !== 1 || !/^sha256:[a-f0-9]{64}$/.test(matches[0].digest || "")
+              || !["application/vnd.oci.image.manifest.v1+json", "application/vnd.docker.distribution.manifest.v2+json"].includes(matches[0].mediaType)) {
+              throw new Error("CONTAINER_PLATFORM_MANIFEST_MISSING_OR_AMBIGUOUS: " + platform);
+            }
+            return image.split("@")[0] + "@" + matches[0].digest;
+          }
           const version = process.env.VERSION.replace(/-([a-z])$/, "+$1");
           const platforms = process.env.PLATFORMS.split(",");
           if (!/^sha256:[a-f0-9]{64}$/.test(process.env.DIGEST)) throw Error("CONTAINER_IMAGE_DIGEST_INVALID");
-          const image = process.env.IMAGE + "@" + process.env.DIGEST;
+          const coreIndex = JSON.parse(await fs.readFile("core-image-index.json", "utf8"));
+          const databaseIndex = JSON.parse(await fs.readFile("postgres-image-index.json", "utf8"));
           await fs.mkdir("compose-assets", {recursive: true});
           await fs.mkdir("smoke", {recursive: true, mode: 0o700});
           for (const platform of platforms) {
-            const text = buildContainerCompose({version, platform, image});
+            const image = resolvePlatformImage(process.env.IMAGE + "@" + process.env.DIGEST, coreIndex, platform);
+            const databaseImage = resolvePlatformImage(process.env.DATABASE_IMAGE, databaseIndex, platform);
+            const text = buildContainerCompose({version, platform, image, databaseImage});
             const filename = composeFilename(version, platform);
             await fs.writeFile("compose-assets/" + filename, text);
             await fs.writeFile("compose-assets/" + filename + ".sha256", createHash("sha256").update(text).digest("hex") + "  " + filename + "\n");
@@ -547,21 +589,30 @@ jobs:
               .replace('"4000:4000"', '"127.0.0.1::4000"');
             await fs.writeFile("smoke/" + platform.split("/")[1] + ".yml", smoke, {mode: 0o600});
           }
-          await fs.writeFile("compose-assets/Bonni-Core-v" + version + "-QNAP-Anleitung.txt", buildContainerReadme(version));
+          await fs.writeFile("compose-assets/Bonni-Core-v" + version + "-Docker-Anleitung.txt", buildContainerReadme(version));
           
           BONNI_COMPOSE_SCRIPT
 
-      - name: Start and restart the QNAP application for every architecture
+      - name: Start and restart the Compose application for every architecture
         env:
           PLATFORMS: ${{ inputs.platforms }}
         run: |
           set -euo pipefail
           for PLATFORM in ${PLATFORMS//,/ }; do
+            echo "Checking container startup and restart: ${PLATFORM}"
             ARCH=${PLATFORM#linux/}
             PROJECT="bonni-ci-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${ARCH}"
             FILE="smoke/${ARCH}.yml"
             trap 'docker compose -p "$PROJECT" -f "$FILE" down --volumes --remove-orphans >/dev/null 2>&1 || true' EXIT
             docker compose -p "$PROJECT" -f "$FILE" config --quiet
+            docker compose -p "$PROJECT" -f "$FILE" pull
+            while IFS= read -r TEST_IMAGE; do
+              DETECTED=$(docker image inspect --format '{{.Os}}/{{.Architecture}}' "$TEST_IMAGE")
+              if [ "${DETECTED}" != "${PLATFORM}" ]; then
+                echo "Image architecture mismatch: ${DETECTED}, expected ${PLATFORM}" >&2
+                exit 1
+              fi
+            done < <(docker compose -p "$PROJECT" -f "$FILE" config --images)
             if ! docker compose -p "$PROJECT" -f "$FILE" up -d --wait --wait-timeout 600; then
               docker compose -p "$PROJECT" -f "$FILE" logs --tail 100
               exit 1
