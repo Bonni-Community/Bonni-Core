@@ -1,0 +1,22 @@
+// MeetApp owns this single scoped aggregate store. Bonni Core and other apps
+// never write these records directly.
+model MeetRecord {
+  id              String   @id @default(cuid())
+  tenantId        String
+  organizationId  String
+  recordType      String
+  parentId        String?
+  lookupKey       String?  @unique
+  ownerAccountId  String?
+  payload         Json
+  revision        Int      @default(1)
+  expiresAt       DateTime?
+  closedAt        DateTime?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@index([tenantId, recordType, updatedAt])
+  @@index([tenantId, parentId, recordType])
+  @@index([expiresAt])
+}
+

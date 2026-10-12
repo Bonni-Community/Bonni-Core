@@ -3,6 +3,10 @@ import fs from "node:fs/promises";
 import path from "node:path";
 
 import { resolveBonniProjectRoot } from "../project-root.js";
+import {
+  rebuildCentralLicenseCatalog,
+  resolveCentralLicenseRoot,
+} from "./central-license-catalog.service.js";
 import type { ModuleLegalPayloadDeclaration, ModuleManifestSummary } from "../types.js";
 
 const SAFE_KEY = /^(?:app|addon|plugin|bridge)\.[a-z0-9][a-z0-9.-]{0,158}[a-z0-9]$/u;
@@ -294,7 +298,15 @@ export async function installModuleLegalPayload(
   const packageRoot = path.resolve(projectRoot, manifest.sourcePath || "");
   if (packageRoot === projectRoot || !packageRoot.startsWith(`${projectRoot}${path.sep}`)) throw new Error("MODULE_LEGAL_PACKAGE_ROOT_INVALID");
   await assertPathWithoutSymlinks(projectRoot, safeRelativePath(manifest.sourcePath || "", "manifest.sourcePath"));
-  const storageRoot = path.resolve(options.storageRoot || process.env.BONNI_MODULE_LICENSE_ROOT || path.join(projectRoot, "licenses", "modules"));
+  const centralRoot = resolveCentralLicenseRoot(projectRoot);
+  const configuredModuleRoot = String(options.storageRoot || process.env.BONNI_MODULE_LICENSE_ROOT || "").trim();
+  const storageRoot = path.resolve(configuredModuleRoot || path.join(centralRoot, "modules"));
+  if (path.basename(storageRoot) !== "modules") throw new Error("MODULE_LEGAL_STORAGE_ROOT_INVALID");
+  const storageCentralRoot = path.dirname(storageRoot);
+  if (
+    (process.env.BONNI_LICENSE_ROOT || process.env.BONNI_MODULE_LICENSE_ROOT || !configuredModuleRoot)
+    && storageCentralRoot !== centralRoot
+  ) throw new Error("MODULE_LEGAL_STORAGE_ROOT_MISMATCH");
   await assertAbsolutePathWithoutSymlinks(storageRoot);
   const targetRoot = path.join(storageRoot, manifest.key, manifest.version);
   if (!targetRoot.startsWith(`${storageRoot}${path.sep}`)) throw new Error("MODULE_LEGAL_TARGET_ESCAPE");
@@ -334,6 +346,7 @@ export async function installModuleLegalPayload(
       ) throw new Error("MODULE_LEGAL_SOURCE_DRIFT");
     }
     const cleanedSource = await cleanImportedRuntimePayload(packageRoot, declaration);
+    await rebuildCentralLicenseCatalog(projectRoot, storageCentralRoot);
     return { created: false, cleanedSource, targetRoot, receipt: stored };
   }
 
@@ -377,10 +390,12 @@ export async function installModuleLegalPayload(
         throw new Error("MODULE_LEGAL_MANIFEST_BINDING_MISMATCH");
       }
       const cleanedSource = await cleanImportedRuntimePayload(packageRoot, declaration);
+      await rebuildCentralLicenseCatalog(projectRoot, storageCentralRoot);
       return { created: false, cleanedSource, targetRoot, receipt: stored };
     }
     throw error;
   }
   const cleanedSource = await cleanImportedRuntimePayload(packageRoot, declaration);
+  await rebuildCentralLicenseCatalog(projectRoot, storageCentralRoot);
   return { created: true, cleanedSource, targetRoot, receipt };
 }

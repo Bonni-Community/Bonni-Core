@@ -6,6 +6,8 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { inspectCoreDockerArchivePayload } from "../../src/system/update-runner/archive-tags.mjs";
+
 const SCRIPT_DIRECTORY = path.dirname(fileURLToPath(import.meta.url));
 export const DEFAULT_SYSTEM_ROOT = path.resolve(SCRIPT_DIRECTORY, "../../..");
 const CREATE_RELEASE_SCRIPT = path.resolve(SCRIPT_DIRECTORY, "../update-release/create-release.mjs");
@@ -252,6 +254,189 @@ async function ensureSecureChildDirectories(root, segments) {
   return cursor;
 }
 
+async function ensureSecureAbsoluteDirectory(target, errorCode) {
+  const absolute = path.resolve(target);
+  const parsed = path.parse(absolute);
+  let cursor = parsed.root;
+  for (const segment of absolute.slice(parsed.root.length).split(path.sep).filter(Boolean)) {
+    cursor = path.join(cursor, segment);
+    try {
+      await fs.mkdir(cursor, { mode: 0o700 });
+    } catch (error) {
+      if (error?.code !== "EEXIST") throw error;
+    }
+    const state = await fs.lstat(cursor).catch(() => null);
+    if (!state?.isDirectory() || state.isSymbolicLink()) throw new Error(errorCode);
+    const real = await fs.realpath(cursor);
+    if (!samePath(real, cursor)) throw new Error(errorCode);
+  }
+  return absolute;
+}
+
+async function sha256File(file) {
+  const handle = await fs.open(file, "r");
+  const hash = crypto.createHash("sha256");
+  const buffer = Buffer.alloc(1024 * 1024);
+  try {
+    let position = 0;
+    while (true) {
+      const { bytesRead } = await handle.read(buffer, 0, buffer.length, position);
+      if (bytesRead <= 0) break;
+      hash.update(buffer.subarray(0, bytesRead));
+      position += bytesRead;
+    }
+  } finally {
+    await handle.close();
+  }
+  return hash.digest("hex");
+}
+
+function canonicalJson(value) {
+  if (value === null || typeof value === "boolean" || typeof value === "string") return JSON.stringify(value);
+  if (typeof value === "number") {
+    if (!Number.isSafeInteger(value)) throw new Error("RELEASE_OUTPUT_CANONICAL_JSON_INVALID");
+    return String(value);
+  }
+  if (Array.isArray(value)) return `[${value.map((entry) => canonicalJson(entry)).join(",")}]`;
+  if (value && typeof value === "object") {
+    const entries = Object.entries(value)
+      .filter(([, entry]) => entry !== undefined)
+      .sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0);
+    return `{${entries.map(([key, entry]) => `${JSON.stringify(key)}:${canonicalJson(entry)}`).join(",")}}`;
+  }
+  throw new Error("RELEASE_OUTPUT_CANONICAL_JSON_INVALID");
+}
+
+function assertExactKeys(value, keys, errorCode) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(errorCode);
+  const actual = Object.keys(value).sort();
+  const expected = [...keys].sort();
+  if (JSON.stringify(actual) !== JSON.stringify(expected)) throw new Error(errorCode);
+}
+
+function verifyManifestSignature(manifest, keyId, publicKey) {
+  assertExactKeys(manifest.signature, ["algorithm", "keyId", "value"], "RELEASE_OUTPUT_SIGNATURE_INVALID");
+  if (manifest.signature.algorithm !== "Ed25519" || manifest.signature.keyId !== keyId) {
+    throw new Error("RELEASE_OUTPUT_SIGNATURE_INVALID");
+  }
+  const value = String(manifest.signature.value || "");
+  if (!/^[A-Za-z0-9+/]{86}==$/u.test(value)) throw new Error("RELEASE_OUTPUT_SIGNATURE_INVALID");
+  const signature = Buffer.from(value, "base64");
+  if (signature.length !== 64 || signature.toString("base64") !== value) {
+    throw new Error("RELEASE_OUTPUT_SIGNATURE_INVALID");
+  }
+  const { signature: _signature, ...payload } = manifest;
+  const bytes = Buffer.from(`BONNI_CORE_RELEASE_MANIFEST_V2\n${canonicalJson(payload)}\n`, "utf8");
+  if (!crypto.verify(null, bytes, publicKey, signature)) throw new Error("RELEASE_OUTPUT_SIGNATURE_INVALID");
+}
+
+async function assertReleaseOutputPreflight(outputDirectory, artifactName) {
+  const allowed = new Set([artifactName, "manifest.json"]);
+  const entries = await fs.readdir(outputDirectory, { withFileTypes: true });
+  for (const entry of entries) {
+    if (!allowed.has(entry.name) || !entry.isFile() || entry.isSymbolicLink()) {
+      throw new Error(`RELEASE_OUTPUT_NOT_CLEAN: ${entry.name}`);
+    }
+    await assertSecureRegularFile(path.join(outputDirectory, entry.name), "RELEASE_OUTPUT_FILE_UNSAFE");
+  }
+}
+
+async function verifyCreatedCoreRelease(options) {
+  const artifactName = `bonni-core-${bonniImageTag(options.version)}.oci`;
+  const expectedNames = [artifactName, "manifest.json"].sort();
+  const actualEntries = await fs.readdir(options.outputDirectory, { withFileTypes: true });
+  if (
+    actualEntries.some((entry) => !entry.isFile() || entry.isSymbolicLink())
+    || JSON.stringify(actualEntries.map((entry) => entry.name).sort()) !== JSON.stringify(expectedNames)
+  ) {
+    throw new Error("RELEASE_OUTPUT_FILES_INVALID");
+  }
+  const archive = await assertSecureRegularFile(
+    path.join(options.outputDirectory, artifactName),
+    "RELEASE_OUTPUT_ARCHIVE_INVALID",
+  );
+  const manifestFile = await assertSecureRegularFile(
+    path.join(options.outputDirectory, "manifest.json"),
+    "RELEASE_OUTPUT_MANIFEST_INVALID",
+  );
+  const archiveState = await fs.stat(archive);
+  const archiveSha256 = await sha256File(archive);
+  if (archiveState.size !== options.sourceSize || archiveSha256 !== options.sourceSha256) {
+    throw new Error("RELEASE_OUTPUT_ARCHIVE_MISMATCH");
+  }
+  let manifest;
+  try {
+    manifest = JSON.parse(await fs.readFile(manifestFile, "utf8"));
+  } catch {
+    throw new Error("RELEASE_OUTPUT_MANIFEST_INVALID");
+  }
+  assertExactKeys(
+    manifest,
+    ["schemaVersion", "product", "channel", "version", "artifact", "migration", "issuedAt", "expiresAt", "minimumRunnerVersion", "releaseNotes", "signature"],
+    "RELEASE_OUTPUT_MANIFEST_INVALID",
+  );
+  assertExactKeys(manifest.artifact, ["type", "sizeBytes", "sha256", "source", "imageIdentity"], "RELEASE_OUTPUT_MANIFEST_INVALID");
+  assertExactKeys(manifest.artifact.source, ["kind", "url"], "RELEASE_OUTPUT_MANIFEST_INVALID");
+  assertExactKeys(manifest.artifact.imageIdentity, ["repository", "digest", "platform"], "RELEASE_OUTPUT_MANIFEST_INVALID");
+  assertExactKeys(
+    manifest.migration,
+    ["required", "strategy", "fromSchemaVersion", "toSchemaVersion", "backwardCompatible"],
+    "RELEASE_OUTPUT_MANIFEST_INVALID",
+  );
+  assertExactKeys(manifest.releaseNotes, ["title", "descriptions"], "RELEASE_OUTPUT_MANIFEST_INVALID");
+  assertExactKeys(manifest.releaseNotes.descriptions, ["de", "en"], "RELEASE_OUTPUT_MANIFEST_INVALID");
+  const expectedPlatformKeys = options.identity.platform.variant === undefined
+    ? ["os", "architecture"]
+    : ["os", "architecture", "variant"];
+  assertExactKeys(manifest.artifact.imageIdentity.platform, expectedPlatformKeys, "RELEASE_OUTPUT_MANIFEST_INVALID");
+  const [repository, digest] = options.image.split("@");
+  // The Core image carries the append-only Ops migration chain. Its release
+  // creator therefore signs expand-contract by default and rejects `none`.
+  const migrationStrategy = options.request.migration || "expand-contract";
+  const schemaFrom = options.request.schemaFrom || options.version;
+  const schemaTo = options.request.schemaTo || schemaFrom;
+  const expiryDays = Number(options.request.expiresDays || 90);
+  const issuedAt = new Date(manifest.issuedAt);
+  const expiresAt = new Date(manifest.expiresAt);
+  const canonicalIssuedAt = !Number.isNaN(issuedAt.getTime()) && issuedAt.toISOString() === manifest.issuedAt;
+  const canonicalExpiresAt = !Number.isNaN(expiresAt.getTime()) && expiresAt.toISOString() === manifest.expiresAt;
+  if (
+    manifest.schemaVersion !== 2
+    || manifest.product !== "bonni-core"
+    || manifest.channel !== "stable"
+    || manifest.version !== options.version
+    || manifest.artifact.type !== "oci-image-archive"
+    || manifest.artifact.sizeBytes !== archiveState.size
+    || manifest.artifact.sha256 !== archiveSha256
+    || manifest.artifact.source.kind !== "https"
+    || manifest.artifact.source.url !== options.artifactUrl
+    || manifest.artifact.imageIdentity.repository !== repository
+    || manifest.artifact.imageIdentity.digest !== digest
+    || JSON.stringify(manifest.artifact.imageIdentity.platform) !== JSON.stringify(options.identity.platform)
+    || manifest.minimumRunnerVersion !== "0.3.0"
+    || manifest.migration.required !== (migrationStrategy !== "none")
+    || manifest.migration.strategy !== migrationStrategy
+    || manifest.migration.fromSchemaVersion !== schemaFrom
+    || manifest.migration.toSchemaVersion !== schemaTo
+    || manifest.migration.backwardCompatible !== (migrationStrategy !== "offline")
+    || manifest.releaseNotes.title !== (options.request.title || `Bonni Core ${visibleBonniVersion(options.version)}`)
+    || manifest.releaseNotes.descriptions.de !== (options.request.descriptionDe || `Bonni Core ${visibleBonniVersion(options.version)}`)
+    || manifest.releaseNotes.descriptions.en !== (options.request.descriptionEn || `Bonni Core ${visibleBonniVersion(options.version)}`)
+    || !Number.isInteger(expiryDays)
+    || expiryDays < 1
+    || expiryDays > 90
+    || !canonicalIssuedAt
+    || !canonicalExpiresAt
+    || issuedAt.getTime() < options.releaseStartedAt - 5_000
+    || issuedAt.getTime() > Date.now() + 5_000
+    || expiresAt.getTime() - issuedAt.getTime() !== expiryDays * 24 * 60 * 60_000
+  ) {
+    throw new Error("RELEASE_OUTPUT_MANIFEST_MISMATCH");
+  }
+  verifyManifestSignature(manifest, options.keyId, options.publicKey);
+  return { archive, manifestFile, manifest };
+}
+
 function sameBytes(left, right) {
   const leftBuffer = Buffer.isBuffer(left) ? left : Buffer.from(left);
   const rightBuffer = Buffer.isBuffer(right) ? right : Buffer.from(right);
@@ -410,6 +595,10 @@ function defaultProcessRunner(command, args, { privateKeyFile, timeoutMs = 30 * 
   });
 }
 
+function visibleBonniVersion(value) {
+  return String(value || "").replace(/^(\d+\.\d+\.\d+)\+([A-Za-z])$/u, "$1$2");
+}
+
 export function bonniImageTag(version) {
   const match = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z.-]+))?(?:\+([a-z]+))?$/u.exec(version);
   if (!match) throw new Error(`RELEASE_VERSION_NOT_IMAGE_COMPATIBLE: ${version}`);
@@ -423,12 +612,46 @@ function officialArtifactUrl(version) {
   return `${OFFICIAL_RELEASE_BASE_URL}/v${imageTag}/bonni-core-${imageTag}.oci`;
 }
 
-async function buildCoreOciArtifact(options) {
-  const { version, productRoot, privateKeyFile, runner } = options;
-  const repository = String(options.repository || DEFAULT_CORE_IMAGE_REPOSITORY).trim();
+function normalizeCoreRepository(value) {
+  const repository = String(value || DEFAULT_CORE_IMAGE_REPOSITORY).trim();
   if (!/^[a-z0-9][a-z0-9._:/-]{2,254}$/u.test(repository) || repository.includes("@")) {
     throw new Error("CORE_RELEASE_REPOSITORY_INVALID");
   }
+  return repository;
+}
+
+function assertCoreArchiveLabels(identity, version) {
+  for (const [label, expected] of [
+    ["org.bonni.product", "bonni-core"],
+    ["org.opencontainers.image.version", version],
+    ["org.bonni.runtime.contract", "1"],
+  ]) {
+    if (identity.labels?.[label] !== expected) {
+      throw new Error(`CORE_RELEASE_ARCHIVE_LABEL_INVALID: ${label}`);
+    }
+  }
+}
+
+async function inspectPrebuiltCoreArtifact(options) {
+  const archive = await assertSecureRegularFile(options.archive, "CORE_RELEASE_ARCHIVE_MISSING");
+  const repository = normalizeCoreRepository(options.repository);
+  const imageTag = bonniImageTag(options.version);
+  const identity = await inspectCoreDockerArchivePayload(archive, { version: options.version });
+  const expectedTag = `${repository}:${imageTag}`;
+  if (identity.tags.length !== 1 || identity.tags[0] !== expectedTag) {
+    throw new Error(`CORE_RELEASE_ARCHIVE_TAG_INVALID: ${expectedTag}`);
+  }
+  assertCoreArchiveLabels(identity, options.version);
+  const image = `${repository}@${identity.digest}`;
+  if (options.image !== undefined && options.image !== image) {
+    throw new Error("CORE_RELEASE_IMAGE_IDENTITY_MISMATCH");
+  }
+  return { archive, image, identity };
+}
+
+async function buildCoreOciArtifact(options) {
+  const { version, productRoot, privateKeyFile, runner } = options;
+  const repository = normalizeCoreRepository(options.repository);
   const tag = bonniImageTag(version);
   const reference = `${repository}:${tag}`;
   const dockerfile = path.join(productRoot, "SYSTEM", "backend", "Dockerfile");
@@ -454,12 +677,10 @@ async function buildCoreOciArtifact(options) {
     if (!identity || identity.Os !== "linux" || !["amd64", "arm64"].includes(identity.Architecture)) {
       throw new Error("CORE_RELEASE_IMAGE_PLATFORM_INVALID");
     }
-    const repoDigest = Array.isArray(identity.RepoDigests)
-      ? identity.RepoDigests.find((value) => String(value).startsWith(`${repository}@sha256:`))
-      : undefined;
-    const digest = repoDigest
-      ? repoDigest.slice(repository.length + 1)
-      : String(identity.Id || "");
+    // A docker-save archive is content-addressed by the image config blob. Its
+    // immutable identity is therefore always the Docker image ID, not an
+    // optional registry RepoDigest left over from an earlier pull/push.
+    const digest = String(identity.Id || "");
     if (!/^sha256:[a-f0-9]{64}$/u.test(digest)) throw new Error("CORE_RELEASE_IMAGE_DIGEST_INVALID");
     await runner("docker", ["image", "save", "--output", archive, reference], {
       privateKeyFile,
@@ -467,7 +688,12 @@ async function buildCoreOciArtifact(options) {
       timeoutMs: 30 * 60_000,
     });
     await assertSecureRegularFile(archive, "CORE_RELEASE_ARCHIVE_BUILD_FAILED");
-    return { archive, image: `${repository}@${digest}`, temporaryRoot };
+    const archiveIdentity = await inspectCoreDockerArchivePayload(archive, { version });
+    if (archiveIdentity.tags.length !== 1 || archiveIdentity.tags[0] !== reference || archiveIdentity.digest !== digest) {
+      throw new Error("CORE_RELEASE_ARCHIVE_BUILD_IDENTITY_INVALID");
+    }
+    assertCoreArchiveLabels(archiveIdentity, version);
+    return { archive, image: `${repository}@${digest}`, identity: archiveIdentity, temporaryRoot };
   } catch (error) {
     await fs.rm(temporaryRoot, { recursive: true, force: true });
     throw error;
@@ -528,27 +754,41 @@ export async function runSignatureRelease(options = {}) {
     throw new Error(`APP_RELEASE_NOT_INSTALLABLE_YET: ${definition.label} erzeugt noch kein installierbares Paket.`);
   }
 
-  const hasArtifactInputs = Boolean(options.archive || options.image);
-  if (hasArtifactInputs && (!options.archive || !options.image)) {
-    throw new Error("CORE_RELEASE_ARCHIVE_AND_IMAGE_REQUIRED");
+  const hasPrebuiltArchive = Boolean(options.archive);
+  if (options.image && !hasPrebuiltArchive) throw new Error("CORE_RELEASE_ARCHIVE_REQUIRED_FOR_IMAGE");
+  let prebuiltArtifact;
+  if (hasPrebuiltArchive) {
+    prebuiltArtifact = await inspectPrebuiltCoreArtifact({
+      archive: options.archive,
+      image: options.image,
+      repository: options.repository,
+      version,
+    });
   }
   if (options.dryRun) {
-    if (hasArtifactInputs) {
-      await assertSecureRegularFile(options.archive, "CORE_RELEASE_ARCHIVE_MISSING");
-      if (!/^([a-z0-9][a-z0-9._:/-]+)@sha256:[a-f0-9]{64}$/u.test(options.image)) {
-        throw new Error("CORE_RELEASE_IMAGE_IDENTITY_INVALID");
-      }
-    }
     return safePublicResult(definition, policy, version, "dry-run", {
-      artifactReady: hasArtifactInputs,
-      nextStep: hasArtifactInputs ? "create-release" : "build-oci-artifact",
+      artifactReady: hasPrebuiltArchive,
+      nextStep: hasPrebuiltArchive ? "create-release" : "build-oci-artifact",
+      ...(prebuiltArtifact ? { image: prebuiltArtifact.image } : {}),
     });
   }
 
   const productRoot = path.dirname(systemRoot);
+  const imageTag = bonniImageTag(version);
+  const artifactName = `bonni-core-${imageTag}.oci`;
+  const artifactUrl = options.artifactUrl || officialArtifactUrl(version);
+  const outputDirectory = path.resolve(options.outputDirectory || path.join(productRoot, "GITHUB", "RELEASES", "core", imageTag));
+  if (isWithin(signatureRoot, outputDirectory) || isWithin(outputDirectory, signatureRoot)) {
+    throw new Error("RELEASE_OUTPUT_SIGNATURE_ROOT_OVERLAP_FORBIDDEN");
+  }
+  await ensureSecureAbsoluteDirectory(outputDirectory, "RELEASE_OUTPUT_DIRECTORY_UNSAFE");
+  await assertReleaseOutputPreflight(outputDirectory, artifactName);
+  // Public trust is deliberately published first. A conflicting keyId can
+  // therefore never leave a newly created, but undistributable release behind.
+  const trust = await exportPublicTrust(productRoot, definition, policy, publicKeyPem, publicKeyFingerprint);
   const runner = options.processRunner || defaultProcessRunner;
   let builtArtifact;
-  if (!hasArtifactInputs) {
+  if (!hasPrebuiltArchive) {
     builtArtifact = await buildCoreOciArtifact({
       ...options,
       version,
@@ -558,31 +798,44 @@ export async function runSignatureRelease(options = {}) {
     });
   }
   const archive = await assertSecureRegularFile(
-    hasArtifactInputs ? options.archive : builtArtifact.archive,
+    hasPrebuiltArchive ? prebuiltArtifact.archive : builtArtifact.archive,
     "CORE_RELEASE_ARCHIVE_MISSING",
   );
-  const image = hasArtifactInputs ? options.image : builtArtifact.image;
+  const image = hasPrebuiltArchive ? prebuiltArtifact.image : builtArtifact.image;
+  const identity = hasPrebuiltArchive ? prebuiltArtifact.identity : builtArtifact.identity;
   if (!/^([a-z0-9][a-z0-9._:/-]+)@sha256:[a-f0-9]{64}$/u.test(image)) {
     throw new Error("CORE_RELEASE_IMAGE_IDENTITY_INVALID");
   }
-  const imageTag = bonniImageTag(version);
-  const outputDirectory = path.resolve(options.outputDirectory || path.join(productRoot, "GITHUB", "RELEASES", "core", imageTag));
-  if (isWithin(signatureRoot, outputDirectory)) throw new Error("RELEASE_OUTPUT_INSIDE_SIGNATURE_ROOT_FORBIDDEN");
+  const sourceState = await fs.stat(archive);
+  const sourceSha256 = await sha256File(archive);
 
   try {
+    const releaseStartedAt = Date.now();
     await runner(process.execPath, coreReleaseArguments({
       ...options,
       archive,
       image,
-      artifactUrl: options.artifactUrl || officialArtifactUrl(version),
+      artifactUrl,
     }, version, privateKeyFile, policy.keyId, outputDirectory), {
       privateKeyFile,
       cwd: path.join(systemRoot, "backend"),
     });
+    await verifyCreatedCoreRelease({
+      outputDirectory,
+      version,
+      image,
+      identity,
+      artifactUrl,
+      keyId: policy.keyId,
+      publicKey: crypto.createPublicKey(publicKeyPem),
+      sourceSize: sourceState.size,
+      sourceSha256,
+      releaseStartedAt,
+      request: options,
+    });
   } finally {
     if (builtArtifact) await fs.rm(builtArtifact.temporaryRoot, { recursive: true, force: true });
   }
-  const trust = await exportPublicTrust(productRoot, definition, policy, publicKeyPem, publicKeyFingerprint);
   return safePublicResult(definition, policy, version, "created", {
     outputDirectory,
     releaseTag: `v${imageTag}`,
@@ -662,9 +915,11 @@ export function signatureReleaseHelp() {
     "",
     "  npm run release -- core --signature-root X:\\BONNI_SIGNATUR --dry-run",
     "  npm run release -- core --signature-root X:\\BONNI_SIGNATUR",
-    "  npm run release -- core --signature-root X:\\BONNI_SIGNATUR --archive <core.oci> --image <repo@sha256:digest>",
+    "  npm run release -- core --signature-root X:\\BONNI_SIGNATUR --archive <core.oci> --dry-run",
+    "  npm run release -- core --signature-root X:\\BONNI_SIGNATUR --archive <core.oci>",
     "",
     "Ohne --archive baut Docker das OCI-Systemimage automatisch.",
+    "Mit --archive wird die Image-ID ohne Docker direkt aus dem Archiv geprüft.",
     "Alternativ kann BONNI_SIGNATURE_ROOT auf den USB-Stick zeigen.",
     "Kontor, Stueberl und Hocket besitzen getrennte Schluesselbereiche, sind als installierbare App-Pakete aber noch gesperrt.",
   ].join("\n");

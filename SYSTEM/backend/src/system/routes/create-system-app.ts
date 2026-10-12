@@ -4,7 +4,10 @@ import helmet from "helmet";
 import path from "node:path";
 import { existsSync } from "node:fs";
 
-import { registerCoreRoutes } from "./registerCoreRoutes.js";
+import {
+  registerCoreRoutes,
+  registerSnapshotBrandingReadRoutes,
+} from "./registerCoreRoutes.js";
 import { currentUserMiddleware } from "../../platform/auth/middleware/current-user.middleware.js";
 import { registerCoreAuth } from "../../platform/auth/registerCoreAuth.js";
 import { registerModuleFrontends } from "../../platform/module-manager/frontend/module-frontend-runtime.js";
@@ -168,7 +171,9 @@ export async function createPlatformApp(): Promise<Express> {
 }
 
 
-export async function createRedundantSystemApp(): Promise<Express> {
+export async function createRedundantSystemApp(options: {
+  registerBranding?: (app: Express) => void;
+} = {}): Promise<Express> {
   const app = createBaseExpressApp("local");
 
   // Notlauf-Backend: eigener Prozess, eigener Port, JSON-Runtime.
@@ -178,6 +183,7 @@ export async function createRedundantSystemApp(): Promise<Express> {
   // application gate is one layer of the writer lease: direct localhost ports
   // can never turn Emergency into a second productive database writer.
   app.use(emergencyReadOnlyMethodGuard);
+  (options.registerBranding || registerSnapshotBrandingReadRoutes)(app);
   app.use(currentUserMiddleware);
   app.use("/api", localRouter);
 
@@ -187,11 +193,14 @@ export async function createRedundantSystemApp(): Promise<Express> {
   return app;
 }
 
-export async function createLocalSystemApp(): Promise<Express> {
+export async function createLocalSystemApp(options: {
+  registerBranding?: (app: Express) => void;
+} = {}): Promise<Express> {
   const app = createBaseExpressApp("local");
 
   // Local/Sandbox/Notlauf must not depend on OIDC. The local listener exposes
   // only core runtime and System routes, not application modules.
+  (options.registerBranding || registerSnapshotBrandingReadRoutes)(app);
   app.use(currentUserMiddleware);
   app.use("/api", localRouter);
 

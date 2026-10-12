@@ -1,5 +1,13 @@
 # Bonni-Core-Updates
 
+> **OCI-/Container-Pfad:** Dieses Dokument beschreibt den älteren externen
+> Image-Runner, nicht das native Windows-Aktionscenter und nicht dessen
+> `bonni.update/v2`-PAYLOAD-Pakete. Für Windows-v2 gelten
+> `scripts/setup/READY-UPDATE-INSTALLER.md` und der Abschnitt **Public Trust
+> explizit auf einer Installation einrichten** in
+> `scripts/signature-release/README.md`. Die beiden Vertrauensspeicher dürfen
+> nicht verwechselt werden.
+
 Bonni Core installiert ausschließlich ein vollständiges, signiertes Systemimage.
 Frontend und Backend haben dabei dieselbe Version. Das Manifest verwendet
 Schema 2 und bindet Paketgröße, SHA-256, OCI-Image-Identität, Plattform,

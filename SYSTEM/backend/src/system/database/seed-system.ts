@@ -338,6 +338,17 @@ async function seedUser(
 
 const systemSettingDefaults = [
   { key: "system.displayName", value: "Bonni Core" },
+  {
+    key: "system.branding",
+    value: {
+      schemaVersion: "bonni.branding/v1",
+      revision: 0,
+      displayName: "Bonni Core",
+      logoAltText: "Bonni Logo",
+      logo: null,
+      updatedByAccountId: null,
+    },
+  },
   { key: "system.maintenanceMode", value: false },
   { key: "system.language", value: "de" },
   { key: "auth.mode", value: "LOCAL" },

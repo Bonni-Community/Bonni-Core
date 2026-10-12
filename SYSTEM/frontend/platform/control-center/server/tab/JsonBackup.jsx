@@ -11,6 +11,7 @@ import {
   StatusPill,
   formatDateTime,
 } from "../components/ServerTabComponents.jsx";
+import { formatBonniCoreVersion } from "../../update/localUpdatePresentation.js";
 
 function RunContainerStatusPanel({ token }) {
   const [status, setStatus] = useState(null);
@@ -67,7 +68,7 @@ function RunContainerStatusPanel({ token }) {
       <div className="security-sync-kv-grid">
         <div><span>Status</span><strong>{valid ? "gültig" : "ungültig"}</strong></div>
         <div><span>Erstellt am</span><strong>{formatDateTime(identity.createdAt)}</strong></div>
-        <div><span>System-Version</span><strong>{identity.systemVersion || "—"}</strong></div>
+        <div><span>System-Version</span><strong>{formatBonniCoreVersion(identity.systemVersion)}</strong></div>
         <div><span>Schema-Version</span><strong>{identity.schemaVersion || "—"}</strong></div>
         <div><span>Benutzeranzahl</span><strong>{identity.userCount ?? "—"}</strong></div>
         <div><span>Candidate</span><strong>{candidate ? "vorhanden" : "—"}</strong></div>

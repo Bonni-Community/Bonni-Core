@@ -5,7 +5,10 @@ import {
   type CoreDataActor,
   type CoreDataAdapterOperation,
 } from "../../../core/data-adapters/index.js";
-import { getPrismaClient } from "../../../core/database/database.js";
+import {
+  getPrismaClient,
+  getServerPrismaClient,
+} from "../../../core/database/database.js";
 
 const DOMAIN_ID = "bonni.users";
 export const NETWORK_USER_ACCOUNT_TYPES = [AccountType.MEMBER, AccountType.ADMIN];
@@ -35,8 +38,13 @@ export function accountNetworkOperation(account: any): CoreDataAdapterOperation 
   };
 }
 
-async function queryOperations(filters: { accountIds?: string[]; memberIds?: string[] } = {}) {
-  const prisma = getPrismaClient();
+async function queryOperations(
+  filters: { accountIds?: string[]; memberIds?: string[] } = {},
+  options: { serverAuthoritative?: boolean } = {},
+) {
+  const prisma = options.serverAuthoritative
+    ? getServerPrismaClient("core")
+    : getPrismaClient();
   const accountIds = [...new Set((filters.accountIds || []).filter(Boolean))];
   const memberIds = [...new Set((filters.memberIds || []).filter(Boolean))];
   const targeted = accountIds.length > 0 || memberIds.length > 0;
@@ -77,12 +85,13 @@ export function registerUsersNetworkDataAdapter() {
 export async function publishUsersNetworkRecords(
   filters: { accountIds?: Array<string | null | undefined>; memberIds?: Array<string | null | undefined> },
   actor: CoreDataActor | null,
+  options: { serverAuthoritative?: boolean } = {},
 ) {
   registerUsersNetworkDataAdapter();
   const operations = await queryOperations({
     accountIds: (filters.accountIds || []).filter((value): value is string => Boolean(value)),
     memberIds: (filters.memberIds || []).filter((value): value is string => Boolean(value)),
-  });
+  }, options);
   if (!operations.length) return { published: 0 };
 
   return coreDataAdapterRegistry.publishLocal({

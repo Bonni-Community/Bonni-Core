@@ -1,5 +1,12 @@
 # Signierte Releases
 
+> Die folgenden klassischen PEM-/Policy-Schritte bis zum Abschnitt
+> **Zertifiziertes lokales GitHub-Update** gehören zum älteren OCI-/Container-
+> Releasepfad. Das Windows-Aktionscenter verwendet ab dort den verschlüsselten
+> `BONNI-KEYSTORE.bonni`, ein einzelnes `UPDATE-MANIFEST.json` und den Public
+> Trust unter `RUN_INSTALL/trust`. Vertrauensdateien der beiden Wege sind nicht
+> austauschbar.
+
 Der Release-CLI liest private Schluessel ausschliesslich aus einem explizit angegebenen
 `SIGNATUR`-Root, typischerweise von einem USB-Stick. Alternativ zu
 `--signature-root` kann `BONNI_SIGNATURE_ROOT` gesetzt werden.
@@ -111,3 +118,95 @@ Ein bereits geprueftes OCI-Archiv kann alternativ mit `--archive` und `--image`
 uebergeben werden. Installierbare App-Pakete sind bis zur Einfuehrung eines
 eigenen App-Releaseformats absichtlich gesperrt; vorhandene App-Schluessel werden
 bereits strikt ihrem jeweiligen Produktscope zugeordnet.
+
+## Zertifiziertes lokales GitHub-Update
+
+Das Windows-Aktionscenter startet fuer das neue `bonni.update/v2`-Format:
+
+```text
+node scripts/signature-release/create-certified-github-release.mjs \
+  --request <absoluter Auftragspfad> \
+  --product-root <absoluter Bonni-Hauptordner> \
+  --master-key-stdin
+```
+
+Der JSON-Auftrag enthaelt niemals das Masterpasswort. Es wird ausschliesslich als
+eine umgeleitete Standardeingabezeile angenommen. Die CLI entsperrt lokal
+`BONNI-KEYSTORE.bonni`, setzt einen ausgewaehlten SYSTEM-Stand aus der bestaetigten
+Entwicklungskette neu zusammen und signiert `RELEASE` sowie jeden enthaltenen
+PAYLOAD-Bereich mit getrennten Ed25519-Schluesseln. Reine WINDOWS-, LINUX- oder
+CONTAINER-Releases benoetigen keine SYSTEM-Entwicklungskette.
+
+Der Standard-Keystore besitzt zusaetzlich getrennte App-Schluessel fuer
+`STUEBERLAPP`, `KONTORAPP`, `HOCKETAPP` und `KASSENAPP`. Sobald eine App in
+`includedApps` steht, ist neben `RELEASE` und `SYSTEM` auch ihre eigene
+`APP:<APPNAME>`-Signatur zwingend. Eine fehlende, falsche oder fuer eine andere
+App freigegebene Signatur wird abgewiesen.
+
+SYSTEM-Releases werden niemals aus dem laufenden `SYSTEM`-Ordner gebaut. Die CLI
+liest die HMAC-verifizierte Approved Chain, waehlt deren unveraenderliche Basis
+unter `DEVELOPMENT/BASES/<technische Basisversion>/SYSTEM`, prueft `BASE.json`
+und den vollstaendigen Basisbaum und setzt darauf ausschliesslich die bestaetigte
+Kette zusammen. Laufzeitdateien wie `.env`, Uploads oder Secrets aus dem aktiven
+System gelangen dadurch nicht in das Release.
+
+Beschreibung und ausgewaehlte Apps stehen im kanonisch signierten Manifest als
+`releaseNotes` und `includedApps`. Das fertige ZIP wird vor der Freigabe mit dem
+eigenen strengen Entpacker erneut gelesen und im Produktionsmodus verifiziert.
+Es wird nur lokal unter `GITHUB/READY` abgelegt; es findet keine Netzwerk- oder
+GitHub-Uebertragung statt.
+
+Jeder signierte Payload traegt eine Plattform: `SYSTEM` verwendet `any`, die
+aktuellen architekturunabhaengigen Windows-Werkzeuge `windows-any`. LINUX und
+CONTAINER muessen ihre tatsaechlich freigegebene Plattform (`linux-x86`,
+`linux-x64`, `linux-armv7` oder `linux-arm64`) in einer streng geprueften
+`VERSION.json` angeben. Ohne diese Angabe wird kein Release erzeugt.
+
+Der Publisher-Zaehlstand liegt getrennt vom Client-Akzeptanzstand unter
+`SIGNATUR/RELEASE/SEQUENCE.json` und wird erst nach der erfolgreichen
+ZIP-Selbstpruefung atomar fortgeschrieben. Der oeffentliche Vertrauensanker wird
+einmalig unter `RUN_INSTALL/trust/UPDATE-PUBLIC-TRUST.json` angelegt. Eine
+vorhandene abweichende Datei wird niemals ersetzt.
+
+## Public Trust explizit auf einer Installation einrichten
+
+Eine andere Installation uebernimmt ihren Vertrauensanker niemals aus einem
+Update-ZIP. Zuerst wird mit `keystore:public` eine reine
+`bonni.public-trust/v1`-Datei exportiert. Die dabei ausgegebene Datei-SHA-256 muss
+ueber einen getrennten, bereits vertrauten Weg zur Zielinstallation gelangen.
+Der Export liest das Keystore-Masterpasswort wie die anderen Keystore-Befehle
+ausschliesslich aus umgeleiteter Standardeingabe:
+
+```bat
+npm run keystore:public -- ^
+  --file "E:\BONNI-SIGNATUR\BONNI-KEYSTORE.bonni" ^
+  --output "E:\BONNI-TRUST\UPDATE-PUBLIC-TRUST.json"
+```
+
+Die JSON-Erfolgsausgabe nennt unter `sha256` die exakte Datei-SHA-256 des
+Exports. Diese Pruefsumme wird getrennt transportiert und vor dem Enrollment
+verglichen.
+Danach wird der Export lokal und einmalig eingerichtet:
+
+```bat
+npm run trust:enroll -- ^
+  --product-root "C:\Bonni Core" ^
+  --source "E:\BONNI-TRUST\UPDATE-PUBLIC-TRUST.json" ^
+  --expected-sha256 "<64-stellige separat gepruefte Datei-SHA-256>"
+```
+
+`--product-root` und `--source` muessen absolute Pfade sein. Die Quelle darf
+ausserhalb des Produktordners oder dort ausschliesslich unter `SIGNATUR` liegen;
+insbesondere `UPDATE`, `GITHUB`, `RUN_INSTALL` und installierbare Payload-Bereiche
+werden als Quelle abgewiesen. Symlinks, Hardlinks, unsichere Dateirechte,
+ungueltiges JSON, unbekannte Felder, falsche Fingerabdruecke und jeder
+Private-Key-Marker fuehren zum Abbruch.
+
+Die Enrollment-CLI liest keine Standardeingabe und akzeptiert weder Passwort-
+noch Private-Key-Argumente. Sie legt ausschliesslich
+`RUN_INSTALL/trust/UPDATE-PUBLIC-TRUST.json` neu an. Existiert die Datei bereits,
+wird nur bytegleicher oder semantisch identischer Public Trust akzeptiert und
+niemals neu geschrieben. Ein anderer Store, andere Schluessel oder andere
+Fingerabdruecke brechen als Konflikt ab; eine stille Rotation ist unmoeglich.
+`RUN_INSTALL/trust/UPDATE-SEQUENCE.json` wird durch das Enrollment nicht erzeugt
+oder veraendert.

@@ -5,7 +5,11 @@ import { assertContainerRuntimeActivationInactive } from "../runtime/runtime-mod
 
 const scriptDirectory = path.dirname(fileURLToPath(import.meta.url));
 const backendRoot = path.resolve(scriptDirectory, "../..");
-const productRoot = path.resolve(backendRoot, "../..");
+const configuredProductRoot = String(process.env.BONNI_PRODUCT_ROOT || "").trim();
+if (configuredProductRoot && (configuredProductRoot.includes("\u0000") || !path.isAbsolute(configuredProductRoot))) {
+  throw new Error("BONNI_PRODUCT_ROOT_INVALID");
+}
+const productRoot = configuredProductRoot || path.resolve(backendRoot, "../..");
 
 await assertContainerRuntimeActivationInactive({ productRoot });
 

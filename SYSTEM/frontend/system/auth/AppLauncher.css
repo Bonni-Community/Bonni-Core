@@ -1,11 +1,41 @@
 .bonni-launcher {
+  --bonni-launcher-orange: #f5b000;
+  --bonni-launcher-blue: #0a2d6b;
+  --bonni-index-columns: 6;
+  --bonni-index-rows: 4;
+  --bonni-index-slot-height: 104px;
+  --bonni-index-tile-height: 96px;
+  --bonni-index-icon-size: 72px;
+  --bonni-index-edge: clamp(28px, 6vw, 88px);
   min-height: 100vh;
-  box-sizing: border-box;
-  padding: clamp(20px, 4vw, 52px);
-  color: #2f241f;
+  min-height: 100dvh;
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) auto;
+  overflow-x: hidden;
+  color: #f6f7f8;
+  color-scheme: dark;
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   background:
-    radial-gradient(circle at 50% 38%, rgba(190, 148, 91, 0.12), transparent 38%),
-    #fff;
+    linear-gradient(to top right, rgba(10, 45, 107, 0.62) 0%, rgba(10, 45, 107, 0.2) 23%, rgba(10, 45, 107, 0) 51%),
+    linear-gradient(to top left, rgba(167, 77, 0, 0.42) 0%, rgba(167, 77, 0, 0.12) 24%, rgba(167, 77, 0, 0) 52%),
+    linear-gradient(to bottom left, rgba(255, 255, 255, 0.055) 0%, rgba(255, 255, 255, 0.018) 31%, rgba(255, 255, 255, 0) 62%),
+    linear-gradient(145deg, #1a1d21 0%, #060708 45%, #030405 100%);
+}
+
+.bonni-launcher[data-view-mode="desktop"] {
+  --bonni-index-columns: 6;
+  --bonni-index-rows: 4;
+  --bonni-index-slot-height: 104px;
+  --bonni-index-tile-height: 96px;
+  --bonni-index-icon-size: 72px;
+}
+
+.bonni-launcher[data-view-mode="mobile"] {
+  --bonni-index-columns: 3;
+  --bonni-index-rows: 8;
+  --bonni-index-slot-height: 88px;
+  --bonni-index-tile-height: 82px;
+  --bonni-index-icon-size: 58px;
 }
 
 .bonni-launcher *,
@@ -14,389 +44,255 @@
   box-sizing: border-box;
 }
 
-.bonni-launcher__header {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 24px;
-  width: min(1040px, 100%);
-  margin: 0 auto clamp(18px, 3vw, 34px);
-}
-
-.bonni-launcher__brand,
-.bonni-launcher__welcome {
-  margin: 0;
-  color: rgba(47, 36, 31, 0.58);
-}
-
-.bonni-launcher__brand {
-  font-size: 0.78rem;
-  font-weight: 900;
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
-}
-
-.bonni-launcher__header h1 {
-  margin: 5px 0 4px;
-  font-size: clamp(2rem, 5vw, 4.2rem);
-  line-height: 0.95;
-  letter-spacing: -0.065em;
-}
-
-.bonni-launcher__welcome {
-  font-size: 0.92rem;
-}
-
-.bonni-launcher__logout,
-.bonni-launcher__settings,
-.bonni-launcher__additional button {
-  border: 1px solid rgba(47, 36, 31, 0.2);
-  border-radius: 999px;
-  color: #2f241f;
-  background: rgba(255, 255, 255, 0.88);
-  cursor: pointer;
-  transition: color 160ms ease, background 160ms ease, border-color 160ms ease;
-}
-
-.bonni-launcher__logout {
-  padding: 10px 16px;
-}
-
-.bonni-launcher__account-actions {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: flex-end;
-  gap: 9px;
-}
-
-.bonni-launcher__settings {
-  padding: 10px 16px;
-  color: #fff;
-  border-color: #ef7a00;
-  background: #ef7a00;
-}
-
-.bonni-launcher__logout:hover,
-.bonni-launcher__logout:focus-visible,
-.bonni-launcher__settings:hover,
-.bonni-launcher__settings:focus-visible,
-.bonni-launcher__additional button:hover,
-.bonni-launcher__additional button:focus-visible {
-  color: #fff;
-  border-color: #2f241f;
-  background: #2f241f;
-}
-
-.bonni-launcher__stage {
-  display: grid;
-  justify-items: center;
-  width: min(1040px, 100%);
-  margin: 0 auto;
-}
-
-.bonni-launcher__wheel {
+.bonni-launcher__surface {
   position: relative;
-  width: min(70vh, 720px, 92vw);
-  aspect-ratio: 1;
-  overflow: hidden;
-  border: 1px solid rgba(47, 36, 31, 0.18);
-  border-radius: 50%;
-  background: rgba(255, 255, 255, 0.82);
-  box-shadow: 0 34px 90px rgba(56, 41, 33, 0.12);
   isolation: isolate;
-}
-
-.bonni-launcher__wheel::before {
-  content: "";
-  position: absolute;
-  inset: 1.5%;
-  z-index: 4;
-  border: 1px solid rgba(47, 36, 31, 0.08);
-  border-radius: inherit;
-  pointer-events: none;
-}
-
-.bonni-launcher__segment {
-  position: absolute;
-  inset: 0;
-  border: 0;
-  color: #2f241f;
-  background: transparent;
-  cursor: pointer;
-  transition: color 170ms ease, background 170ms ease;
-}
-
-.bonni-launcher__segment:hover,
-.bonni-launcher__segment:focus-visible {
-  z-index: 3;
-  color: #fff;
-  background: #2f241f;
-}
-
-.bonni-launcher__segment:focus-visible {
-  outline: 4px solid rgba(47, 36, 31, 0.3);
-  outline-offset: -12px;
-}
-
-.bonni-launcher__segment--top {
-  clip-path: polygon(50% 50%, 8% 0, 92% 0);
-}
-
-.bonni-launcher__segment--right {
-  clip-path: polygon(50% 50%, 100% 8%, 100% 92%);
-}
-
-.bonni-launcher__segment--bottom {
-  clip-path: polygon(50% 50%, 92% 100%, 8% 100%);
-}
-
-.bonni-launcher__segment--left {
-  clip-path: polygon(50% 50%, 0 92%, 0 8%);
-}
-
-.bonni-launcher__segment-content {
-  position: absolute;
-  z-index: 2;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  margin: 0;
+  padding: clamp(22px, 3.2dvh, 54px) var(--bonni-index-edge) clamp(20px, 3.5dvh, 48px);
   display: grid;
-  justify-items: center;
-  gap: 7px;
-  width: clamp(174px, 25vw, 260px);
-  text-align: center;
-  pointer-events: none;
+  grid-template-rows: auto minmax(0, 1fr);
 }
 
-.bonni-launcher__segment--top .bonni-launcher__segment-content {
-  top: 9%;
-  left: 50%;
-  transform: translateX(-50%);
+.bonni-launcher[data-view-mode="mobile"] .bonni-launcher__surface {
+  width: min(620px, 100%);
+  height: auto;
+  margin-inline: auto;
+  display: block;
 }
 
-.bonni-launcher__segment--right .bonni-launcher__segment-content {
-  top: 50%;
-  right: 5%;
-  transform: translateY(-50%);
-}
-
-.bonni-launcher__segment--bottom .bonni-launcher__segment-content {
-  bottom: 9%;
-  left: 50%;
-  transform: translateX(-50%);
-}
-
-.bonni-launcher__segment--left .bonni-launcher__segment-content {
-  top: 50%;
-  left: 5%;
-  transform: translateY(-50%);
-}
-
-.bonni-launcher__eyebrow {
-  color: rgba(47, 36, 31, 0.52);
-  font-size: 0.7rem;
-  font-weight: 900;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-  transition: color 170ms ease;
-}
-
-.bonni-launcher__title {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 9px;
-}
-
-.bonni-launcher__icon {
-  display: grid;
-  place-items: center;
-  width: 40px;
-  height: 40px;
-  border-radius: 14px;
-  font-size: 1.25rem;
-  background: rgba(47, 36, 31, 0.08);
-  transition: background 170ms ease;
-}
-
-.bonni-launcher__title strong {
-  font-size: clamp(1.3rem, 2.7vw, 2.35rem);
-  line-height: 0.98;
-  letter-spacing: -0.055em;
-  white-space: nowrap;
-}
-
-.bonni-launcher__description {
-  max-width: 240px;
-  color: rgba(47, 36, 31, 0.67);
-  font-size: clamp(0.78rem, 1.15vw, 0.95rem);
-  line-height: 1.35;
-  transition: color 170ms ease;
-}
-
-.bonni-launcher__segment:hover .bonni-launcher__eyebrow,
-.bonni-launcher__segment:hover .bonni-launcher__description,
-.bonni-launcher__segment:focus-visible .bonni-launcher__eyebrow,
-.bonni-launcher__segment:focus-visible .bonni-launcher__description {
-  color: rgba(255, 255, 255, 0.74);
-}
-
-.bonni-launcher__segment:hover .bonni-launcher__icon,
-.bonni-launcher__segment:focus-visible .bonni-launcher__icon {
-  background: rgba(255, 255, 255, 0.14);
-}
-
-.bonni-launcher__divider {
+.bonni-launcher__watermark {
   position: absolute;
-  z-index: 5;
-  background: rgba(47, 36, 31, 0.15);
-  pointer-events: none;
-}
-
-.bonni-launcher__divider--vertical {
-  top: 50%;
+  z-index: -1;
+  top: 54%;
   left: 50%;
-  width: 1px;
-  height: 90%;
-  transform: translate(-50%, -50%) rotate(45deg);
-}
-
-.bonni-launcher__divider--horizontal {
-  top: 50%;
-  left: 50%;
-  width: 1px;
-  height: 90%;
-  transform: translate(-50%, -50%) rotate(-45deg);
-}
-
-.bonni-launcher__center {
-  position: absolute;
-  top: 50%;
-  left: 50%;
-  z-index: 8;
-  display: grid;
-  place-items: center;
-  align-content: center;
-  width: clamp(108px, 15vw, 154px);
-  aspect-ratio: 1;
-  border: 1px solid rgba(47, 36, 31, 0.18);
-  border-radius: 50%;
-  color: #2f241f;
-  background: #fff;
-  box-shadow: 0 24px 64px rgba(56, 41, 33, 0.16);
+  width: clamp(300px, 42vmin, 520px);
+  height: auto;
+  max-height: 52%;
+  object-fit: contain;
+  opacity: 0.025;
+  filter: grayscale(1) brightness(2.4);
   transform: translate(-50%, -50%);
   pointer-events: none;
+  user-select: none;
 }
 
-.bonni-launcher__center strong {
-  font-size: clamp(1.4rem, 3vw, 2.25rem);
-  line-height: 1;
-  letter-spacing: -0.05em;
+.bonni-launcher__topbar {
+  position: relative;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 24px;
+  padding-bottom: clamp(8px, 1.5vw, 18px);
 }
 
-.bonni-launcher__center span {
-  margin-top: 5px;
-  color: rgba(47, 36, 31, 0.58);
-  font-size: 0.7rem;
-  font-weight: 900;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
+.bonni-launcher__content {
+  position: relative;
+  z-index: 1;
+  width: 100%;
+  min-width: 0;
+  min-height: 0;
+  margin: 0;
+}
+
+.bonni-launcher[data-view-mode="desktop"] .bonni-launcher__content {
+  height: 100%;
+}
+
+.bonni-launcher[data-view-mode="mobile"] .bonni-launcher__content {
+  width: min(440px, 100%);
+  margin-inline: auto;
+}
+
+.bonni-launcher[data-view-mode="mobile"] .bonni-launcher__topbar {
+  width: min(440px, 100%);
+  margin-inline: auto;
+}
+
+.bonni-launcher[data-view-mode="mobile"] .bonni-launcher__grid {
+  gap: 12px 8px;
+}
+
+.bonni-launcher[data-view-mode="mobile"] .bonni-launcher__tile-icon {
+  border-radius: 17px;
+}
+
+.bonni-launcher__grid {
+  display: grid;
+  grid-template-columns: repeat(var(--bonni-index-columns), minmax(0, 1fr));
+  grid-template-rows: repeat(var(--bonni-index-rows), minmax(var(--bonni-index-slot-height), auto));
+  gap: clamp(12px, 2.5vw, 28px) clamp(6px, 1.8vw, 20px);
+  width: 100%;
+}
+
+.bonni-launcher[data-view-mode="desktop"] .bonni-launcher__grid {
+  height: 100%;
+  grid-template-rows: repeat(var(--bonni-index-rows), minmax(var(--bonni-index-slot-height), 1fr));
+  row-gap: clamp(12px, 2.5dvh, 28px);
+  column-gap: clamp(6px, 1.8vw, 20px);
+}
+
+.bonni-launcher[data-view-mode="desktop"] > .bonni-brand-slogan--compact {
+  padding-inline: var(--bonni-index-edge);
+}
+
+.bonni-launcher__slot {
+  min-width: 0;
+  min-height: var(--bonni-index-slot-height);
+  display: grid;
+  place-items: start center;
+  border: 1px solid transparent;
+  border-radius: 20px;
+  transition: border-color 150ms ease, background 150ms ease;
+}
+
+.bonni-launcher__slot.is-drop-target {
+  border-color: rgba(245, 176, 0, 0.52);
+  background: rgba(245, 176, 0, 0.08);
+}
+
+.bonni-launcher__tile {
+  width: min(100%, var(--bonni-index-tile-height));
+  min-width: 0;
+  min-height: var(--bonni-index-tile-height);
+  display: grid;
+  justify-items: center;
+  align-content: start;
+  border: 0;
+  border-radius: 18px;
+  padding: 8px 4px;
+  color: #f6f7f8;
+  background: transparent;
+  font: inherit;
+  text-align: center;
+  cursor: pointer;
+  touch-action: none;
+  user-select: none;
+}
+
+.bonni-launcher__tile:focus-visible {
+  outline: 3px solid rgba(245, 176, 0, 0.42);
+  outline-offset: 3px;
+}
+
+.bonni-launcher__tile-icon {
+  width: var(--bonni-index-icon-size);
+  height: var(--bonni-index-icon-size);
+  display: grid;
+  place-items: center;
+  border: 1px solid rgba(255, 255, 255, 0.17);
+  border-radius: 20px;
+  color: #fff;
+  background: linear-gradient(145deg, #111318 0%, #090b0e 58%, #070809 100%);
+  box-shadow: 0 14px 34px rgba(0, 0, 0, 0.28);
+  font-size: 1.65rem;
+  font-weight: 850;
+  transition: transform 170ms ease, border-color 170ms ease, background 170ms ease, box-shadow 170ms ease;
+}
+
+.bonni-launcher__tile.is-dragging .bonni-launcher__tile-icon {
+  border-color: rgba(245, 176, 0, 0.82);
+  box-shadow: 0 22px 48px rgba(0, 0, 0, 0.46);
+  transform: scale(1.08);
+}
+
+.bonni-launcher__tile-icon svg {
+  width: 34px;
+  height: 34px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.6;
+}
+
+.bonni-launcher__tile:hover .bonni-launcher__tile-icon {
+  border-color: rgba(245, 176, 0, 0.65);
+  background: linear-gradient(145deg, #171a1f 0%, #090b0e 66%, #0a2d6b 140%);
+  box-shadow: 0 19px 42px rgba(0, 0, 0, 0.38);
+  transform: translateY(-4px);
 }
 
 .bonni-launcher__empty {
-  margin: 22px 0 0;
-  color: rgba(47, 36, 31, 0.68);
+  display: grid;
+  justify-items: center;
+  gap: 8px;
+  border: 1px dashed rgba(255, 255, 255, 0.22);
+  border-radius: 22px;
+  padding: clamp(34px, 7vw, 72px) 24px;
+  color: #aeb2ba;
+  background: rgba(9, 11, 14, 0.68);
   text-align: center;
 }
 
-.bonni-launcher__additional {
-  width: min(720px, 100%);
-  margin-top: 26px;
-  text-align: center;
+.bonni-launcher__empty strong {
+  color: #fff;
+  font-size: 1.12rem;
 }
 
-.bonni-launcher__additional h2 {
-  margin: 0 0 12px;
-  font-size: 1rem;
+.bonni-launcher__empty span {
+  max-width: 520px;
+  font-size: 0.88rem;
+  line-height: 1.5;
 }
 
-.bonni-launcher__additional > div {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: center;
-  gap: 10px;
-}
-
-.bonni-launcher__additional button {
-  padding: 9px 14px;
-}
-
-@media (max-width: 760px) {
-  .bonni-launcher__header {
-    align-items: center;
+@media (max-width: 900px) {
+  .bonni-launcher__surface {
+    padding: 20px clamp(14px, 4vw, 34px) 42px;
   }
 
-  .bonni-launcher__wheel {
-    width: min(92vw, 620px);
+  .bonni-launcher__topbar {
+    padding-bottom: 12px;
   }
 
-  .bonni-launcher__segment-content {
-    width: clamp(126px, 31vw, 184px);
-    gap: 5px;
+  .bonni-launcher__watermark {
+    top: 56%;
+    left: 50%;
+    width: min(440px, 72vmin);
+    opacity: 0.025;
   }
 
-  .bonni-launcher__eyebrow,
-  .bonni-launcher__description {
-    display: none;
+  .bonni-launcher__grid {
+    gap: 14px 8px;
   }
 
-  .bonni-launcher__title {
-    flex-direction: column;
-    gap: 4px;
+  .bonni-launcher__tile-icon {
+    border-radius: 18px;
   }
 
-  .bonni-launcher__title strong {
-    font-size: clamp(0.96rem, 4vw, 1.38rem);
-  }
-
-  .bonni-launcher__icon {
-    width: 34px;
-    height: 34px;
-    font-size: 1.05rem;
+  .bonni-launcher__tile-icon svg {
+    width: 30px;
+    height: 30px;
   }
 }
 
-@media (max-width: 480px) {
-  .bonni-launcher {
-    padding: 16px 10px 28px;
+@media (max-width: 600px) {
+  .bonni-launcher__surface {
+    padding-inline: 12px;
   }
 
-  .bonni-launcher__header {
-    padding: 0 6px;
+  .bonni-launcher__watermark {
+    width: min(430px, 82vmin);
+    opacity: 0.025;
   }
 
-  .bonni-launcher__welcome {
-    display: none;
+  .bonni-launcher__grid {
+    gap: 12px 5px;
   }
 
-  .bonni-launcher__logout {
-    padding: 8px 12px;
-    font-size: 0.82rem;
-  }
-
-  .bonni-launcher__segment--right .bonni-launcher__segment-content {
-    right: 1%;
-  }
-
-  .bonni-launcher__segment--left .bonni-launcher__segment-content {
-    left: 1%;
+  .bonni-launcher__tile-icon {
+    border-radius: 17px;
   }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .bonni-launcher__segment,
-  .bonni-launcher__eyebrow,
-  .bonni-launcher__description,
-  .bonni-launcher__icon,
-  .bonni-launcher__logout,
-  .bonni-launcher__additional button {
-    transition: none;
+  .bonni-launcher *,
+  .bonni-launcher *::before,
+  .bonni-launcher *::after {
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
   }
 }

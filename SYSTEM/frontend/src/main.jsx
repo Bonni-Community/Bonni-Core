@@ -2,6 +2,7 @@ import React from "react";
 import ReactDOM from "react-dom/client";
 
 import AppShell from "../system/auth/AppShell.jsx";
+import { BrandProvider } from "../system/brand/BrandContext.jsx";
 import { cleanupObsoleteTechnicalData } from "../system/maintenance/technicalDataCleanup.js";
 import { BONNI_CORE_VERSION } from "../system/version.js";
 
@@ -16,7 +17,9 @@ async function startBonniCore() {
 
   ReactDOM.createRoot(rootElement).render(
     <React.StrictMode>
-      <AppShell />
+      <BrandProvider>
+        <AppShell />
+      </BrandProvider>
     </React.StrictMode>
   );
 }

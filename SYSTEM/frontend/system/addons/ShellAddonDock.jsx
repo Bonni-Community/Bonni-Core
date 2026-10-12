@@ -28,6 +28,7 @@ function ShellAddonFrame({
   token,
   user,
   shell,
+  branding,
   activeWorkspace,
   allowedWorkspaces,
   onClose,
@@ -45,9 +46,9 @@ function ShellAddonFrame({
     frameRef.current?.contentWindow?.postMessage({
       type: "bonni:module-context",
       moduleId,
-      payload: { token, user, shell, activeWorkspace, allowedWorkspaces },
+      payload: { token, user, shell, branding, activeWorkspace, allowedWorkspaces },
     }, entryUrl.origin);
-  }, [activeWorkspace, allowedWorkspaces, entryUrl.origin, moduleId, shell, token, user]);
+  }, [activeWorkspace, allowedWorkspaces, branding, entryUrl.origin, moduleId, shell, token, user]);
 
   useEffect(() => {
     function receiveMessage(event) {
@@ -89,6 +90,7 @@ export default function ShellAddonDock({
   token,
   user,
   shell,
+  branding,
   activeWorkspace,
   allowedWorkspaces,
   onLogout,
@@ -162,6 +164,7 @@ export default function ShellAddonDock({
             token={token}
             user={user}
             shell={shell}
+            branding={branding}
             activeWorkspace={activeWorkspace}
             allowedWorkspaces={allowedWorkspaces}
             onClose={close}

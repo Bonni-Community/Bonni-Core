@@ -12,7 +12,7 @@ x-backend-environment: &backend_environment
   LOCAL_AUTH_PORT: 4001
   SYSTEM_SLOT_NAME: backend-active
   SYSTEM_SLOT_ROLE: active
-  SYSTEM_VERSION: ${SYSTEM_VERSION:-0.1.20}
+  SYSTEM_VERSION: ${SYSTEM_VERSION:-0.1.21}
   SYSTEM_UPDATE_PROBE_MODE: "false"
   # Exactly one trusted hop: the closed runtime-proxy nginx container. Core
   # defaults to zero outside this topology and validates the configured count.
@@ -27,6 +27,10 @@ x-backend-environment: &backend_environment
   BONNI_PROJECT_ROOT: /app
   BONNI_STORAGE_ROOT: /app/storage
   RUN_SYSTEM_ROOT: /app/run_system
+  BONNI_CORE_LICENSE_SEED_ROOT: /app/licenses
+  BONNI_CORE_LICENSE_PREDECESSOR_SEED_ROOT: /app/license-predecessors
+  BONNI_LICENSE_ROOT: /app/run_system/storage/licenses
+  BONNI_CORE_LICENSE_REQUIRED_PREDECESSOR: ${BONNI_CORE_LICENSE_REQUIRED_PREDECESSOR:-}
   FRONTEND_DIST_ROOT: /app/public
   SYSTEM_EMERGENCY_HOLD_DAYS: "14"
   SYSTEM_BOOT_KEY_REQUIRED: ${SYSTEM_BOOT_KEY_REQUIRED:-false}
@@ -229,6 +233,10 @@ services:
       SYSTEM_RUNTIME_SOURCE: json
       TIMECAPSULE_EMERGENCY_MODE: "true"
       BONNI_UPDATE_REQUEST_SECRET_FILE: ""
+      # Emergency sieht denselben persistenten Alt+Neu/Modul-Katalog, erhält ihn
+      # aber ausschließlich read-only. Den Katalog schreibt nur der bestätigte
+      # Active beziehungsweise der isolierte Candidate.
+      BONNI_LICENSE_ROOT: /app/emergency-licenses
       # Infrastructure-level writer lease for the delayed/previous image.
       # The separate RUN_SYSTEM_ROOT hides production database-routing.json,
       # while every fallback URL forces PostgreSQL read-only transactions.
@@ -238,6 +246,7 @@ services:
       LOCAL_DATABASE_URL: "postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD muss gesetzt sein}@db:5432/${POSTGRES_DB:-bonni_core}?schema=public&options=-c%20default_transaction_read_only%3Don"
     volumes:
       - ${BONNI_HOST_RUNTIME_ROOT:-../../runtime}/storage:/app/storage:ro
+      - ${BONNI_HOST_RUN_SYSTEM_ROOT:-../../run_system}/storage/licenses:/app/emergency-licenses:ro
       - ${BONNI_HOST_RUN_SYSTEM_ROOT:-../../run_system}/system/emergency:/app/emergency-run-system/system/emergency:ro
       - update_runner_outbox:/run/bonni-update/ipc:ro
       - ${BONNI_UPDATE_TRUSTED_KEYS_HOST_DIR:?start-runtime.sh muss BONNI_UPDATE_TRUSTED_KEYS_HOST_DIR absolut setzen}:/run/secrets/bonni-update/trusted-keys:ro
@@ -335,16 +344,12 @@ services:
       candidate-bootstrap:
         condition: service_completed_successfully
     environment:
-      <<: *backend_environment
+      NODE_ENV: production
       SYSTEM_SLOT_NAME: candidate-migrator
       SYSTEM_SLOT_ROLE: installer
-      SYSTEM_VERSION: ${CANDIDATE_SYSTEM_VERSION:-0.1.20}
+      SYSTEM_VERSION: ${CANDIDATE_SYSTEM_VERSION:-0.1.21}
       DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD muss gesetzt sein}@db-candidate:5432/${POSTGRES_DB:-bonni_core}?schema=public
-      SERVER_DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD muss gesetzt sein}@db-candidate:5432/${POSTGRES_DB:-bonni_core}?schema=public
-    volumes:
-      - candidate_storage:/app/storage
-      - candidate_run_system:/app/run_system
-      - candidate_logs:/app/backend/archives/logs
+      BONNI_OPS_MIGRATE_CANONICAL_REDUNDANT_IF_EXISTS: "false"
     networks:
       - runtime_candidate
     command: ["npm", "run", "prisma:migrate:deploy"]
@@ -377,7 +382,7 @@ services:
       <<: *backend_environment
       SYSTEM_SLOT_NAME: backend-candidate
       SYSTEM_SLOT_ROLE: candidate
-      SYSTEM_VERSION: ${CANDIDATE_SYSTEM_VERSION:-0.1.20}
+      SYSTEM_VERSION: ${CANDIDATE_SYSTEM_VERSION:-0.1.21}
       SYSTEM_UPDATE_PROBE_MODE: "true"
       LOCAL_AUTH_BIND: 127.0.0.1
       DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD muss gesetzt sein}@db-candidate:5432/${POSTGRES_DB:-bonni_core}?schema=public
@@ -418,14 +423,23 @@ services:
       db:
         condition: service_healthy
     environment:
-      <<: *backend_environment
+      NODE_ENV: production
       SYSTEM_SLOT_NAME: database-migrator
       SYSTEM_SLOT_ROLE: installer
-      SYSTEM_VERSION: ${CANDIDATE_SYSTEM_VERSION:-0.1.20}
-    volumes: *production_volumes
+      SYSTEM_VERSION: ${CANDIDATE_SYSTEM_VERSION:-0.1.21}
+      DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD muss gesetzt sein}@db:5432/${POSTGRES_DB:-bonni_core}?schema=public
+      # Every migration process intentionally uses only DATABASE_URL. This
+      # opt-in is set exclusively for the production migrator so it also updates the
+      # canonical redundant database created by the isolated bootstrap.
+      BONNI_OPS_MIGRATE_CANONICAL_REDUNDANT_IF_EXISTS: "true"
     networks:
       - runtime_database
     command: ["npm", "run", "prisma:migrate:deploy"]
+    read_only: true
+    tmpfs:
+      - /tmp:size=256m,mode=0700
+    cap_drop:
+      - ALL
     security_opt:
       - no-new-privileges:true
     labels:

@@ -1,0 +1,9 @@
+{
+  "schema": "bonni.developer-authority/v1",
+  "issuer": {
+    "keyId": "bonni-master-9d9a41d1a04dc8b23a1980391ee6a37b",
+    "algorithm": "Ed25519",
+    "publicKeyPem": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEA9/RvBNfWM9PsWaLUM9pT2md53LHwXE83vLroM41Iq6M=\n-----END PUBLIC KEY-----\n",
+    "fingerprintSha256": "9d9a41d1a04dc8b23a1980391ee6a37bb29086d6add4907d6672b41b582d85ed"
+  }
+}

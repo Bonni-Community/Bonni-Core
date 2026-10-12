@@ -1,5 +1,11 @@
 # Release-Werkzeuge
 
+> **OCI-/Container-Release:** Diese PEM-/Archiv-Werkzeuge gehören zum externen
+> Container-Runner. Sie erstellen kein natives Windows-v2-PAYLOAD-Paket. Für
+> die lokale, zertifizierte GitHub-Version des Windows-Aktionscenters gelten
+> `scripts/signature-release/README.md` ab **Zertifiziertes lokales
+> GitHub-Update** sowie `scripts/setup/READY-UPDATE-INSTALLER.md`.
+
 Der private Ed25519-Schlüssel bleibt auf einem getrennten Release-Rechner.
 Einmalig erzeugen:
 
@@ -28,7 +34,15 @@ node scripts/update-release/create-release.mjs \
   --output-dir /release/0.1.19
 ```
 
-Migrationsangaben können für ein späteres, manuelles Wartungsverfahren signiert
-werden. Der automatische Runner dieser Version installiert jedoch bewusst nur
-`--migration none`, bis Bonni Core eine vollständige versionierte
-Prisma-Migrationskette besitzt.
+Das Core-Image enthält eine append-only Ops-Migrationskette unter
+`ops/migrations`. Deshalb signiert die Release-Erstellung standardmäßig
+`--migration expand-contract`. Solange dieser paketierte Migrationssatz nicht
+leer ist, werden `none` und `offline` fail-closed abgelehnt. Der automatische
+Runner prüft die signierte Strategie, testet dieselbe Kette zuerst auf der
+isolierten Candidate-Datenbank und führt sie anschließend über den
+`database-migrator` auf der normalen sowie – falls vorhanden – auf der
+kanonischen redundanten Produktionsdatenbank aus.
+
+Die SQL-Dateien müssen rückwärtskompatible Expand-Schritte bleiben. Contract-
+oder Löschschritte gehören nicht in diese Online-Kette und dürfen erst nach dem
+abgelaufenen Rückfall-Hold in einem getrennt kontrollierten Verfahren erfolgen.

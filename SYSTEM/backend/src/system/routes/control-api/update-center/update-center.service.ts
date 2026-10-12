@@ -5,6 +5,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 
 import { getInstalledModulesCompatibilityForCoreVersion } from "../../../../platform/module-manager/compatibility/index.js";
+import { getProductRoot } from "../../../boot/run-system/run-system.paths.js";
 import {
   assertReleaseArtifactIdentity,
   assertSecureReleaseHttpsUrl,
@@ -167,8 +168,11 @@ function maximumUpdateBytes() {
 
 function storageRoot() {
   if (process.env.BONNI_STORAGE_ROOT) return path.resolve(process.env.BONNI_STORAGE_ROOT);
-  const runtimeStorage = path.resolve(process.cwd(), "../storage");
-  return existsSync(runtimeStorage) ? runtimeStorage : path.resolve(process.cwd(), "storage");
+  const productBackendRoot = path.join(getProductRoot(), "SYSTEM", "backend");
+  const legacySiblingStorage = path.resolve(productBackendRoot, "../storage");
+  return existsSync(legacySiblingStorage)
+    ? legacySiblingStorage
+    : path.join(productBackendRoot, "storage");
 }
 
 function updateCenterRoot() {
@@ -186,7 +190,7 @@ function updateRunnerRoot() {
 function localReleaseRoot() {
   return process.env.BONNI_UPDATE_LOCAL_ROOT
     ? path.resolve(process.env.BONNI_UPDATE_LOCAL_ROOT)
-    : path.resolve(process.cwd(), "updates", "bonni-core");
+    : path.join(getProductRoot(), "SYSTEM", "backend", "updates", "bonni-core");
 }
 
 function statePath() {
@@ -1009,7 +1013,18 @@ export async function startLocalSourceUpdateInstallation(
   // matching ID alone is insufficient because the inbox content may have been
   // replaced while an earlier request is still visible as in progress.
   if (current.state === "in-progress" && exactTarget) {
-    return { ok: true, accepted: false, existing: true, localSourceUpdate: current };
+    try {
+      // Reclaim the exact durable monitor grant. This intentionally skips a
+      // second backup, but still proves that this browser can confirm or retry
+      // the already running request after a reload.
+      return await dependencies.queue(input);
+    } catch (error) {
+      return localSourceInstallException(
+        error,
+        "LOCAL_SOURCE_UPDATE_QUEUE_FAILED",
+        "Der laufende Updateauftrag konnte nicht sicher wieder aufgenommen werden.",
+      );
+    }
   }
   const deploymentLifecycle = await dependencies.getDeploymentLifecycle?.();
   if (deploymentLifecycle?.blocksUpdates) {

@@ -27,6 +27,7 @@ model Person {
   id          String    @id @default(cuid())
   displayName String
   firstName   String?
+  secondFirstName String?
   lastName    String?
   nickname    String?
   email       String?

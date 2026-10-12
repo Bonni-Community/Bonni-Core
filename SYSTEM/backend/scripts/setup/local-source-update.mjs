@@ -11,9 +11,56 @@ const LEGACY_SOURCE_UPDATE_PAYLOAD_LAYOUT = "tree-full-v1";
 const MANIFEST_NAME = "bonni-source-update.json";
 const UPDATE_STATUS = "UNPUBLISHED_TEST_UPDATE";
 const UPDATE_CHANNEL = "development";
+const CANONICAL_UTC_TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u;
+const MAXIMUM_TIMESTAMP_FUTURE_SKEW_MS = 24 * 60 * 60_000;
+const STRICT_SEMVER = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*))*))?(?:\+([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$/u;
 const LOCAL_DEPLOYMENT_LIFECYCLE_SCHEMA = "bonni.local-source-deployment-lifecycle/v1";
+const LOCAL_DEPLOYMENT_LIFECYCLE_INTENT_SCHEMA = "bonni.local-source-deployment-lifecycle-intent/v1";
 const LOCAL_DEPLOYMENT_HOLD_DAYS = 14;
 const LOCAL_DEPLOYMENT_HOLD_MS = LOCAL_DEPLOYMENT_HOLD_DAYS * 24 * 60 * 60_000;
+const LOCAL_DEPLOYMENT_HOLD_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{7,127}$/u;
+const START_AUTOMATION_REPAIR_SCHEMA = "bonni.core-start-automation-repair/v2";
+const START_AUTOMATION_REPAIR_INTENT_SCHEMA = "bonni.core-start-automation-repair-intent/v2";
+const START_AUTOMATION_REPAIR_ID = "bonni-core-0120-start-automation-v2";
+const LEGACY_START_AUTOMATION_REPAIR_SCHEMA = "bonni.core-start-automation-repair/v1";
+const LEGACY_START_AUTOMATION_REPAIR_INTENT_SCHEMA = "bonni.core-start-automation-repair-intent/v1";
+const LEGACY_START_AUTOMATION_REPAIR_ID = "bonni-core-0120-start-automation-v1";
+const START_AUTOMATION_REPAIR_RECEIPT = `repairs/${START_AUTOMATION_REPAIR_ID}.json`;
+const START_AUTOMATION_REPAIR_INTENT = `repairs/${START_AUTOMATION_REPAIR_ID}.intent.json`;
+const START_AUTOMATION_PREDECESSOR = Object.freeze({
+  updateId: "u-020-0193-0827-15",
+  manifestSha256: "56473fbb920e4ad3cbce835a53899f1dd3ec473c5af28992497db08f6e68e400",
+});
+const START_AUTOMATION_OVERLAY_PATHS = Object.freeze([
+  "SYSTEM/backend/scripts/runtime/local-source-update-start-gate.mjs",
+  "SYSTEM/backend/scripts/runtime/runtime-mode-exclusion.mjs",
+  "SYSTEM/backend/scripts/setup/local-source-update.mjs",
+  "SYSTEM/backend/src/system/routes/control-api/update-center/local-source-inbox.service.ts",
+  "SYSTEM/backend/src/system/boot/run-system/run-system.paths.ts",
+  "SYSTEM/backend/src/core/config/env.ts",
+  "SYSTEM/backend/src/core/logger/logger.ts",
+  "SYSTEM/backend/src/system/server/run-server.ts",
+  "SYSTEM/backend/src/system/server/local-supervisor-shutdown.ts",
+  "SYSTEM/backend/scripts/runtime/start-backend.mjs",
+  "SYSTEM/backend/scripts/setup/local-source-update-supervisor.mjs",
+  "SYSTEM/backend/scripts/local-run-controller/acceptance-gate.mjs",
+  "SYSTEM/backend/scripts/local-run-controller/controller-state.mjs",
+  "SYSTEM/backend/scripts/local-run-controller/local-run-proxy.mjs",
+  "SYSTEM/backend/scripts/local-run-controller/slot-launcher.mjs",
+  "SYSTEM/backend/scripts/setup/local-candidate-compatibility.mjs",
+  "SYSTEM/backend/scripts/runcontainer/candidate-data-clone.mjs",
+  "SYSTEM/backend/scripts/runcontainer/candidate-update-stage.mjs",
+  "SYSTEM/backend/scripts/runcontainer/candidate-control-state-promotion.mjs",
+  "SYSTEM/backend/scripts/runcontainer/runcontainer-lib.mjs",
+  "SYSTEM/backend/scripts/runcontainer/run-layout.mjs",
+  "SYSTEM/backend/scripts/runcontainer/frontend-slot-health.mjs",
+  "SYSTEM/backend/scripts/runcontainer/canonical-system-commit.mjs",
+  "SYSTEM/frontend/platform/control-center/update/CoreUpdatePage.jsx",
+  "SYSTEM/frontend/platform/control-center/update/CoreUpdatePage.css",
+  "SYSTEM/frontend/platform/control-center/update/localUpdateMonitorApi.js",
+  "SYSTEM/frontend/platform/control-center/update/localUpdatePresentation.js",
+  "SYSTEM/frontend/platform/control-center/update/DeploymentLifecyclePanel.jsx",
+]);
 const MAX_FILES = 20_000;
 const MAX_CLEANUP_CANDIDATES = MAX_FILES * 2;
 const MAX_FILE_BYTES = 64 * 1024 * 1024;
@@ -89,6 +136,123 @@ function assertExactKeys(value, allowed, label) {
   for (const key of Object.keys(value)) {
     if (!allowed.has(key)) fail("SOURCE_UPDATE_UNKNOWN_FIELD", `${label}.${key}`);
   }
+}
+
+function canonicalUtcTimestamp(value, label, code = "SOURCE_UPDATE_TIMESTAMP_INVALID") {
+  if (
+    typeof value !== "string"
+    || !CANONICAL_UTC_TIMESTAMP.test(value)
+    || !Number.isFinite(Date.parse(value))
+    || new Date(Date.parse(value)).toISOString() !== value
+  ) fail(code, label);
+  return value;
+}
+
+function boundedSourceTimestamp(
+  value,
+  label,
+  invalidCode = "SOURCE_UPDATE_TIMESTAMP_INVALID",
+  futureCode = "SOURCE_UPDATE_TIMESTAMP_IN_FUTURE",
+) {
+  const timestamp = canonicalUtcTimestamp(value, label, invalidCode);
+  if (Date.parse(timestamp) > Date.now() + MAXIMUM_TIMESTAMP_FUTURE_SKEW_MS) {
+    fail(futureCode, label);
+  }
+  return timestamp;
+}
+
+// This updater is deliberately bootstrap-self-contained: an older installation
+// may receive this file before the rest of the target source tree exists.
+function compareStrictSemVer(left, right) {
+  const parse = (value) => {
+    const match = STRICT_SEMVER.exec(value);
+    if (!match) fail("SOURCE_UPDATE_INVALID_VERSION", String(value || ""));
+    return {
+      main: [BigInt(match[1]), BigInt(match[2]), BigInt(match[3])],
+      pre: match[4]?.split(".") || [],
+      build: match[5]?.split(".") || [],
+    };
+  };
+  const a = parse(left);
+  const b = parse(right);
+  for (let index = 0; index < 3; index += 1) {
+    if (a.main[index] < b.main[index]) return -1;
+    if (a.main[index] > b.main[index]) return 1;
+  }
+  if (!a.pre.length && !b.pre.length) return 0;
+  if (!a.pre.length) return 1;
+  if (!b.pre.length) return -1;
+  for (let index = 0; index < Math.max(a.pre.length, b.pre.length); index += 1) {
+    const leftIdentifier = a.pre[index];
+    const rightIdentifier = b.pre[index];
+    if (leftIdentifier === undefined) return -1;
+    if (rightIdentifier === undefined) return 1;
+    if (leftIdentifier === rightIdentifier) continue;
+    const leftNumeric = /^\d+$/u.test(leftIdentifier);
+    const rightNumeric = /^\d+$/u.test(rightIdentifier);
+    if (leftNumeric && rightNumeric) {
+      return BigInt(leftIdentifier) < BigInt(rightIdentifier) ? -1 : 1;
+    }
+    if (leftNumeric) return -1;
+    if (rightNumeric) return 1;
+    return leftIdentifier < rightIdentifier ? -1 : 1;
+  }
+  return 0;
+}
+
+function bonniRevision(value) {
+  const match = STRICT_SEMVER.exec(value);
+  if (!match) fail("SOURCE_UPDATE_INVALID_VERSION", String(value || ""));
+  const build = match[5]?.split(".") || [];
+  if (!build.length) return 0n;
+  if (build.length !== 1 || !/^[a-z]+$/u.test(build[0])) {
+    fail("SOURCE_UPDATE_INVALID_VERSION", value);
+  }
+  let revision = 0n;
+  for (const character of build[0]) {
+    revision = revision * 26n + BigInt(character.charCodeAt(0) - 96);
+  }
+  return revision;
+}
+
+function compareBonniReleaseVersion(left, right) {
+  const standard = compareStrictSemVer(left, right);
+  if (standard !== 0) return standard;
+  const leftRevision = bonniRevision(left);
+  const rightRevision = bonniRevision(right);
+  if (leftRevision < rightRevision) return -1;
+  if (leftRevision > rightRevision) return 1;
+  return 0;
+}
+
+function isValidCoreVersion(value) {
+  if (typeof value !== "string" || !value || value.length > 128) return false;
+  try {
+    compareBonniReleaseVersion(value, value);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function isValidAppVersion(value) {
+  if (typeof value !== "string" || !value || value.length > 128) return false;
+  try {
+    compareStrictSemVer(value, value);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function validateCoreVersion(value, label) {
+  if (!isValidCoreVersion(value)) fail("SOURCE_UPDATE_INVALID_VERSION", label);
+  return value;
+}
+
+function validateAppVersion(value, label) {
+  if (!isValidAppVersion(value)) fail("SOURCE_UPDATE_INVALID_VERSION", label);
+  return value;
 }
 
 function normalizeManifestPath(value, label = "path") {
@@ -198,12 +362,10 @@ function assertManagedAndUnprotected(relativePath, components, label) {
 
 function validateVersionObject(value, label) {
   assertExactKeys(value, new Set(["coreVersion", "kontorAppVersion"]), label);
-  for (const key of ["coreVersion", "kontorAppVersion"]) {
-    if (typeof value[key] !== "string" || !/^[0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?$/u.test(value[key])) {
-      fail("SOURCE_UPDATE_INVALID_VERSION", `${label}.${key}`);
-    }
-  }
-  return { coreVersion: value.coreVersion, kontorAppVersion: value.kontorAppVersion };
+  return {
+    coreVersion: validateCoreVersion(value.coreVersion, `${label}.coreVersion`),
+    kontorAppVersion: validateAppVersion(value.kontorAppVersion, `${label}.kontorAppVersion`),
+  };
 }
 
 function releaseNotesText(value, label, minimum, maximum) {
@@ -245,7 +407,10 @@ function validateReleaseNotes(value) {
 
 function validateCompletedUpdateMetadata(value, label = "history-receipt.updateMetadata") {
   if (value === null || value === undefined) return null;
-  assertExactKeys(value, new Set(["from", "to", "components", "counts", "repair"]), label);
+  assertExactKeys(value, new Set(["createdAt", "from", "to", "components", "counts", "repair"]), label);
+  const createdAt = value.createdAt === undefined
+    ? null
+    : canonicalUtcTimestamp(value.createdAt, `${label}.createdAt`);
   const from = validateVersionObject(value.from, `${label}.from`);
   const to = validateVersionObject(value.to, `${label}.to`);
   if (!Array.isArray(value.components) || !value.components.length || value.components.length > 3) {
@@ -281,11 +446,12 @@ function validateCompletedUpdateMetadata(value, label = "history-receipt.updateM
     || counts.files > counts.inventory
     || typeof value.repair !== "boolean"
   ) fail("SOURCE_UPDATE_COMPLETED_METADATA_INVALID", label);
-  return { from, to, components, counts, repair: value.repair };
+  return { createdAt, from, to, components, counts, repair: value.repair };
 }
 
 function completedUpdateMetadataFromManifest(manifest) {
   return {
+    createdAt: manifest.createdAt,
     from: manifest.from,
     to: manifest.to,
     components: manifest.components,
@@ -306,6 +472,7 @@ function validateManifest(raw) {
     "status",
     "updateId",
     "channel",
+    "createdAt",
     "payloadLayout",
     "requires",
     "releaseNotes",
@@ -330,6 +497,7 @@ function validateManifest(raw) {
   if (raw.status !== UPDATE_STATUS || raw.channel !== UPDATE_CHANNEL) {
     fail("SOURCE_UPDATE_NOT_A_DEVELOPMENT_PACKAGE");
   }
+  const createdAt = boundedSourceTimestamp(raw.createdAt, "manifest.createdAt");
   if (typeof raw.updateId !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$/u.test(raw.updateId)) {
     fail("SOURCE_UPDATE_INVALID_ID");
   }
@@ -482,6 +650,7 @@ function validateManifest(raw) {
     status: UPDATE_STATUS,
     updateId: raw.updateId,
     channel: UPDATE_CHANNEL,
+    createdAt,
     payloadLayout,
     requires,
     releaseNotes,
@@ -861,6 +1030,402 @@ async function readStateJson(productRoot, relativeToState, errorCode) {
   return readJson(await stateFileTarget(productRoot, relativeToState), errorCode);
 }
 
+async function readExistingStateJson(productRoot, relativeToState, errorCode) {
+  const canonical = normalizeManifestPath(relativeToState, "state-file");
+  const target = await assertSafeExistingTarget(
+    path.resolve(productRoot),
+    `SYSTEM/.bonni-source-update/${canonical}`,
+  );
+  return readJson(target, errorCode);
+}
+
+async function assertStartAutomationOverlayAttestation({ productRoot, manifest, active }) {
+  if (
+    JSON.stringify(manifest.requires) !== JSON.stringify(START_AUTOMATION_PREDECESSOR)
+    || manifest.from.coreVersion !== "0.1.20"
+    || active?.updateId !== START_AUTOMATION_PREDECESSOR.updateId
+    || active?.manifestSha256 !== START_AUTOMATION_PREDECESSOR.manifestSha256
+  ) fail("SOURCE_UPDATE_START_OVERLAY_PREDECESSOR_MISMATCH", manifest.updateId);
+
+  const intentTarget = await assertSafeExistingTarget(
+    path.resolve(productRoot),
+    `SYSTEM/.bonni-source-update/${START_AUTOMATION_REPAIR_INTENT}`,
+  );
+  const intentState = await existingRegularFile(intentTarget, START_AUTOMATION_REPAIR_INTENT);
+  if (!intentState) fail("SOURCE_UPDATE_START_OVERLAY_INTENT_MISSING");
+  const intent = await readExistingStateJson(
+    productRoot,
+    START_AUTOMATION_REPAIR_INTENT,
+    "SOURCE_UPDATE_START_OVERLAY_INTENT_INVALID",
+  );
+  assertExactKeys(intent, new Set([
+    "schemaVersion", "repairId", "predecessor", "createdAt", "backupPath",
+    "backupManifestSha256", "backendDist", "frontendDist", "runActive", "files",
+  ]), "start-automation-repair-intent");
+  if (
+    intent.schemaVersion !== START_AUTOMATION_REPAIR_INTENT_SCHEMA
+    || intent.repairId !== START_AUTOMATION_REPAIR_ID
+    || JSON.stringify(intent.predecessor) !== JSON.stringify(START_AUTOMATION_PREDECESSOR)
+    || typeof intent.createdAt !== "string"
+    || !Number.isFinite(Date.parse(intent.createdAt))
+    || new Date(Date.parse(intent.createdAt)).toISOString() !== intent.createdAt
+    || typeof intent.backupPath !== "string"
+    || !/^BACKUP\/start-automation-repair-[A-Za-z0-9-]+$/u.test(intent.backupPath)
+    || !/^[a-f0-9]{64}$/u.test(String(intent.backupManifestSha256 || ""))
+    || !isPlainObject(intent.backendDist)
+    || Object.keys(intent.backendDist).sort().join("\u0000") !== ["transactionId", "previous"].sort().join("\u0000")
+    || !/^[a-f0-9]{24}$/u.test(String(intent.backendDist.transactionId || ""))
+    || !isPlainObject(intent.frontendDist)
+    || Object.keys(intent.frontendDist).sort().join("\u0000") !== ["transactionId", "previous"].sort().join("\u0000")
+    || !/^[a-f0-9]{24}$/u.test(String(intent.frontendDist.transactionId || ""))
+    || !Array.isArray(intent.files)
+    || intent.files.length !== START_AUTOMATION_OVERLAY_PATHS.length
+  ) fail("SOURCE_UPDATE_START_OVERLAY_INTENT_INVALID");
+  const intentSha256 = await sha256File(intentTarget);
+
+  const receipt = await readExistingStateJson(
+    productRoot,
+    START_AUTOMATION_REPAIR_RECEIPT,
+    "SOURCE_UPDATE_START_OVERLAY_RECEIPT_INVALID",
+  );
+  if (!receipt) fail("SOURCE_UPDATE_START_OVERLAY_RECEIPT_MISSING");
+  assertExactKeys(receipt, new Set([
+    "schemaVersion", "repairId", "coreVersion", "predecessor", "installedAt",
+    "backupPath", "backupManifestSha256", "archivedRuntimeReceipt", "intentSha256",
+    "backendDist", "frontendDist", "runActive", "files",
+  ]), "start-automation-repair-receipt");
+  if (
+    receipt.schemaVersion !== START_AUTOMATION_REPAIR_SCHEMA
+    || receipt.repairId !== START_AUTOMATION_REPAIR_ID
+    || receipt.coreVersion !== "0.1.20"
+    || JSON.stringify(receipt.predecessor) !== JSON.stringify(START_AUTOMATION_PREDECESSOR)
+    || typeof receipt.installedAt !== "string"
+    || !Number.isFinite(Date.parse(receipt.installedAt))
+    || new Date(Date.parse(receipt.installedAt)).toISOString() !== receipt.installedAt
+    || typeof receipt.backupPath !== "string"
+    || !/^BACKUP\/start-automation-repair-[A-Za-z0-9-]+$/u.test(receipt.backupPath)
+    || !(receipt.archivedRuntimeReceipt === null
+      || /^host-backend-runtime\.json\.stale-[A-Za-z0-9-]+$/u.test(receipt.archivedRuntimeReceipt))
+    || receipt.intentSha256 !== intentSha256
+    || receipt.backupPath !== intent.backupPath
+    || receipt.backupManifestSha256 !== intent.backupManifestSha256
+    || !isPlainObject(receipt.backendDist)
+    || Object.keys(receipt.backendDist).sort().join("\u0000") !== ["transactionId", "target"].sort().join("\u0000")
+    || receipt.backendDist.transactionId !== intent.backendDist.transactionId
+    || !isPlainObject(receipt.frontendDist)
+    || Object.keys(receipt.frontendDist).sort().join("\u0000") !== ["transactionId", "target"].sort().join("\u0000")
+    || receipt.frontendDist.transactionId !== intent.frontendDist.transactionId
+    || !Array.isArray(receipt.files)
+    || receipt.files.length !== START_AUTOMATION_OVERLAY_PATHS.length
+  ) fail("SOURCE_UPDATE_START_OVERLAY_RECEIPT_INVALID");
+
+  const validRunActive = (value) => {
+    if (!isPlainObject(value)) return false;
+    if (value.state === "absent") {
+      return Object.keys(value).sort().join("\u0000") === ["state", "pointerRevision"].sort().join("\u0000")
+        && Number.isSafeInteger(value.pointerRevision) && value.pointerRevision >= 0;
+    }
+    const requiredPointer = [
+      "role", "slotId", "slotRoot", "programRoot", "stateRoot", "receipt",
+      "receiptSha256", "version", "updateId",
+    ];
+    const pointerKeys = Object.keys(value.active || {}).sort().join("\u0000");
+    const slotId = String(value.active?.slotId || "");
+    return Object.keys(value).sort().join("\u0000") === ["state", "pointerRevision", "active"].sort().join("\u0000")
+      && value.state === "present"
+      && Number.isSafeInteger(value.pointerRevision) && value.pointerRevision >= 1
+      && isPlainObject(value.active)
+      && (pointerKeys === requiredPointer.sort().join("\u0000")
+        || pointerKeys === [...requiredPointer, "retainUntil"].sort().join("\u0000"))
+      && value.active.role === "active"
+      && /^slot-[a-f0-9-]{36}$/u.test(slotId)
+      && value.active.slotRoot === `slots/${slotId}`
+      && value.active.programRoot === `slots/${slotId}/program`
+      && value.active.stateRoot === `state/${slotId}`
+      && value.active.receipt === `slots/${slotId}/program-slot.json`
+      && /^[a-f0-9]{64}$/u.test(String(value.active.receiptSha256 || ""))
+      && typeof value.active.version === "string" && Boolean(value.active.version.trim())
+      && (value.active.updateId === null
+        || (typeof value.active.updateId === "string" && Boolean(value.active.updateId.trim())))
+      && (!Object.hasOwn(value.active, "retainUntil")
+        || value.active.retainUntil === null
+        || (typeof value.active.retainUntil === "string"
+          && Number.isFinite(Date.parse(value.active.retainUntil))
+          && new Date(Date.parse(value.active.retainUntil)).toISOString() === value.active.retainUntil));
+  };
+  if (!validRunActive(intent.runActive)
+    || !validRunActive(receipt.runActive)
+    || JSON.stringify(receipt.runActive) !== JSON.stringify(intent.runActive)) {
+    fail("SOURCE_UPDATE_START_OVERLAY_RUN_ACTIVE_INVALID");
+  }
+
+  const validBackendProof = (value, allowAbsent = false) => {
+    if (
+      !isPlainObject(value)
+      || Object.keys(value).sort().join("\u0000")
+        !== ["state", "treeSha256", "fileCount", "totalBytes", "entrySha256"].sort().join("\u0000")
+    ) return false;
+    if (value.state === "absent") {
+      return allowAbsent && value.treeSha256 === null && value.fileCount === 0
+        && value.totalBytes === 0 && value.entrySha256 === null;
+    }
+    return value.state === "present"
+      && /^[a-f0-9]{64}$/u.test(String(value.treeSha256 || ""))
+      && Number.isSafeInteger(value.fileCount) && value.fileCount > 0 && value.fileCount <= 20_000
+      && Number.isSafeInteger(value.totalBytes) && value.totalBytes > 0
+      && value.totalBytes <= 512 * 1024 * 1024
+      && /^[a-f0-9]{64}$/u.test(String(value.entrySha256 || ""));
+  };
+  if (!validBackendProof(intent.backendDist.previous, true)
+    || !validBackendProof(receipt.backendDist.target)) {
+    fail("SOURCE_UPDATE_START_OVERLAY_BACKEND_INVALID");
+  }
+  const backendRoot = await assertSafeExistingTarget(path.resolve(productRoot), "SYSTEM/backend/dist");
+  const backendRootState = await fs.lstat(backendRoot).catch(() => null);
+  if (!backendRootState?.isDirectory() || backendRootState.isSymbolicLink()) {
+    fail("SOURCE_UPDATE_START_OVERLAY_BACKEND_INVALID");
+  }
+  const backendFiles = [];
+  let backendTotalBytes = 0;
+  let backendEntrySha256 = null;
+  const visitBackend = async (directory, relative = "") => {
+    const entries = await fs.readdir(directory, { withFileTypes: true });
+    entries.sort((left, right) => bytewiseCompare(left.name, right.name));
+    for (const entry of entries) {
+      const childRelative = relative ? `${relative}/${entry.name}` : entry.name;
+      const child = path.join(directory, entry.name);
+      const state = await fs.lstat(child);
+      if (state.isDirectory() && !state.isSymbolicLink()) {
+        await visitBackend(child, childRelative);
+        continue;
+      }
+      if (!state.isFile() || state.isSymbolicLink() || state.nlink > 1 || state.size > 64 * 1024 * 1024) {
+        fail("SOURCE_UPDATE_START_OVERLAY_BACKEND_INVALID", childRelative);
+      }
+      const sha256 = await sha256File(child);
+      const rechecked = await fs.lstat(child);
+      if (!rechecked.isFile() || rechecked.isSymbolicLink() || rechecked.nlink > 1
+        || rechecked.size !== state.size || rechecked.dev !== state.dev || rechecked.ino !== state.ino) {
+        fail("SOURCE_UPDATE_START_OVERLAY_BACKEND_CHANGED", childRelative);
+      }
+      backendTotalBytes += state.size;
+      backendFiles.push({ path: childRelative, sizeBytes: state.size, sha256 });
+      if (childRelative === "system/server/run-server.js") backendEntrySha256 = sha256;
+    }
+  };
+  await visitBackend(backendRoot);
+  const observedBackend = {
+    state: "present",
+    treeSha256: createHash("sha256").update(JSON.stringify(backendFiles), "utf8").digest("hex"),
+    fileCount: backendFiles.length,
+    totalBytes: backendTotalBytes,
+    entrySha256: backendEntrySha256,
+  };
+  if (JSON.stringify(observedBackend) !== JSON.stringify(receipt.backendDist.target)) {
+    fail("SOURCE_UPDATE_START_OVERLAY_BACKEND_CHANGED");
+  }
+  for (const [root, transactionId] of [
+    [path.join(productRoot, "SYSTEM", "backend"), receipt.backendDist.transactionId],
+    [path.join(productRoot, "SYSTEM", "frontend"), receipt.frontendDist.transactionId],
+  ]) {
+    const label = root.endsWith(`${path.sep}backend`) ? "backend-dist" : "frontend-dist";
+    const openRoot = path.join(root, `.bonni-${START_AUTOMATION_REPAIR_ID}-${label}-${transactionId}`);
+    if (await fs.lstat(openRoot).catch(() => null)) fail("SOURCE_UPDATE_START_OVERLAY_TRANSACTION_OPEN", label);
+  }
+
+  const validFrontendProof = (value, allowAbsent = false) => {
+    if (
+      !isPlainObject(value)
+      || Object.keys(value).sort().join("\u0000")
+        !== ["state", "treeSha256", "fileCount", "totalBytes", "indexHtmlSha256"].sort().join("\u0000")
+    ) return false;
+    if (value.state === "absent") {
+      return allowAbsent && value.treeSha256 === null && value.fileCount === 0
+        && value.totalBytes === 0 && value.indexHtmlSha256 === null;
+    }
+    return value.state === "present"
+      && /^[a-f0-9]{64}$/u.test(String(value.treeSha256 || ""))
+      && Number.isSafeInteger(value.fileCount) && value.fileCount > 0 && value.fileCount <= 20_000
+      && Number.isSafeInteger(value.totalBytes) && value.totalBytes > 0
+      && value.totalBytes <= 512 * 1024 * 1024
+      && /^[a-f0-9]{64}$/u.test(String(value.indexHtmlSha256 || ""));
+  };
+  if (
+    !validFrontendProof(intent.frontendDist.previous, true)
+    || !validFrontendProof(receipt.frontendDist.target)
+  ) fail("SOURCE_UPDATE_START_OVERLAY_FRONTEND_INVALID");
+  const frontendRoot = await assertSafeExistingTarget(
+    path.resolve(productRoot),
+    "SYSTEM/frontend/dist",
+  );
+  const frontendRootState = await fs.lstat(frontendRoot).catch(() => null);
+  if (!frontendRootState?.isDirectory() || frontendRootState.isSymbolicLink()) {
+    fail("SOURCE_UPDATE_START_OVERLAY_FRONTEND_INVALID");
+  }
+  const frontendFiles = [];
+  let frontendTotalBytes = 0;
+  let frontendIndexSha256 = null;
+  const visitFrontend = async (directory, relative = "") => {
+    const entries = await fs.readdir(directory, { withFileTypes: true });
+    entries.sort((left, right) => bytewiseCompare(left.name, right.name));
+    for (const entry of entries) {
+      const childRelative = relative ? `${relative}/${entry.name}` : entry.name;
+      const child = path.join(directory, entry.name);
+      const state = await fs.lstat(child);
+      if (state.isDirectory() && !state.isSymbolicLink()) {
+        await visitFrontend(child, childRelative);
+        continue;
+      }
+      if (!state.isFile() || state.isSymbolicLink() || state.nlink > 1 || state.size > 64 * 1024 * 1024) {
+        fail("SOURCE_UPDATE_START_OVERLAY_FRONTEND_INVALID", childRelative);
+      }
+      const sha256 = await sha256File(child);
+      const rechecked = await fs.lstat(child);
+      if (
+        !rechecked.isFile() || rechecked.isSymbolicLink() || rechecked.nlink > 1
+        || rechecked.size !== state.size || rechecked.dev !== state.dev || rechecked.ino !== state.ino
+      ) fail("SOURCE_UPDATE_START_OVERLAY_FRONTEND_CHANGED", childRelative);
+      frontendTotalBytes += state.size;
+      frontendFiles.push({ path: childRelative, sizeBytes: state.size, sha256 });
+      if (childRelative === "index.html") frontendIndexSha256 = sha256;
+    }
+  };
+  await visitFrontend(frontendRoot);
+  const observedFrontend = {
+    state: "present",
+    treeSha256: createHash("sha256").update(JSON.stringify(frontendFiles), "utf8").digest("hex"),
+    fileCount: frontendFiles.length,
+    totalBytes: frontendTotalBytes,
+    indexHtmlSha256: frontendIndexSha256,
+  };
+  if (JSON.stringify(observedFrontend) !== JSON.stringify(receipt.frontendDist.target)) {
+    fail("SOURCE_UPDATE_START_OVERLAY_FRONTEND_CHANGED");
+  }
+
+  const normalizedActive = normalizeActiveState(active);
+  const activeByPath = new Map(normalizedActive.files.map((entry) => [
+    windowsPathKey(entry.path),
+    entry,
+  ]));
+  const manifestByPath = new Map(manifest.files.map((entry) => [
+    windowsPathKey(entry.path),
+    entry,
+  ]));
+  const attested = new Map();
+  const legacyRequired = [];
+  for (let index = 0; index < START_AUTOMATION_OVERLAY_PATHS.length; index += 1) {
+    const expectedPath = START_AUTOMATION_OVERLAY_PATHS[index];
+    const entry = receipt.files[index];
+    const intentEntry = intent.files[index];
+    assertExactKeys(entry, new Set([
+      "path", "previousSha256", "previousSizeBytes", "sha256", "sizeBytes",
+    ]), `start-automation-repair-receipt.files[${index}]`);
+    assertExactKeys(intentEntry, new Set([
+      "path", "previousSha256", "previousSizeBytes", "sha256", "sizeBytes",
+    ]), `start-automation-repair-intent.files[${index}]`);
+    const activeEntry = activeByPath.get(windowsPathKey(expectedPath));
+    const manifestEntry = manifestByPath.get(windowsPathKey(expectedPath));
+    const activeSha256 = activeEntry?.sha256 ?? null;
+    const activeSizeBytes = activeEntry?.sizeBytes ?? 0;
+    const observedIsActive = entry.previousSha256 === activeSha256
+      && entry.previousSizeBytes === activeSizeBytes;
+    const observedIsLegacy = activeEntry
+      && entry.previousSha256 !== activeSha256
+      && /^[a-f0-9]{64}$/u.test(String(entry.previousSha256 || ""))
+      && Number.isSafeInteger(entry.previousSizeBytes)
+      && entry.previousSizeBytes > 0;
+    if (
+      entry.path !== expectedPath
+      || JSON.stringify(intentEntry) !== JSON.stringify(entry)
+      || !(entry.previousSha256 === null || /^[a-f0-9]{64}$/u.test(entry.previousSha256))
+      || !Number.isSafeInteger(entry.previousSizeBytes)
+      || entry.previousSizeBytes < 0
+      || !/^[a-f0-9]{64}$/u.test(String(entry.sha256 || ""))
+      || !Number.isSafeInteger(entry.sizeBytes)
+      || entry.sizeBytes <= 0
+      || (!observedIsActive && !observedIsLegacy)
+      || !manifestEntry
+      || manifestEntry.expectedPreviousSha256 !== activeSha256
+      || manifestEntry.sha256 !== entry.sha256
+      || manifestEntry.sizeBytes !== entry.sizeBytes
+    ) fail("SOURCE_UPDATE_START_OVERLAY_RECEIPT_FILE_INVALID", expectedPath);
+    if (!activeEntry && (entry.previousSha256 !== null || entry.previousSizeBytes !== 0)) {
+      fail("SOURCE_UPDATE_START_OVERLAY_RECEIPT_FILE_INVALID", expectedPath);
+    }
+    if (observedIsLegacy) legacyRequired.push({ expectedPath, activeEntry, entry });
+    attested.set(windowsPathKey(expectedPath), Object.freeze({ ...entry }));
+  }
+
+  if (legacyRequired.length > 0) {
+    const legacyIntentRelative = `repairs/${LEGACY_START_AUTOMATION_REPAIR_ID}.intent.json`;
+    const legacyReceiptRelative = `repairs/${LEGACY_START_AUTOMATION_REPAIR_ID}.json`;
+    const legacyIntentTarget = await assertSafeExistingTarget(
+      path.resolve(productRoot),
+      `SYSTEM/.bonni-source-update/${legacyIntentRelative}`,
+    );
+    if (!await existingRegularFile(legacyIntentTarget, legacyIntentRelative)) {
+      fail("SOURCE_UPDATE_LEGACY_START_OVERLAY_INTENT_MISSING");
+    }
+    const legacyIntent = await readExistingStateJson(
+      productRoot,
+      legacyIntentRelative,
+      "SOURCE_UPDATE_LEGACY_START_OVERLAY_INTENT_INVALID",
+    );
+    const legacyReceipt = await readExistingStateJson(
+      productRoot,
+      legacyReceiptRelative,
+      "SOURCE_UPDATE_LEGACY_START_OVERLAY_RECEIPT_INVALID",
+    );
+    assertExactKeys(legacyIntent, new Set([
+      "schemaVersion", "repairId", "predecessor", "createdAt", "backupPath", "files",
+    ]), "legacy-start-automation-repair-intent");
+    assertExactKeys(legacyReceipt, new Set([
+      "schemaVersion", "repairId", "coreVersion", "predecessor", "installedAt",
+      "backupPath", "archivedRuntimeReceipt", "intentSha256", "files",
+    ]), "legacy-start-automation-repair-receipt");
+    if (
+      legacyIntent.schemaVersion !== LEGACY_START_AUTOMATION_REPAIR_INTENT_SCHEMA
+      || legacyIntent.repairId !== LEGACY_START_AUTOMATION_REPAIR_ID
+      || JSON.stringify(legacyIntent.predecessor) !== JSON.stringify(START_AUTOMATION_PREDECESSOR)
+      || typeof legacyIntent.createdAt !== "string"
+      || !Number.isFinite(Date.parse(legacyIntent.createdAt))
+      || new Date(Date.parse(legacyIntent.createdAt)).toISOString() !== legacyIntent.createdAt
+      || typeof legacyIntent.backupPath !== "string"
+      || !/^BACKUP\/start-automation-repair-[A-Za-z0-9-]+$/u.test(legacyIntent.backupPath)
+      || legacyReceipt.schemaVersion !== LEGACY_START_AUTOMATION_REPAIR_SCHEMA
+      || legacyReceipt.repairId !== LEGACY_START_AUTOMATION_REPAIR_ID
+      || legacyReceipt.coreVersion !== "0.1.20"
+      || JSON.stringify(legacyReceipt.predecessor) !== JSON.stringify(START_AUTOMATION_PREDECESSOR)
+      || legacyReceipt.backupPath !== legacyIntent.backupPath
+      || legacyReceipt.intentSha256 !== await sha256File(legacyIntentTarget)
+      || !Array.isArray(legacyIntent.files)
+      || !Array.isArray(legacyReceipt.files)
+      || legacyIntent.files.length !== legacyRequired.length
+      || legacyReceipt.files.length !== legacyRequired.length
+    ) fail("SOURCE_UPDATE_LEGACY_START_OVERLAY_RECEIPT_INVALID");
+    for (let index = 0; index < legacyRequired.length; index += 1) {
+      const expected = legacyRequired[index];
+      const legacyIntentEntry = legacyIntent.files[index];
+      const legacyReceiptEntry = legacyReceipt.files[index];
+      assertExactKeys(legacyIntentEntry, new Set([
+        "path", "previousSha256", "previousSizeBytes", "sha256", "sizeBytes",
+      ]), `legacy-start-automation-repair-intent.files[${index}]`);
+      assertExactKeys(legacyReceiptEntry, new Set([
+        "path", "previousSha256", "previousSizeBytes", "sha256", "sizeBytes",
+      ]), `legacy-start-automation-repair-receipt.files[${index}]`);
+      if (
+        JSON.stringify(legacyIntentEntry) !== JSON.stringify(legacyReceiptEntry)
+        || legacyReceiptEntry.path !== expected.expectedPath
+        || legacyReceiptEntry.previousSha256 !== expected.activeEntry.sha256
+        || legacyReceiptEntry.previousSizeBytes !== expected.activeEntry.sizeBytes
+        || legacyReceiptEntry.sha256 !== expected.entry.previousSha256
+        || legacyReceiptEntry.sizeBytes !== expected.entry.previousSizeBytes
+      ) fail("SOURCE_UPDATE_LEGACY_START_OVERLAY_RECEIPT_FILE_INVALID", expected.expectedPath);
+    }
+  }
+  return attested;
+}
+
 async function writeStateJson(productRoot, relativeToState, value) {
   return writeJsonAtomic(await stateFileTarget(productRoot, relativeToState), value);
 }
@@ -885,9 +1450,15 @@ async function readVerifiedCommitState(productRoot, pending) {
     `history/${pending.updateId}.json`,
     "SOURCE_UPDATE_HISTORY_INVALID",
   );
+  const activeMatchesCommit = active?.updateId === pending.updateId
+    && active?.manifestSha256 === pending.manifestSha256;
+  const completedRollback = !activeMatchesCommit
+    && await isCompletedLocalSourceDeploymentRollback({
+      productRoot,
+      transaction: pending,
+    });
   if (
-    active?.updateId !== pending.updateId
-    || active?.manifestSha256 !== pending.manifestSha256
+    (!activeMatchesCommit && !completedRollback)
     || receipt?.status !== "COMPLETED"
     || receipt?.manifestSha256 !== pending.manifestSha256
   ) {
@@ -1278,6 +1849,36 @@ async function recoverIncompleteTransactions(productRoot) {
       continue;
     }
     if (["applied", "committed"].includes(journal.status)) {
+      const lifecycleIntent = await readExistingLocalDeploymentLifecycleIntent(productRoot);
+      if (lifecycleIntent) {
+        const intentManifest = await readJournalManifest(productRoot, journal);
+        if (
+          lifecycleIntent.updateId !== journal.updateId
+          || lifecycleIntent.manifestSha256 !== journal.manifestSha256
+          || !sameVersionObject(lifecycleIntent.from, intentManifest.from)
+          || !sameVersionObject(lifecycleIntent.to, intentManifest.to)
+        ) fail("SOURCE_UPDATE_LOCAL_DEPLOYMENT_INTENT_MISMATCH", journal.updateId);
+        await writeStateJson(productRoot, "pending-update.json", {
+          schemaVersion: SOURCE_UPDATE_SCHEMA,
+          updateId: journal.updateId,
+          manifestSha256: journal.manifestSha256,
+          packagePath: journal.packagePath,
+          transactionPath: journal.transactionPath,
+          phase: journal.status === "committed" ? "committed" : "applied",
+          handoffToken: journal.handoffToken,
+          appliedAt: journal.appliedAt,
+          ...(journal.status === "committed" ? {
+            committedAt: journal.committedAt,
+          } : {}),
+          cleanupCandidates: normalizeCleanupCandidates(journal.cleanupCandidates, {
+            packagePath: journal.packagePath,
+            transactionPath: journal.transactionPath,
+          }),
+        });
+        return true;
+      }
+    }
+    if (["applied", "committed"].includes(journal.status)) {
       const active = await readStateJson(productRoot, "active-manifest.json", "SOURCE_UPDATE_ACTIVE_STATE_INVALID");
       const receipt = await readStateJson(
         productRoot,
@@ -1421,7 +2022,7 @@ async function readCompletedHistoryReceipt(productRoot, updateId) {
   );
   validateReleaseNotes(receipt.releaseNotes);
   const updateMetadata = validateCompletedUpdateMetadata(receipt.updateMetadata);
-  if (updateMetadata && !sameVersionObject(updateMetadata.to, receipt.versions)) {
+  if (updateMetadata && !versionObjectMatchesManifest(receipt.versions, updateMetadata.to, updateMetadata)) {
     fail("SOURCE_UPDATE_COMPLETED_METADATA_INVALID", updateId);
   }
   normalizeActiveState(receipt);
@@ -1456,6 +2057,16 @@ function sameVersionObject(left, right) {
     && left?.kontorAppVersion === right?.kontorAppVersion;
 }
 
+function manifestManagesKontor(manifest) {
+  return manifest.components.some((component) => component.path === "SYSTEM/app/kontorapp");
+}
+
+function versionObjectMatchesManifest(actual, expected, manifest) {
+  return actual?.coreVersion === expected?.coreVersion
+    && (!manifestManagesKontor(manifest)
+      || actual?.kontorAppVersion === expected?.kontorAppVersion);
+}
+
 function sameManagedSnapshot(left, right) {
   if (!sameLocalDeploymentLifecycleMarker(left, right)) return false;
   const normalizedLeft = normalizeActiveState(left);
@@ -1484,7 +2095,7 @@ function sameManagedSnapshot(left, right) {
 }
 
 function assertCompletedReceiptMatchesManifest(receipt, manifest, { completedRollback = false } = {}) {
-  if (!sameVersionObject(receipt.versions, manifest.to)) {
+  if (!versionObjectMatchesManifest(receipt.versions, manifest.to, manifest)) {
     fail("SOURCE_UPDATE_COMPLETED_RECEIPT_MISMATCH", manifest.updateId);
   }
   if (
@@ -1497,6 +2108,8 @@ function assertCompletedReceiptMatchesManifest(receipt, manifest, { completedRol
   const expectedMetadata = completedUpdateMetadataFromManifest(manifest);
   const recordedMetadata = validateCompletedUpdateMetadata(receipt.updateMetadata);
   if (recordedMetadata && (
+    recordedMetadata.createdAt !== expectedMetadata.createdAt
+    ||
     !sameVersionObject(recordedMetadata.from, expectedMetadata.from)
     || !sameVersionObject(recordedMetadata.to, expectedMetadata.to)
     || recordedMetadata.repair !== expectedMetadata.repair
@@ -1599,6 +2212,7 @@ async function planOperations({ productRoot, manifest, active }) {
   const normalizedActive = normalizeActiveState(active);
   const activeFiles = new Map(normalizedActive.files.map((entry) => [windowsPathKey(entry.path), entry]));
   const repairMode = manifest.payloadLayout === SOURCE_UPDATE_REPAIR_PAYLOAD_LAYOUT;
+  let startOverlayAttestation = null;
 
   const operations = [];
   const newPaths = new Set(manifest.files.map((entry) => windowsPathKey(entry.path)));
@@ -1639,14 +2253,35 @@ async function planOperations({ productRoot, manifest, active }) {
     }
     if (state) {
       const currentHash = await sha256File(target);
-      if (repairMode && currentHash === entry.sha256 && state.size === entry.sizeBytes) continue;
+      if (currentHash === entry.sha256 && state.size === entry.sizeBytes) {
+        // Ordinary unchanged inventory remains a no-op. Divergent target bytes
+        // are accepted only for the complete v2 controller overlay bound by
+        // its exact receipt. This includes exact new files whose active
+        // predecessor was explicitly absent; arbitrary partial targets remain
+        // fail-closed.
+        if (entry.expectedPreviousSha256 === entry.sha256) continue;
+        if (
+          oldManaged?.sha256 === entry.sha256
+          && oldManaged.sizeBytes === entry.sizeBytes
+        ) continue;
+        if (
+          START_AUTOMATION_OVERLAY_PATHS.includes(entry.path)
+          && entry.expectedPreviousSha256 === (oldManaged?.sha256 ?? null)
+        ) {
+          startOverlayAttestation ||= await assertStartAutomationOverlayAttestation({
+            productRoot,
+            manifest,
+            active,
+          });
+          if (startOverlayAttestation.has(windowsPathKey(entry.path))) continue;
+        }
+      }
       if (oldManaged && currentHash !== oldManaged.sha256) {
         fail("SOURCE_UPDATE_LOCAL_MODIFICATION_CONFLICT", entry.path);
       }
       if (!oldManaged && (entry.expectedPreviousSha256 === null || currentHash !== entry.expectedPreviousSha256)) {
         fail("SOURCE_UPDATE_PREVIOUS_HASH_CONFLICT", entry.path);
       }
-      if (currentHash === entry.sha256 && state.size === entry.sizeBytes) continue;
     } else if (oldManaged && !repairMode) {
       fail("SOURCE_UPDATE_MANAGED_FILE_MISSING", entry.path);
     } else if (!oldManaged && entry.expectedPreviousSha256 !== null) {
@@ -1767,6 +2402,15 @@ function assertDevelopmentEnvironment() {
   if (mode === "production") fail("SOURCE_UPDATE_DISABLED_IN_PRODUCTION");
 }
 
+function simulateFinalizeCrashForTest(step) {
+  if (
+    String(process.env.NODE_ENV || "").trim().toLocaleLowerCase("en-US") === "test"
+    && process.env.BONNI_SOURCE_UPDATE_TEST_CRASH_AFTER === step
+  ) {
+    fail("SOURCE_UPDATE_TEST_SIMULATED_CRASH", step);
+  }
+}
+
 export async function applyLocalSourceUpdate({
   productRoot,
   expectedUpdateId = null,
@@ -1790,11 +2434,70 @@ export async function applyLocalSourceUpdate({
     }
   };
   const resolvedProductRoot = path.resolve(productRoot);
-  const pending = await readPending(resolvedProductRoot);
+  const [pending, upfrontRawLifecycle, upfrontActive, upfrontIntent] = await Promise.all([
+    readExistingStateJson(
+      resolvedProductRoot,
+      "pending-update.json",
+      "SOURCE_UPDATE_PENDING_STATE_INVALID",
+    ),
+    readExistingLocalDeploymentLifecycle(resolvedProductRoot),
+    readExistingStateJson(
+      resolvedProductRoot,
+      "active-manifest.json",
+      "SOURCE_UPDATE_ACTIVE_STATE_INVALID",
+    ),
+    readExistingLocalDeploymentLifecycleIntent(resolvedProductRoot),
+  ]);
   if (pending) {
+    assertPendingLifecycleMutationAllowed({
+      pending,
+      rawLifecycle: upfrontRawLifecycle,
+      active: upfrontActive,
+      intent: upfrontIntent,
+    });
     const verifiedPending = await verifyPending(resolvedProductRoot, pending);
     assertExpectedProof(verifiedPending.updateId, verifiedPending.manifestSha256);
     return verifiedPending;
+  }
+
+  let lifecycle = null;
+  if (upfrontIntent) {
+    assertPreparedLifecycleIntentObservedState(upfrontIntent, upfrontRawLifecycle, upfrontActive);
+    if (!preflightOnly && await recoverIncompleteTransactions(resolvedProductRoot)) {
+      const recoveredPending = await readPending(resolvedProductRoot);
+      const verifiedPending = await verifyPending(resolvedProductRoot, recoveredPending);
+      assertExpectedProof(verifiedPending.updateId, verifiedPending.manifestSha256);
+      return verifiedPending;
+    }
+    fail("SOURCE_UPDATE_LOCAL_DEPLOYMENT_INTENT_PENDING", upfrontIntent.updateId);
+  } else {
+    lifecycle = assertLocalDeploymentLifecycleActiveState(upfrontRawLifecycle, upfrontActive);
+  }
+
+  const updateRoot = path.join(resolvedProductRoot, "UPDATE");
+  let locatedPackage = null;
+  let rawManifest = null;
+  let manifest = null;
+  let manifestSha256 = null;
+  if (lifecycle?.blocksUpdates === true) {
+    locatedPackage = await findPackage(updateRoot);
+    rawManifest = await readJson(locatedPackage.manifestPath, "SOURCE_UPDATE_MANIFEST_INVALID");
+    manifest = validateManifest(rawManifest);
+    manifestSha256 = await sha256File(locatedPackage.manifestPath);
+    assertExpectedProof(manifest.updateId, manifestSha256);
+    const allowedLifecycle = await assertLocalDeploymentAllowsUpdate({
+      productRoot: resolvedProductRoot,
+      manifest,
+      manifestSha256,
+      active: upfrontActive,
+      rawLifecycle: upfrontRawLifecycle,
+    });
+    await assertLocalSourceVersionTransition({
+      productRoot: resolvedProductRoot,
+      manifest,
+      active: upfrontActive,
+      lifecycle: allowedLifecycle,
+    });
   }
 
   const recoveredCommit = preflightOnly
@@ -1802,15 +2505,22 @@ export async function applyLocalSourceUpdate({
     : await recoverIncompleteTransactions(resolvedProductRoot);
   if (recoveredCommit) {
     const recoveredPending = await readPending(resolvedProductRoot);
+    assertPendingLifecycleMutationAllowed({
+      pending: recoveredPending,
+      rawLifecycle: upfrontRawLifecycle,
+      active: upfrontActive,
+      intent: await readExistingLocalDeploymentLifecycleIntent(resolvedProductRoot),
+    });
     const verifiedPending = await verifyPending(resolvedProductRoot, recoveredPending);
     assertExpectedProof(verifiedPending.updateId, verifiedPending.manifestSha256);
     return verifiedPending;
   }
-  const updateRoot = path.join(resolvedProductRoot, "UPDATE");
-  const { manifestPath, packageRoot } = await findPackage(updateRoot);
-  const rawManifest = await readJson(manifestPath, "SOURCE_UPDATE_MANIFEST_INVALID");
-  const manifest = validateManifest(rawManifest);
-  const manifestSha256 = await sha256File(manifestPath);
+
+  locatedPackage ||= await findPackage(updateRoot);
+  const { manifestPath, packageRoot } = locatedPackage;
+  rawManifest ||= await readJson(manifestPath, "SOURCE_UPDATE_MANIFEST_INVALID");
+  manifest ||= validateManifest(rawManifest);
+  manifestSha256 ||= await sha256File(manifestPath);
   assertExpectedProof(manifest.updateId, manifestSha256);
   const payloadRoot = await validatePayload({ packageRoot, manifest });
 
@@ -1852,21 +2562,17 @@ export async function applyLocalSourceUpdate({
   if (!backendPackage || backendPackage.version !== manifest.from.coreVersion) {
     fail("SOURCE_UPDATE_CORE_VERSION_MISMATCH", `${backendPackage?.version || "missing"}:${manifest.from.coreVersion}`);
   }
-  const kontorPackagePath = path.join(
-    resolvedProductRoot,
-    "SYSTEM",
-    "app",
-    "kontorapp",
-    "package.json",
-  );
-  const kontorPackage = await readJson(
-    kontorPackagePath,
-    "SOURCE_UPDATE_KONTOR_PACKAGE_INVALID",
-  );
   const updatesKontor = manifest.components.some(
     (component) => component.path === "SYSTEM/app/kontorapp",
   );
-  if (updatesKontor || kontorPackage) {
+  // A Core-only update must not be coupled to an independently installed app.
+  // The app version is authoritative only when the app itself is a managed
+  // component of this exact update.
+  if (updatesKontor) {
+    const kontorPackage = await readJson(
+      path.join(resolvedProductRoot, "SYSTEM", "app", "kontorapp", "package.json"),
+      "SOURCE_UPDATE_KONTOR_PACKAGE_INVALID",
+    );
     if (!kontorPackage || kontorPackage.version !== manifest.from.kontorAppVersion) {
       fail(
         "SOURCE_UPDATE_KONTOR_VERSION_MISMATCH",
@@ -1885,6 +2591,18 @@ export async function applyLocalSourceUpdate({
   ) {
     fail("SOURCE_UPDATE_REQUIRED_PREDECESSOR_MISSING", manifest.requires.updateId);
   }
+  const allowedLifecycle = await assertLocalDeploymentAllowsUpdate({
+    productRoot: resolvedProductRoot,
+    manifest,
+    manifestSha256,
+    active,
+  });
+  await assertLocalSourceVersionTransition({
+    productRoot: resolvedProductRoot,
+    manifest,
+    active,
+    lifecycle: allowedLifecycle,
+  });
   const operations = await planOperations({ productRoot: resolvedProductRoot, manifest, active });
   if (preflightOnly) {
     return Object.freeze({
@@ -2083,12 +2801,458 @@ function localDeploymentLifecyclePath() {
   return "deployment-lifecycle.json";
 }
 
+function localDeploymentLifecycleIntentPath() {
+  return "deployment-lifecycle-intent.json";
+}
+
+function jsonValueSha256(value) {
+  return createHash("sha256").update(JSON.stringify(value)).digest("hex");
+}
+
+function normalizeLocalDeploymentLifecycle(value, label = "deployment-lifecycle") {
+  if (!isPlainObject(value)) fail("SOURCE_UPDATE_LOCAL_DEPLOYMENT_LIFECYCLE_INVALID", label);
+  const status = value.status;
+  const activatedAt = Date.parse(String(value.activatedAt || ""));
+  const holdUntil = Date.parse(String(value.holdUntil || ""));
+  if (
+    value.schemaVersion !== LOCAL_DEPLOYMENT_LIFECYCLE_SCHEMA
+    || value.protocol !== "bonni-deployment-lifecycle/1"
+    || value.mode !== "local-source"
+    || !["holding", "rolling-back", "rolled-back", "finalized"].includes(status)
+    || value.state !== status
+    || !Number.isSafeInteger(value.generation)
+    || value.generation <= 0
+    || typeof value.holdId !== "string"
+    || !LOCAL_DEPLOYMENT_HOLD_ID.test(value.holdId)
+    || value.holdDays !== LOCAL_DEPLOYMENT_HOLD_DAYS
+    || !Number.isFinite(activatedAt)
+    || !Number.isFinite(holdUntil)
+    || holdUntil - activatedAt !== LOCAL_DEPLOYMENT_HOLD_MS
+    || !isValidCoreVersion(value.previousVersion)
+    || !isValidCoreVersion(value.targetVersion)
+    || typeof value.activeVersion !== "string"
+    || typeof value.sourceUpdateId !== "string"
+    || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$/u.test(value.sourceUpdateId)
+    || typeof value.sourceManifestSha256 !== "string"
+    || !/^[a-f0-9]{64}$/u.test(value.sourceManifestSha256)
+    || typeof value.rollbackUpdateId !== "string"
+    || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$/u.test(value.rollbackUpdateId)
+    || typeof value.rollbackManifestSha256 !== "string"
+    || !/^[a-f0-9]{64}$/u.test(value.rollbackManifestSha256)
+    || value.holdPath !== `deployment-holds/${value.holdId}`
+    || typeof value.blocksUpdates !== "boolean"
+    || typeof value.followUpdatesBlocked !== "boolean"
+    || typeof value.canFinalize !== "boolean"
+    || typeof value.canRollback !== "boolean"
+    || (value.rollbackIntentId !== undefined
+      && value.rollbackIntentId !== null
+      && (typeof value.rollbackIntentId !== "string" || !LOCAL_DEPLOYMENT_HOLD_ID.test(value.rollbackIntentId)))
+  ) fail("SOURCE_UPDATE_LOCAL_DEPLOYMENT_LIFECYCLE_INVALID", label);
+
+  const activeIsTarget = value.activeVersion === value.targetVersion;
+  const activeIsPrevious = value.activeVersion === value.previousVersion;
+  const blocked = value.blocksUpdates === true && value.followUpdatesBlocked === true;
+  const unblocked = value.blocksUpdates === false && value.followUpdatesBlocked === false;
+  if (
+    (status === "holding" && (!activeIsTarget || !blocked || !value.canFinalize || !value.canRollback || typeof value.blockReason !== "string" || !value.blockReason))
+    || (status === "rolling-back" && (!activeIsTarget || !blocked || value.canFinalize || value.canRollback || typeof value.blockReason !== "string" || !value.blockReason || !Number.isFinite(Date.parse(String(value.rollbackRequestedAt || "")))))
+    || (status === "finalized" && (!activeIsTarget || !unblocked || value.canFinalize || value.canRollback || value.blockReason !== null || !["developer", "automatic-14-day-expiry"].includes(value.finalizeReason) || !Number.isFinite(Date.parse(String(value.finalizedAt || "")))))
+    || (status === "rolled-back" && (!activeIsPrevious || !unblocked || value.canFinalize || value.canRollback || value.blockReason !== null || !Number.isFinite(Date.parse(String(value.rolledBackAt || "")))))
+  ) fail("SOURCE_UPDATE_LOCAL_DEPLOYMENT_LIFECYCLE_INVALID", `${label}.${status}`);
+  return value;
+}
+
+function normalizeLifecycleIntentActive(value, label) {
+  if (value === null) return null;
+  if (!isPlainObject(value)) fail("SOURCE_UPDATE_LOCAL_DEPLOYMENT_INTENT_INVALID", label);
+  normalizeActiveState(value);
+  validateVersionObject(value.versions, `${label}.versions`);
+  validateLocalDeploymentLifecycleMarker(value.localDeploymentLifecycle, `${label}.localDeploymentLifecycle`);
+  if (
+    typeof value.updateId !== "string"
+    || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$/u.test(value.updateId)
+    || typeof value.manifestSha256 !== "string"
+    || !/^[a-f0-9]{64}$/u.test(value.manifestSha256)
+    || typeof value.completedAt !== "string"
+    || !Number.isFinite(Date.parse(value.completedAt))
+  ) fail("SOURCE_UPDATE_LOCAL_DEPLOYMENT_INTENT_INVALID", label);
+  return value;
+}
+
+function normalizeLocalDeploymentLifecycleIntent(value) {
+  if (!isPlainObject(value)) fail("SOURCE_UPDATE_LOCAL_DEPLOYMENT_INTENT_INVALID");
+  assertExactKeys(value, new Set([
+    "schemaVersion",
+    "kind",
+    "updateId",
+    "manifestSha256",
+    "from",
+    "to",
+    "baseActiveSha256",
+    "baseActive",
+    "lifecycle",
+    "createdAt",
+  ]), "deployment-lifecycle-intent");
+  if (
+    value.schemaVersion !== LOCAL_DEPLOYMENT_LIFECYCLE_INTENT_SCHEMA
+    || !["activate", "rollback"].includes(value.kind)
+    || typeof value.updateId !== "string"
+    || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$/u.test(value.updateId)
+    || typeof value.manifestSha256 !== "string"
+    || !/^[a-f0-9]{64}$/u.test(value.manifestSha256)
+    || typeof value.baseActiveSha256 !== "string"
+    || !/^[a-f0-9]{64}$/u.test(value.baseActiveSha256)
+    || typeof value.createdAt !== "string"
+    || !Number.isFinite(Date.parse(value.createdAt))
+  ) fail("SOURCE_UPDATE_LOCAL_DEPLOYMENT_INTENT_INVALID");
+  const from = validateVersionObject(value.from, "deployment-lifecycle-intent.from");
+  const to = validateVersionObject(value.to, "deployment-lifecycle-intent.to");
+  const baseActive = normalizeLifecycleIntentActive(value.baseActive, "deployment-lifecycle-intent.baseActive");
+  if (jsonValueSha256(baseActive) !== value.baseActiveSha256) {
+    fail("SOURCE_UPDATE_LOCAL_DEPLOYMENT_INTENT_BASE_CHANGED");
+  }
+  const lifecycle = normalizeLocalDeploymentLifecycle(
+    value.lifecycle,
+    "deployment-lifecycle-intent.lifecycle",
+  );
+  if (
+    (value.kind === "activate" && (
+      lifecycle.status !== "holding"
+      || lifecycle.sourceUpdateId !== value.updateId
+      || lifecycle.sourceManifestSha256 !== value.manifestSha256
+      || lifecycle.previousVersion !== from.coreVersion
+      || lifecycle.targetVersion !== to.coreVersion
+    ))
+    || (value.kind === "rollback" && (
+      lifecycle.status !== "rolling-back"
+      || lifecycle.rollbackUpdateId !== value.updateId
+      || lifecycle.rollbackManifestSha256 !== value.manifestSha256
+      || lifecycle.targetVersion !== from.coreVersion
+      || lifecycle.previousVersion !== to.coreVersion
+    ))
+  ) fail("SOURCE_UPDATE_LOCAL_DEPLOYMENT_INTENT_MISMATCH");
+  return { ...value, from, to, baseActive, lifecycle };
+}
+
 async function readLocalDeploymentLifecycle(productRoot) {
   return readStateJson(
     productRoot,
     localDeploymentLifecyclePath(),
     "SOURCE_UPDATE_LOCAL_DEPLOYMENT_LIFECYCLE_INVALID",
   );
+}
+
+async function readExistingLocalDeploymentLifecycle(productRoot) {
+  return readExistingStateJson(
+    productRoot,
+    localDeploymentLifecyclePath(),
+    "SOURCE_UPDATE_LOCAL_DEPLOYMENT_LIFECYCLE_INVALID",
+  );
+}
+
+async function readLocalDeploymentLifecycleIntent(productRoot) {
+  const value = await readStateJson(
+    productRoot,
+    localDeploymentLifecycleIntentPath(),
+    "SOURCE_UPDATE_LOCAL_DEPLOYMENT_INTENT_INVALID",
+  );
+  return value === null ? null : normalizeLocalDeploymentLifecycleIntent(value);
+}
+
+async function readExistingLocalDeploymentLifecycleIntent(productRoot) {
+  const value = await readExistingStateJson(
+    productRoot,
+    localDeploymentLifecycleIntentPath(),
+    "SOURCE_UPDATE_LOCAL_DEPLOYMENT_INTENT_INVALID",
+  );
+  return value === null ? null : normalizeLocalDeploymentLifecycleIntent(value);
+}
+
+async function writeLocalDeploymentLifecycleIntent(productRoot, value) {
+  const normalized = normalizeLocalDeploymentLifecycleIntent(value);
+  await writeStateJson(productRoot, localDeploymentLifecycleIntentPath(), normalized);
+  return normalized;
+}
+
+function assertLifecycleIntentMatchesTransaction(intent, verified) {
+  if (
+    intent.updateId !== verified.updateId
+    || intent.manifestSha256 !== verified.manifestSha256
+    || !sameVersionObject(intent.from, verified.manifest.from)
+    || !sameVersionObject(intent.to, verified.manifest.to)
+  ) fail("SOURCE_UPDATE_LOCAL_DEPLOYMENT_INTENT_MISMATCH", verified.updateId);
+  return intent;
+}
+
+function createLocalDeploymentLifecycleIntent({ kind, verified, baseActive, lifecycle, createdAt }) {
+  return normalizeLocalDeploymentLifecycleIntent({
+    schemaVersion: LOCAL_DEPLOYMENT_LIFECYCLE_INTENT_SCHEMA,
+    kind,
+    updateId: verified.updateId,
+    manifestSha256: verified.manifestSha256,
+    from: verified.manifest.from,
+    to: verified.manifest.to,
+    baseActiveSha256: jsonValueSha256(baseActive),
+    baseActive,
+    lifecycle,
+    createdAt,
+  });
+}
+
+function assertActiveLifecycleIdentity(active, lifecycle, label) {
+  if (
+    !isPlainObject(active)
+    || active.updateId !== lifecycle.sourceUpdateId
+    || active.manifestSha256 !== lifecycle.sourceManifestSha256
+    || active.versions?.coreVersion !== lifecycle.targetVersion
+  ) fail("SOURCE_UPDATE_LOCAL_DEPLOYMENT_ACTIVE_MISMATCH", label);
+}
+
+function assertLocalDeploymentLifecycleActiveState(rawLifecycle, active) {
+  if (!rawLifecycle) {
+    if (active?.localDeploymentLifecycle !== undefined) {
+      validateLocalDeploymentLifecycleMarker(
+        active.localDeploymentLifecycle,
+        "active.localDeploymentLifecycle",
+      );
+      fail("SOURCE_UPDATE_LOCAL_DEPLOYMENT_LIFECYCLE_MISSING");
+    }
+    return null;
+  }
+  const lifecycle = normalizeLocalDeploymentLifecycle(rawLifecycle);
+  if (["holding", "rolling-back", "finalized"].includes(lifecycle.status)) {
+    assertActiveLifecycleIdentity(active, lifecycle, lifecycle.status);
+  } else if (!activeMatchesUpdateIdentity(
+    active,
+    lifecycle.rollbackUpdateId,
+    lifecycle.rollbackManifestSha256,
+    lifecycle.previousVersion,
+  )) {
+    fail("SOURCE_UPDATE_LOCAL_DEPLOYMENT_ACTIVE_MISMATCH", lifecycle.status);
+  }
+  return lifecycle;
+}
+
+function activeMatchesUpdateIdentity(active, updateId, manifestSha256, coreVersion) {
+  return Boolean(
+    isPlainObject(active)
+    && active.updateId === updateId
+    && active.manifestSha256 === manifestSha256
+    && active.versions?.coreVersion === coreVersion
+  );
+}
+
+function assertPreparedLifecycleIntentObservedState(intent, rawLifecycle, active) {
+  const normalizedLifecycle = rawLifecycle
+    ? normalizeLocalDeploymentLifecycle(rawLifecycle)
+    : null;
+  const activeIsBase = jsonValueSha256(active) === intent.baseActiveSha256;
+  const activeIsTarget = activeMatchesUpdateIdentity(
+    active,
+    intent.updateId,
+    intent.manifestSha256,
+    intent.to.coreVersion,
+  );
+  const activeIsCompletedRollback = intent.kind === "rollback"
+    && normalizedLifecycle?.status === "rolled-back"
+    && activeMatchesUpdateIdentity(
+      active,
+      intent.updateId,
+      intent.manifestSha256,
+      normalizedLifecycle.previousVersion,
+    );
+  if (!activeIsBase && !activeIsTarget && !activeIsCompletedRollback) {
+    fail("SOURCE_UPDATE_LOCAL_DEPLOYMENT_INTENT_ACTIVE_MISMATCH", intent.updateId);
+  }
+  if (!normalizedLifecycle) return;
+  const lifecycle = normalizedLifecycle;
+  if (intent.kind === "rollback") {
+    if (
+      !["rolling-back", "rolled-back"].includes(lifecycle.status)
+      || lifecycle.rollbackUpdateId !== intent.updateId
+      || lifecycle.rollbackManifestSha256 !== intent.manifestSha256
+    ) fail("SOURCE_UPDATE_LOCAL_DEPLOYMENT_INTENT_MISMATCH", intent.updateId);
+    return;
+  }
+  if (
+    lifecycle.sourceUpdateId === intent.updateId
+    && lifecycle.sourceManifestSha256 === intent.manifestSha256
+    && lifecycle.targetVersion === intent.to.coreVersion
+  ) return;
+  if (
+    !["finalized", "rolled-back"].includes(lifecycle.status)
+    || !intent.baseActive
+  ) fail("SOURCE_UPDATE_LOCAL_DEPLOYMENT_INTENT_MISMATCH", intent.updateId);
+  if (lifecycle.status === "finalized") {
+    assertActiveLifecycleIdentity(intent.baseActive, lifecycle, "intent-base");
+  } else if (intent.baseActive.versions?.coreVersion !== lifecycle.previousVersion) {
+    fail("SOURCE_UPDATE_LOCAL_DEPLOYMENT_INTENT_MISMATCH", intent.updateId);
+  }
+}
+
+function assertPendingLifecycleMutationAllowed({ pending, rawLifecycle, active, intent }) {
+  if (intent) {
+    if (
+      intent.updateId !== pending?.updateId
+      || intent.manifestSha256 !== pending?.manifestSha256
+    ) fail("SOURCE_UPDATE_LOCAL_DEPLOYMENT_INTENT_MISMATCH", String(pending?.updateId || "unknown"));
+    assertPreparedLifecycleIntentObservedState(intent, rawLifecycle, active);
+    return;
+  }
+  const lifecycle = assertLocalDeploymentLifecycleActiveState(rawLifecycle, active);
+  if (!lifecycle) return;
+  const exactForward = pending?.updateId === lifecycle.sourceUpdateId
+    && pending?.manifestSha256 === lifecycle.sourceManifestSha256;
+  const exactRollback = pending?.updateId === lifecycle.rollbackUpdateId
+    && pending?.manifestSha256 === lifecycle.rollbackManifestSha256;
+  if (
+    (lifecycle.status === "holding" && exactForward)
+    || (lifecycle.status === "rolling-back" && exactRollback)
+    || (lifecycle.status === "finalized" && exactForward)
+    || (lifecycle.status === "rolled-back" && exactRollback)
+  ) return;
+  fail("SOURCE_UPDATE_LOCAL_DEPLOYMENT_HOLD_ACTIVE", lifecycle.holdId);
+}
+
+async function assertLocalDeploymentAllowsUpdate({
+  productRoot,
+  manifest,
+  manifestSha256,
+  active,
+  rawLifecycle: suppliedLifecycle,
+}) {
+  const rawLifecycle = suppliedLifecycle === undefined
+    ? await readLocalDeploymentLifecycle(productRoot)
+    : suppliedLifecycle;
+  const lifecycle = assertLocalDeploymentLifecycleActiveState(rawLifecycle, active);
+  if (!lifecycle) return null;
+
+  if (lifecycle.status === "holding") {
+    fail("SOURCE_UPDATE_LOCAL_DEPLOYMENT_HOLD_ACTIVE", lifecycle.holdId);
+  }
+  if (lifecycle.status === "rolling-back") {
+    if (
+      manifest.updateId !== lifecycle.rollbackUpdateId
+      || manifestSha256 !== lifecycle.rollbackManifestSha256
+      || manifest.from.coreVersion !== lifecycle.targetVersion
+      || manifest.to.coreVersion !== lifecycle.previousVersion
+    ) fail("SOURCE_UPDATE_LOCAL_DEPLOYMENT_ROLLBACK_MISMATCH", manifest.updateId);
+    return lifecycle;
+  }
+  return lifecycle;
+}
+
+async function installedLocalSourceCreatedAt({ productRoot, manifest, active }) {
+  if (active) {
+    if (
+      typeof active.updateId !== "string"
+      || typeof active.manifestSha256 !== "string"
+      || !/^[a-f0-9]{64}$/u.test(active.manifestSha256)
+    ) fail("SOURCE_UPDATE_ACTIVE_STATE_INVALID", "same-version-baseline");
+    let receipt;
+    try {
+      receipt = await readCompletedHistoryReceipt(productRoot, active.updateId);
+    } catch (error) {
+      if (error?.code !== "ENOENT") throw error;
+    }
+    if (
+      !receipt
+      || receipt.manifestSha256 !== active.manifestSha256
+      || !receipt.updateMetadata?.createdAt
+    ) fail("SOURCE_UPDATE_BASELINE_TIMESTAMP_MISSING", active.updateId);
+    return boundedSourceTimestamp(
+      receipt.updateMetadata.createdAt,
+      "history-receipt.updateMetadata.createdAt",
+      "SOURCE_UPDATE_BASELINE_TIMESTAMP_INVALID",
+      "SOURCE_UPDATE_BASELINE_TIMESTAMP_IN_FUTURE",
+    );
+  }
+
+  const receipt = await readStateJson(
+    productRoot,
+    "offline-full-install.json",
+    "SOURCE_UPDATE_OFFLINE_FOUNDATION_INVALID",
+  );
+  if (!receipt) fail("SOURCE_UPDATE_BASELINE_TIMESTAMP_MISSING", manifest.from.coreVersion);
+  assertExactKeys(receipt, new Set([
+    "schema",
+    "installId",
+    "version",
+    "completedAt",
+    "imageCreatedAt",
+    "imageTreeSha256",
+    "note",
+  ]), "offline-full-install");
+  if (
+    receipt.schema !== "bonni.offline-full-install/v1"
+    || receipt.version !== manifest.from.coreVersion
+    || typeof receipt.installId !== "string"
+    || !receipt.installId
+    || typeof receipt.imageTreeSha256 !== "string"
+    || !/^[a-f0-9]{64}$/u.test(receipt.imageTreeSha256)
+  ) fail("SOURCE_UPDATE_OFFLINE_FOUNDATION_INVALID");
+  canonicalUtcTimestamp(
+    receipt.completedAt,
+    "offline-full-install.completedAt",
+    "SOURCE_UPDATE_OFFLINE_FOUNDATION_INVALID",
+  );
+  return boundedSourceTimestamp(
+    receipt.imageCreatedAt,
+    "offline-full-install.imageCreatedAt",
+    "SOURCE_UPDATE_BASELINE_TIMESTAMP_INVALID",
+    "SOURCE_UPDATE_BASELINE_TIMESTAMP_IN_FUTURE",
+  );
+}
+
+async function assertLocalSourceVersionTransition({
+  productRoot,
+  manifest,
+  active,
+  lifecycle,
+}) {
+  const coreOrder = compareBonniReleaseVersion(
+    manifest.to.coreVersion,
+    manifest.from.coreVersion,
+  );
+  const kontorOrder = manifestManagesKontor(manifest)
+    ? compareStrictSemVer(manifest.to.kontorAppVersion, manifest.from.kontorAppVersion)
+    : 0;
+  const exactLifecycleRollback = lifecycle?.status === "rolling-back";
+
+  if (coreOrder < 0) {
+    if (!exactLifecycleRollback) {
+      fail(
+        "SOURCE_UPDATE_DOWNGRADE_FORBIDDEN",
+        `${manifest.from.coreVersion}:${manifest.to.coreVersion}`,
+      );
+    }
+    return;
+  }
+  if (kontorOrder < 0) {
+    if (exactLifecycleRollback) return;
+    fail(
+      "SOURCE_UPDATE_APP_DOWNGRADE_FORBIDDEN",
+      `${manifest.from.kontorAppVersion}:${manifest.to.kontorAppVersion}`,
+    );
+  }
+  if (coreOrder > 0) return;
+
+  if (active && (
+    manifest.requires?.updateId !== active.updateId
+    || manifest.requires?.manifestSha256 !== active.manifestSha256
+  )) fail("SOURCE_UPDATE_SAME_VERSION_PREDECESSOR_REQUIRED", manifest.updateId);
+
+  const currentCreatedAt = await installedLocalSourceCreatedAt({
+    productRoot,
+    manifest,
+    active,
+  });
+  if (Date.parse(manifest.createdAt) <= Date.parse(currentCreatedAt)) {
+    fail(
+      "SOURCE_UPDATE_SAME_VERSION_NOT_NEWER",
+      `${manifest.createdAt}:${currentCreatedAt}`,
+    );
+  }
 }
 
 async function prepareLocalSourceRollbackHold({
@@ -2101,18 +3265,18 @@ async function prepareLocalSourceRollbackHold({
   const rollbackUpdateId = `${manifest.updateId}-rollback`;
   if (rollbackUpdateId.length > 80) fail("SOURCE_UPDATE_ROLLBACK_ID_TOO_LONG", rollbackUpdateId);
 
-  const existingLifecycle = await readLocalDeploymentLifecycle(productRoot).catch((error) => {
-    if (String(error?.message || "").includes("ENOENT")) return null;
-    throw error;
-  });
-  if (existingLifecycle?.blocksUpdates === true && existingLifecycle?.status !== "finalized") {
-    fail("SOURCE_UPDATE_LOCAL_DEPLOYMENT_HOLD_ALREADY_ACTIVE", String(existingLifecycle.holdId || "unknown"));
+  const rawExistingLifecycle = await readLocalDeploymentLifecycle(productRoot);
+  const existingLifecycle = rawExistingLifecycle
+    ? normalizeLocalDeploymentLifecycle(rawExistingLifecycle, "previous-deployment-lifecycle")
+    : null;
+  if (existingLifecycle && !["finalized", "rolled-back"].includes(existingLifecycle.status)) {
+    fail("SOURCE_UPDATE_LOCAL_DEPLOYMENT_HOLD_ALREADY_ACTIVE", existingLifecycle.holdId);
   }
 
   const generation = Number.isSafeInteger(existingLifecycle?.generation)
     ? existingLifecycle.generation + 1
     : 1;
-  const holdId = `local-${Date.now()}-${randomBytes(12).toString("hex")}`;
+  const holdId = `local-${verified.manifestSha256.slice(0, 32)}-${jsonValueSha256(verified.updateId).slice(0, 16)}`;
   const holdRelativeRoot = `deployment-holds/${holdId}`;
   const holdMarker = await stateFileTarget(productRoot, `deployment-holds/${holdId}.placeholder`);
   const holdRoot = path.join(path.dirname(holdMarker), holdId);
@@ -2127,9 +3291,35 @@ async function prepareLocalSourceRollbackHold({
     );
     const rollbackFiles = [];
     const rollbackDelete = [];
+    let startOverlayAttestation = null;
 
     for (const entry of manifest.files) {
       if (entry.expectedPreviousSha256 === null) {
+        const operation = operationsByPath.get(windowsPathKey(entry.path));
+        if (!operation) {
+          startOverlayAttestation ||= await assertStartAutomationOverlayAttestation({
+            productRoot,
+            manifest,
+            active: previousActive,
+          });
+          if (!startOverlayAttestation.has(windowsPathKey(entry.path))) {
+            fail("SOURCE_UPDATE_ROLLBACK_BACKUP_MISSING", entry.path);
+          }
+          // The v2 repair proves that this path was absent in immutable u-020
+          // and installed it before the update. It is therefore part of the
+          // repaired predecessor, not a file introduced by this update. Keep
+          // the exact repaired target on rollback.
+          rollbackFiles.push({
+            path: entry.path,
+            sizeBytes: entry.sizeBytes,
+            sha256: entry.sha256,
+            expectedPreviousSha256: entry.sha256,
+          });
+          continue;
+        }
+        if (operation.action !== "write" || operation.existed || operation.previousSha256 !== null) {
+          fail("SOURCE_UPDATE_ROLLBACK_BACKUP_MISSING", entry.path);
+        }
         rollbackDelete.push({
           path: entry.path,
           expectedSha256: entry.sha256,
@@ -2142,6 +3332,25 @@ async function prepareLocalSourceRollbackHold({
       let sizeBytes = entry.sizeBytes;
       if (changed) {
         const operation = operationsByPath.get(windowsPathKey(entry.path));
+        if (!operation) {
+          startOverlayAttestation ||= await assertStartAutomationOverlayAttestation({
+            productRoot,
+            manifest,
+            active: previousActive,
+          });
+          if (!startOverlayAttestation.has(windowsPathKey(entry.path))) {
+            fail("SOURCE_UPDATE_ROLLBACK_BACKUP_MISSING", entry.path);
+          }
+          // The receipt makes this target part of the repaired predecessor
+          // baseline, so it survives rollback without requiring an old backup.
+          rollbackFiles.push({
+            path: entry.path,
+            sizeBytes: entry.sizeBytes,
+            sha256: entry.sha256,
+            expectedPreviousSha256: entry.sha256,
+          });
+          continue;
+        }
         if (!operation?.existed || operation.previousSha256 !== entry.expectedPreviousSha256) {
           fail("SOURCE_UPDATE_ROLLBACK_BACKUP_MISSING", entry.path);
         }
@@ -2204,6 +3413,7 @@ async function prepareLocalSourceRollbackHold({
       status: UPDATE_STATUS,
       updateId: rollbackUpdateId,
       channel: UPDATE_CHANNEL,
+      createdAt: canonicalUtcTimestamp(activatedAt, "rollback-manifest.createdAt"),
       payloadLayout: SOURCE_UPDATE_PAYLOAD_LAYOUT,
       requires: {
         updateId: verified.updateId,
@@ -2228,7 +3438,7 @@ async function prepareLocalSourceRollbackHold({
       files: rollbackFiles,
       delete: rollbackDelete,
     };
-    validateManifest(rollbackManifest);
+    const normalizedRollbackManifest = validateManifest(rollbackManifest);
     const manifestPath = path.join(packageRoot, MANIFEST_NAME);
     await fs.writeFile(manifestPath, `${JSON.stringify(rollbackManifest, null, 2)}\n`, {
       encoding: "utf8",
@@ -2237,15 +3447,48 @@ async function prepareLocalSourceRollbackHold({
     await syncRegularFile(manifestPath);
     const rollbackManifestSha256 = await sha256File(manifestPath);
     await writeJsonAtomic(path.join(stagingRoot, "previous-active-manifest.json"), previousActive);
-    await writeJsonAtomic(path.join(stagingRoot, "hold.json"), {
+    const holdMetadata = {
       schemaVersion: LOCAL_DEPLOYMENT_LIFECYCLE_SCHEMA,
       holdId,
       generation,
+      sourceUpdateId: verified.updateId,
+      sourceManifestSha256: verified.manifestSha256,
       rollbackUpdateId,
       rollbackManifestSha256,
+      previousActiveSha256: jsonValueSha256(previousActive),
+    };
+    await writeJsonAtomic(path.join(stagingRoot, "hold.json"), holdMetadata);
+    const existingHold = await fs.lstat(holdRoot).catch((error) => {
+      if (error?.code === "ENOENT") return null;
+      throw error;
     });
-    await fs.rename(stagingRoot, holdRoot);
-    await syncDirectory(path.dirname(holdRoot));
+    if (existingHold) {
+      if (!existingHold.isDirectory() || existingHold.isSymbolicLink()) {
+        fail("SOURCE_UPDATE_ROLLBACK_HOLD_UNSAFE", holdId);
+      }
+      const existingManifestPath = path.join(holdRoot, "package", MANIFEST_NAME);
+      const existingPreviousActive = await readJson(
+        path.join(holdRoot, "previous-active-manifest.json"),
+        "SOURCE_UPDATE_ROLLBACK_PREVIOUS_ACTIVE_INVALID",
+      );
+      const existingMetadata = await readJson(
+        path.join(holdRoot, "hold.json"),
+        "SOURCE_UPDATE_ROLLBACK_HOLD_INVALID",
+      );
+      if (
+        await sha256File(existingManifestPath) !== rollbackManifestSha256
+        || jsonValueSha256(existingPreviousActive) !== holdMetadata.previousActiveSha256
+        || JSON.stringify(existingMetadata) !== JSON.stringify(holdMetadata)
+      ) fail("SOURCE_UPDATE_ROLLBACK_HOLD_COLLISION", holdId);
+      await validatePayload({
+        packageRoot: path.join(holdRoot, "package"),
+        manifest: normalizedRollbackManifest,
+      });
+      await fs.rm(stagingRoot, { recursive: true, force: true });
+    } else {
+      await fs.rename(stagingRoot, holdRoot);
+      await syncDirectory(path.dirname(holdRoot));
+    }
 
     const holdUntil = new Date(Date.parse(activatedAt) + LOCAL_DEPLOYMENT_HOLD_MS).toISOString();
     return {
@@ -2280,10 +3523,12 @@ async function prepareLocalSourceRollbackHold({
 }
 
 export async function isLocalSourceDeploymentRollback({ productRoot, transaction }) {
-  const lifecycle = await readLocalDeploymentLifecycle(path.resolve(productRoot)).catch(() => null);
+  const rawLifecycle = await readLocalDeploymentLifecycle(path.resolve(productRoot));
+  const lifecycle = rawLifecycle
+    ? normalizeLocalDeploymentLifecycle(rawLifecycle, "rollback-detection")
+    : null;
   return Boolean(
     lifecycle
-    && lifecycle.schemaVersion === LOCAL_DEPLOYMENT_LIFECYCLE_SCHEMA
     && lifecycle.status === "rolling-back"
     && transaction?.updateId === lifecycle.rollbackUpdateId
     && transaction?.manifestSha256 === lifecycle.rollbackManifestSha256,
@@ -2291,10 +3536,12 @@ export async function isLocalSourceDeploymentRollback({ productRoot, transaction
 }
 
 async function isCompletedLocalSourceDeploymentRollback({ productRoot, transaction }) {
-  const lifecycle = await readLocalDeploymentLifecycle(path.resolve(productRoot)).catch(() => null);
+  const rawLifecycle = await readLocalDeploymentLifecycle(path.resolve(productRoot));
+  const lifecycle = rawLifecycle
+    ? normalizeLocalDeploymentLifecycle(rawLifecycle, "completed-rollback-detection")
+    : null;
   return Boolean(
     lifecycle
-    && lifecycle.schemaVersion === LOCAL_DEPLOYMENT_LIFECYCLE_SCHEMA
     && ["rolling-back", "rolled-back"].includes(lifecycle.status)
     && transaction?.updateId === lifecycle.rollbackUpdateId
     && transaction?.manifestSha256 === lifecycle.rollbackManifestSha256,
@@ -2302,22 +3549,48 @@ async function isCompletedLocalSourceDeploymentRollback({ productRoot, transacti
 }
 
 async function completeLocalSourceDeploymentRollback({ productRoot, verified, completedAt }) {
-  const lifecycle = await readLocalDeploymentLifecycle(productRoot).catch(() => null);
+  const rawLifecycle = await readLocalDeploymentLifecycle(productRoot);
+  const lifecycle = rawLifecycle
+    ? normalizeLocalDeploymentLifecycle(rawLifecycle, "rollback-completion")
+    : null;
   if (
     !lifecycle
-    || lifecycle.schemaVersion !== LOCAL_DEPLOYMENT_LIFECYCLE_SCHEMA
-    || lifecycle.status !== "rolling-back"
+    || !["rolling-back", "rolled-back"].includes(lifecycle.status)
     || verified.updateId !== lifecycle.rollbackUpdateId
     || verified.manifestSha256 !== lifecycle.rollbackManifestSha256
-  ) return null;
+  ) fail("SOURCE_UPDATE_LOCAL_DEPLOYMENT_ROLLBACK_MISMATCH", verified.updateId);
 
-  const previousActive = await readStateJson(
+  if (lifecycle.status === "rolled-back") {
+    const restoredActive = await readStateJson(
+      productRoot,
+      "active-manifest.json",
+      "SOURCE_UPDATE_ACTIVE_STATE_INVALID",
+    );
+    normalizeLifecycleIntentActive(restoredActive, "rolled-back-active");
+    if (!activeMatchesUpdateIdentity(
+      restoredActive,
+      lifecycle.rollbackUpdateId,
+      lifecycle.rollbackManifestSha256,
+      lifecycle.previousVersion,
+    )) {
+      fail("SOURCE_UPDATE_LOCAL_DEPLOYMENT_ACTIVE_MISMATCH", "rolled-back");
+    }
+    return restoredActive;
+  }
+
+  const restoredActive = await readStateJson(
     productRoot,
-    `${lifecycle.holdPath}/previous-active-manifest.json`,
-    "SOURCE_UPDATE_ROLLBACK_PREVIOUS_ACTIVE_INVALID",
+    "active-manifest.json",
+    "SOURCE_UPDATE_ACTIVE_STATE_INVALID",
   );
-  normalizeActiveState(previousActive);
-  await writeStateJson(productRoot, "active-manifest.json", previousActive);
+  normalizeLifecycleIntentActive(restoredActive, "rollback-completed-active");
+  if (
+    restoredActive.updateId !== verified.updateId
+    || restoredActive.manifestSha256 !== verified.manifestSha256
+    || restoredActive.versions.coreVersion !== lifecycle.previousVersion
+  ) {
+    fail("SOURCE_UPDATE_LOCAL_DEPLOYMENT_ACTIVE_MISMATCH", "rollback-completed");
+  }
   const completedLifecycle = {
     ...lifecycle,
     status: "rolled-back",
@@ -2331,20 +3604,235 @@ async function completeLocalSourceDeploymentRollback({ productRoot, verified, co
     canRollback: false,
     blockReason: null,
   };
-  await writeStateJson(productRoot, localDeploymentLifecyclePath(), completedLifecycle);
-  await removeInternalDirectory(
+  await writeStateJson(
+    productRoot,
+    localDeploymentLifecyclePath(),
+    normalizeLocalDeploymentLifecycle(completedLifecycle, "rollback-completed"),
+  );
+  return restoredActive;
+}
+
+async function assertPreparedLocalSourceRollbackHold(productRoot, intent) {
+  const { lifecycle } = intent;
+  const holdRoot = await assertSafeExistingTarget(
     productRoot,
     `SYSTEM/.bonni-source-update/${lifecycle.holdPath}`,
-    "SYSTEM/.bonni-source-update/deployment-holds",
   );
-  return previousActive;
+  const holdState = await fs.lstat(holdRoot).catch((error) => {
+    if (error?.code === "ENOENT") return null;
+    throw error;
+  });
+  if (!holdState?.isDirectory() || holdState.isSymbolicLink()) {
+    fail("SOURCE_UPDATE_ROLLBACK_HOLD_MISSING", lifecycle.holdId);
+  }
+  const metadata = await readJson(
+    path.join(holdRoot, "hold.json"),
+    "SOURCE_UPDATE_ROLLBACK_HOLD_INVALID",
+  );
+  assertExactKeys(metadata, new Set([
+    "schemaVersion",
+    "holdId",
+    "generation",
+    "sourceUpdateId",
+    "sourceManifestSha256",
+    "rollbackUpdateId",
+    "rollbackManifestSha256",
+    "previousActiveSha256",
+  ]), "rollback-hold");
+  if (
+    metadata.schemaVersion !== LOCAL_DEPLOYMENT_LIFECYCLE_SCHEMA
+    || metadata.holdId !== lifecycle.holdId
+    || metadata.generation !== lifecycle.generation
+    || metadata.sourceUpdateId !== lifecycle.sourceUpdateId
+    || metadata.sourceManifestSha256 !== lifecycle.sourceManifestSha256
+    || metadata.rollbackUpdateId !== lifecycle.rollbackUpdateId
+    || metadata.rollbackManifestSha256 !== lifecycle.rollbackManifestSha256
+    || metadata.previousActiveSha256 !== intent.baseActiveSha256
+  ) fail("SOURCE_UPDATE_ROLLBACK_HOLD_INVALID", lifecycle.holdId);
+
+  const previousActive = await readJson(
+    path.join(holdRoot, "previous-active-manifest.json"),
+    "SOURCE_UPDATE_ROLLBACK_PREVIOUS_ACTIVE_INVALID",
+  );
+  if (jsonValueSha256(previousActive) !== intent.baseActiveSha256) {
+    fail("SOURCE_UPDATE_ROLLBACK_PREVIOUS_ACTIVE_INVALID", lifecycle.holdId);
+  }
+  const packageRoot = path.join(holdRoot, "package");
+  const manifestPath = path.join(packageRoot, MANIFEST_NAME);
+  if (await sha256File(manifestPath) !== lifecycle.rollbackManifestSha256) {
+    fail("SOURCE_UPDATE_ROLLBACK_MANIFEST_CHANGED", lifecycle.holdId);
+  }
+  const rollbackManifest = validateManifest(await readJson(
+    manifestPath,
+    "SOURCE_UPDATE_ROLLBACK_MANIFEST_INVALID",
+  ));
+  if (
+    rollbackManifest.updateId !== lifecycle.rollbackUpdateId
+    || rollbackManifest.requires?.updateId !== intent.updateId
+    || rollbackManifest.requires?.manifestSha256 !== intent.manifestSha256
+    || !sameVersionObject(rollbackManifest.from, intent.to)
+    || !sameVersionObject(rollbackManifest.to, intent.from)
+  ) fail("SOURCE_UPDATE_ROLLBACK_MANIFEST_INVALID", lifecycle.holdId);
+  await validatePayload({ packageRoot, manifest: rollbackManifest });
+}
+
+function assertLifecycleMatchesPreparedIntent(current, intent) {
+  const prepared = intent.lifecycle;
+  for (const key of [
+    "holdId",
+    "holdDays",
+    "activatedAt",
+    "holdUntil",
+    "previousVersion",
+    "targetVersion",
+    "sourceUpdateId",
+    "sourceManifestSha256",
+    "rollbackUpdateId",
+    "rollbackManifestSha256",
+    "holdPath",
+  ]) {
+    if (current[key] !== prepared[key]) {
+      fail("SOURCE_UPDATE_LOCAL_DEPLOYMENT_INTENT_MISMATCH", `${intent.updateId}:${key}`);
+    }
+  }
+}
+
+async function prepareLifecycleIntentForFinalize({ productRoot, verified }) {
+  if (!manifestRequestsLocalDeploymentHold(verified.manifest)) return null;
+  const [existingIntent, rawLifecycle, active] = await Promise.all([
+    readLocalDeploymentLifecycleIntent(productRoot),
+    readLocalDeploymentLifecycle(productRoot),
+    readStateJson(productRoot, "active-manifest.json", "SOURCE_UPDATE_ACTIVE_STATE_INVALID"),
+  ]);
+  if (existingIntent) {
+    assertLifecycleIntentMatchesTransaction(existingIntent, verified);
+    assertPreparedLifecycleIntentObservedState(existingIntent, rawLifecycle, active);
+    if (existingIntent.kind === "activate") {
+      await assertPreparedLocalSourceRollbackHold(productRoot, existingIntent);
+    }
+    return existingIntent;
+  }
+
+  const baseActive = active;
+  normalizeLifecycleIntentActive(baseActive, "lifecycle-intent-base-active");
+  const createdAt = verified.journal.appliedAt;
+  if (!Number.isFinite(Date.parse(String(createdAt || "")))) {
+    fail("SOURCE_UPDATE_JOURNAL_INVALID", "appliedAt");
+  }
+  const rollbackTransaction = await isLocalSourceDeploymentRollback({
+    productRoot,
+    transaction: verified,
+  });
+  let lifecycle;
+  let kind;
+  if (rollbackTransaction) {
+    lifecycle = normalizeLocalDeploymentLifecycle(rawLifecycle, "rollback-intent-lifecycle");
+    kind = "rollback";
+  } else {
+    lifecycle = await prepareLocalSourceRollbackHold({
+      productRoot,
+      verified,
+      previousActive: baseActive,
+      activatedAt: createdAt,
+    });
+    kind = "activate";
+  }
+  const intent = createLocalDeploymentLifecycleIntent({
+    kind,
+    verified,
+    baseActive,
+    lifecycle,
+    createdAt,
+  });
+  await writeLocalDeploymentLifecycleIntent(productRoot, intent);
+  simulateFinalizeCrashForTest("lifecycle-intent");
+  if (kind === "activate") await assertPreparedLocalSourceRollbackHold(productRoot, intent);
+  return intent;
+}
+
+async function reconcilePreparedLifecycleIntent({ productRoot, verified, intent, completedAt }) {
+  assertLifecycleIntentMatchesTransaction(intent, verified);
+  if (intent.kind === "rollback") {
+    return completeLocalSourceDeploymentRollback({ productRoot, verified, completedAt });
+  }
+  await assertPreparedLocalSourceRollbackHold(productRoot, intent);
+  const active = await readStateJson(
+    productRoot,
+    "active-manifest.json",
+    "SOURCE_UPDATE_ACTIVE_STATE_INVALID",
+  );
+  if (!activeMatchesUpdateIdentity(active, intent.updateId, intent.manifestSha256, intent.to.coreVersion)) {
+    fail("SOURCE_UPDATE_LOCAL_DEPLOYMENT_ACTIVE_MISMATCH", intent.updateId);
+  }
+  const rawCurrent = await readLocalDeploymentLifecycle(productRoot);
+  if (!rawCurrent) {
+    await writeStateJson(productRoot, localDeploymentLifecyclePath(), intent.lifecycle);
+    return active;
+  }
+  const current = normalizeLocalDeploymentLifecycle(rawCurrent, "lifecycle-reconcile");
+  if (
+    current.sourceUpdateId === intent.updateId
+    && current.sourceManifestSha256 === intent.manifestSha256
+  ) {
+    assertLifecycleMatchesPreparedIntent(current, intent);
+    return active;
+  }
+  assertPreparedLifecycleIntentObservedState(intent, current, active);
+  await writeStateJson(productRoot, localDeploymentLifecyclePath(), intent.lifecycle);
+  return active;
+}
+
+async function assertCommittedLifecycleReconciled(productRoot, verified) {
+  const metadata = verified.receipt?.updateMetadata;
+  const coreTransition = Boolean(
+    metadata?.from?.coreVersion
+    && metadata?.to?.coreVersion
+    && metadata.from.coreVersion !== metadata.to.coreVersion
+  );
+  const markerRequired = verified.receipt?.localDeploymentLifecycle?.required === true;
+  const rawLifecycle = await readLocalDeploymentLifecycle(productRoot);
+  if (!rawLifecycle) {
+    if (coreTransition || markerRequired) {
+      fail("SOURCE_UPDATE_LOCAL_DEPLOYMENT_LIFECYCLE_MISSING", verified.updateId);
+    }
+    return verified.active;
+  }
+  const lifecycle = normalizeLocalDeploymentLifecycle(rawLifecycle, "committed-lifecycle");
+  if (markerRequired) {
+    if (
+      !["holding", "rolling-back", "finalized"].includes(lifecycle.status)
+      || lifecycle.sourceUpdateId !== verified.updateId
+      || lifecycle.sourceManifestSha256 !== verified.manifestSha256
+      || (metadata && (
+        lifecycle.previousVersion !== metadata.from.coreVersion
+        || lifecycle.targetVersion !== metadata.to.coreVersion
+      ))
+    ) fail("SOURCE_UPDATE_LOCAL_DEPLOYMENT_INTENT_MISMATCH", verified.updateId);
+    return verified.active;
+  }
+  const exactRollback = lifecycle.rollbackUpdateId === verified.updateId
+    && lifecycle.rollbackManifestSha256 === verified.manifestSha256;
+  if (!coreTransition && !exactRollback) return verified.active;
+  if (
+    lifecycle.status !== "rolled-back"
+    || lifecycle.rollbackUpdateId !== verified.updateId
+    || lifecycle.rollbackManifestSha256 !== verified.manifestSha256
+    || (metadata && (
+      lifecycle.targetVersion !== metadata.from.coreVersion
+      || lifecycle.previousVersion !== metadata.to.coreVersion
+    ))
+  ) fail("SOURCE_UPDATE_LOCAL_DEPLOYMENT_ROLLBACK_MISMATCH", verified.updateId);
+  return verified.active;
 }
 
 function manifestRequestsLocalDeploymentHold(manifest) {
-  // Jeder echte Bonni-Core-Versionswechsel erhält denselben 14-Tage-
-  // Rückfallvertrag. Das gilt auch für veröffentlichte Versionen wie 0.1.20,
-  // deren Versionsname keine lokale +a/+b-Buildrevision enthält.
-  return manifest.from.coreVersion !== manifest.to.coreVersion;
+  // Jeder echte Versionswechsel und jedes mit dem aktuellen Entwicklerwerkzeug
+  // erzeugte Delta erhält denselben 14-Tage-Rückfallvertrag. Die exakte
+  // Update-/Manifestidentität unterscheidet dabei auch zwei Programmstände mit
+  // identischer sichtbarer Core-Version. Historische Legacy-Pakete und der
+  // separat attestierte Reparaturmodus behalten ihr bisheriges Verhalten.
+  return manifest.from.coreVersion !== manifest.to.coreVersion
+    || manifest.payloadLayout === SOURCE_UPDATE_PAYLOAD_LAYOUT;
 }
 
 export async function finalizeLocalSourceUpdate({
@@ -2358,15 +3846,43 @@ export async function finalizeLocalSourceUpdate({
   const verified = await verifyPending(resolvedProductRoot, pending);
 
   if (verified.committed) {
-    await cleanupCompletedUpdateRoot({
-      productRoot: resolvedProductRoot,
-      packagePath: pending.packagePath,
-      transactionPath: pending.transactionPath,
-      cleanupCandidates: verified.cleanupCandidates,
-    });
+    const intent = await readLocalDeploymentLifecycleIntent(resolvedProductRoot);
+    let reconciledActive = verified.active;
+    if (intent) {
+      if (
+        intent.updateId !== verified.updateId
+        || intent.manifestSha256 !== verified.manifestSha256
+        || (verified.receipt?.updateMetadata && (
+          !sameVersionObject(intent.from, verified.receipt.updateMetadata.from)
+          || !sameVersionObject(intent.to, verified.receipt.updateMetadata.to)
+        ))
+      ) fail("SOURCE_UPDATE_LOCAL_DEPLOYMENT_INTENT_MISMATCH", verified.updateId);
+      reconciledActive = await reconcilePreparedLifecycleIntent({
+        productRoot: resolvedProductRoot,
+        verified: {
+          ...verified,
+          manifest: { from: intent.from, to: intent.to },
+        },
+        intent,
+        completedAt: intent.createdAt,
+      });
+      await removeStateFile(resolvedProductRoot, localDeploymentLifecycleIntentPath());
+    } else {
+      reconciledActive = await assertCommittedLifecycleReconciled(resolvedProductRoot, verified);
+    }
+    if (!preserveCompletedPackage) {
+      await cleanupCompletedUpdateRoot({
+        productRoot: resolvedProductRoot,
+        packagePath: pending.packagePath,
+        transactionPath: pending.transactionPath,
+        cleanupCandidates: verified.cleanupCandidates,
+      });
+    } else {
+      await removeInternalDirectory(resolvedProductRoot, pending.transactionPath, "UPDATE/.bonni-work");
+    }
     await removeStateFile(resolvedProductRoot, "pending-update.json");
     console.info(`[bonni-update] Update ${verified.updateId} wurde vollständig übernommen.`);
-    return verified.active;
+    return reconciledActive;
   }
 
   const installedBackendPackage = await readJson(
@@ -2379,14 +3895,14 @@ export async function finalizeLocalSourceUpdate({
       `${installedBackendPackage?.version || "missing"}:${verified.manifest.to.coreVersion}`,
     );
   }
-  const installedKontorPackage = await readJson(
-    path.join(resolvedProductRoot, "SYSTEM", "app", "kontorapp", "package.json"),
-    "SOURCE_UPDATE_KONTOR_PACKAGE_INVALID",
-  );
   const updatesKontor = verified.manifest.components.some(
     (component) => component.path === "SYSTEM/app/kontorapp",
   );
-  if (updatesKontor || installedKontorPackage) {
+  if (updatesKontor) {
+    const installedKontorPackage = await readJson(
+      path.join(resolvedProductRoot, "SYSTEM", "app", "kontorapp", "package.json"),
+      "SOURCE_UPDATE_KONTOR_PACKAGE_INVALID",
+    );
     if (installedKontorPackage?.version !== verified.manifest.to.kontorAppVersion) {
       fail(
         "SOURCE_UPDATE_KONTOR_TARGET_VERSION_MISMATCH",
@@ -2411,8 +3927,12 @@ export async function finalizeLocalSourceUpdate({
     if (state) fail("SOURCE_UPDATE_DELETED_FILE_REAPPEARED", entry.path);
   }
 
-  const completedAt = new Date().toISOString();
-  const previousActiveState = await readStateJson(
+  const lifecycleIntent = await prepareLifecycleIntentForFinalize({
+    productRoot: resolvedProductRoot,
+    verified,
+  });
+  const completedAt = lifecycleIntent?.createdAt || new Date().toISOString();
+  const previousActiveState = lifecycleIntent?.baseActive ?? await readStateJson(
     resolvedProductRoot,
     "active-manifest.json",
     "SOURCE_UPDATE_ACTIVE_STATE_INVALID",
@@ -2430,16 +3950,20 @@ export async function finalizeLocalSourceUpdate({
   // A generated rollback package must remain readable by the updater restored
   // with the previous code version. Therefore its active/history receipt uses
   // the previous schema and does not introduce the new lifecycle marker.
-  const rollbackTransaction = await isLocalSourceDeploymentRollback({
-    productRoot: resolvedProductRoot,
-    transaction: verified,
-  });
+  const rollbackTransaction = lifecycleIntent?.kind === "rollback";
+  const completedVersions = {
+    coreVersion: verified.manifest.to.coreVersion,
+    kontorAppVersion: manifestManagesKontor(verified.manifest)
+      ? verified.manifest.to.kontorAppVersion
+      : previousActiveState?.versions?.kontorAppVersion
+        ?? verified.manifest.to.kontorAppVersion,
+  };
   const active = {
     schemaVersion: SOURCE_UPDATE_SCHEMA,
     updateId: verified.updateId,
     manifestSha256: verified.manifestSha256,
     completedAt,
-    versions: verified.manifest.to,
+    versions: completedVersions,
     ...(!rollbackTransaction && manifestRequestsLocalDeploymentHold(verified.manifest) ? {
       localDeploymentLifecycle: {
         schemaVersion: LOCAL_DEPLOYMENT_LIFECYCLE_SCHEMA,
@@ -2458,26 +3982,19 @@ export async function finalizeLocalSourceUpdate({
       })),
     ].sort((left, right) => left.path.localeCompare(right.path, "en")),
   };
-  let preparedLifecycle = null;
-  if (!rollbackTransaction && manifestRequestsLocalDeploymentHold(verified.manifest)) {
-    preparedLifecycle = await prepareLocalSourceRollbackHold({
-      productRoot: resolvedProductRoot,
-      verified,
-      previousActive: previousActiveState,
-      activatedAt: completedAt,
-    });
-  }
-
   await writeStateJson(resolvedProductRoot, "active-manifest.json", active);
+  simulateFinalizeCrashForTest("active-manifest");
   await writeStateJson(resolvedProductRoot, `history/${verified.updateId}.json`, {
     ...active,
     ...(verified.manifest.releaseNotes ? { releaseNotes: verified.manifest.releaseNotes } : {}),
     updateMetadata: completedUpdateMetadataFromManifest(verified.manifest),
     status: "COMPLETED",
   });
+  simulateFinalizeCrashForTest("history-receipt");
   verified.journal.status = "committed";
   verified.journal.committedAt = completedAt;
   await writeJsonAtomic(path.join(verified.transactionRoot, "journal.json"), verified.journal);
+  simulateFinalizeCrashForTest("journal-committed");
   const committedPending = {
     ...pending,
     phase: "committed",
@@ -2485,16 +4002,20 @@ export async function finalizeLocalSourceUpdate({
     cleanupCandidates: verified.cleanupCandidates,
   };
   await writeStateJson(resolvedProductRoot, "pending-update.json", committedPending);
-  if (preparedLifecycle) {
-    await writeStateJson(resolvedProductRoot, localDeploymentLifecyclePath(), preparedLifecycle);
-  }
-  const restoredActive = rollbackTransaction
-    ? await completeLocalSourceDeploymentRollback({
+  simulateFinalizeCrashForTest("pending-committed");
+  const reconciledActive = lifecycleIntent
+    ? await reconcilePreparedLifecycleIntent({
         productRoot: resolvedProductRoot,
         verified,
+        intent: lifecycleIntent,
         completedAt,
       })
-    : null;
+    : active;
+  simulateFinalizeCrashForTest("lifecycle-reconciled");
+  if (lifecycleIntent) {
+    await removeStateFile(resolvedProductRoot, localDeploymentLifecycleIntentPath());
+    simulateFinalizeCrashForTest("lifecycle-intent-removed");
+  }
   if (!preserveCompletedPackage) {
     await cleanupCompletedUpdateRoot({
       productRoot: resolvedProductRoot,
@@ -2505,9 +4026,10 @@ export async function finalizeLocalSourceUpdate({
   } else {
     await removeInternalDirectory(resolvedProductRoot, pending.transactionPath, "UPDATE/.bonni-work");
   }
+  simulateFinalizeCrashForTest("cleanup-completed");
   await removeStateFile(resolvedProductRoot, "pending-update.json");
   console.info(`[bonni-update] Update ${verified.updateId} wurde vollständig übernommen.`);
-  return restoredActive || active;
+  return reconciledActive;
 }
 
 export async function assertNoPendingLocalSourceUpdate({ productRoot }) {

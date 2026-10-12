@@ -80,7 +80,7 @@ function folderKindLabel(kind) {
   return "Ordner";
 }
 
-export default function ExplorerPage({ token }) {
+export default function ExplorerPage({ token, personalOnly = false, onBack }) {
   const [view, setView] = useState("mine");
   const [systemListing, setSystemListing] = useState({
     path: "",
@@ -175,9 +175,9 @@ export default function ExplorerPage({ token }) {
 
   useEffect(() => {
     loadWorkspace();
-    loadSystemDirectory("", { quiet: true });
+    if (!personalOnly) loadSystemDirectory("", { quiet: true });
     loadAccountLinks({ quiet: true });
-  }, [loadAccountLinks, loadSystemDirectory, loadWorkspace]);
+  }, [loadAccountLinks, loadSystemDirectory, loadWorkspace, personalOnly]);
 
   const loadLogicalFolder = useCallback(async (folder, nextTrail) => {
     if (!folder?.id) return;
@@ -449,10 +449,11 @@ export default function ExplorerPage({ token }) {
     <section className="cc-user-page cc-explorer-page">
       <div className="cc-user-page__header cc-user-page__header--with-action">
         <div>
-          <h1>Explorer</h1>
+          <h1>{personalOnly ? "Dokumente" : "Explorer"}</h1>
           <p>Persönliche Ordner, geschützte Dokumente und Freigaben im Archiv verwalten.</p>
         </div>
         <div className="cc-explorer-header-actions">
+          {onBack ? <button type="button" onClick={onBack}>Zurück</button> : null}
           <button type="button" onClick={() => setShowAccountLinks((current) => !current)}>
             Verknüpfte Accounts
             {accountLinks.incoming.length ? ` (${accountLinks.incoming.length})` : ""}
@@ -473,7 +474,7 @@ export default function ExplorerPage({ token }) {
         </div>
       </div>
 
-      <div className="cc-user-stats" aria-label="Explorer Status">
+      {!personalOnly ? <div className="cc-user-stats" aria-label="Explorer Status">
         {stats.map((stat) => (
           <article key={stat.key} className={`cc-user-stat cc-user-stat--${stat.tone}`}>
             <div className="cc-user-stat__icon" aria-hidden="true">{stat.icon}</div>
@@ -484,7 +485,7 @@ export default function ExplorerPage({ token }) {
             </div>
           </article>
         ))}
-      </div>
+      </div> : null}
 
       {showAccountLinks ? (
         <section className="cc-explorer-account-links" aria-label="Verknüpfte Accounts">
@@ -559,7 +560,9 @@ export default function ExplorerPage({ token }) {
       <div className="cc-explorer-view-tabs" role="tablist" aria-label="Explorer Bereich">
         <button type="button" className={view === "mine" ? "is-active" : ""} onClick={() => changeView("mine")}>Meine Ordner</button>
         <button type="button" className={view === "shared" ? "is-active" : ""} onClick={() => changeView("shared")}>Mit mir geteilt</button>
-        <button type="button" className={view === "system" ? "is-active" : ""} onClick={() => changeView("system")}>Systemarchiv</button>
+        {!personalOnly ? (
+          <button type="button" className={view === "system" ? "is-active" : ""} onClick={() => changeView("system")}>Systemarchiv</button>
+        ) : null}
       </div>
 
       <section className="cc-explorer-browser" aria-label="Archiv Explorer">

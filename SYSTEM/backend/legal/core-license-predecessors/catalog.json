@@ -1,0 +1,13 @@
+{
+  "schemaVersion": "bonni.license-catalog/v1",
+  "generatedAt": "2026-08-27T20:47:48.036Z",
+  "entries": [
+    {
+      "type": "platform",
+      "key": "bonni-core",
+      "version": "0.1.20",
+      "receipt": "platform/bonni-core/0.1.20/RECEIPT.json",
+      "treeSha256": "de2daf82dc76d84b2d8eab955a4ab18de27efd6d275074cdbb76c1b94f314bb9"
+    }
+  ]
+}

@@ -12,7 +12,11 @@ import { assertDockerRuntimeActivationInactive } from "../runtime/runtime-mode-e
 
 const scriptDirectory = path.dirname(fileURLToPath(import.meta.url));
 const backendRoot = path.resolve(scriptDirectory, "../..");
-const productRoot = path.resolve(backendRoot, "../..");
+const configuredProductRoot = String(process.env.BONNI_PRODUCT_ROOT || "").trim();
+if (configuredProductRoot && (configuredProductRoot.includes("\u0000") || !path.isAbsolute(configuredProductRoot))) {
+  throw new Error("BONNI_PRODUCT_ROOT_INVALID");
+}
+const productRoot = configuredProductRoot || path.resolve(backendRoot, "../..");
 const setupScript = path.join(scriptDirectory, "setup-system.mjs");
 const expectedUpdateId = String(process.env.BONNI_LOCAL_SOURCE_UPDATE_EXPECTED_ID || "").trim() || null;
 const expectedManifestSha256 = String(
@@ -24,6 +28,18 @@ const operation = process.argv.includes("--preflight")
     ? "finalize"
     : "install";
 const deferFinalize = process.env.BONNI_UPDATE_DEFER_FINALIZE === "1";
+
+function applicationEnvironment(environment = process.env) {
+  const blocked = new Set([
+    "BONNI_LOCAL_HOST_BACKEND_LEASE_OWNER_PID",
+    "BONNI_LOCAL_HOST_BACKEND_LEASE_TOKEN",
+  ]);
+  const result = {};
+  for (const [key, value] of Object.entries(environment)) {
+    if (!blocked.has(key.toUpperCase())) result[key] = value;
+  }
+  return result;
+}
 
 if (process.argv.includes("--preflight") && process.argv.includes("--finalize")) {
   throw new Error("SOURCE_UPDATE_OPERATION_INVALID");
@@ -39,7 +55,10 @@ function runUpdatedSetup(transaction) {
     const child = spawn(process.execPath, [setupScript], {
       cwd: backendRoot,
       env: {
-        ...process.env,
+        ...applicationEnvironment(),
+        BONNI_PROGRAM_ROOT: path.resolve(backendRoot, "../.."),
+        BONNI_PROJECT_ROOT: path.resolve(backendRoot, "../.."),
+        BONNI_PRODUCT_ROOT: productRoot,
         BONNI_SETUP_MODE: "update",
         BONNI_LOCAL_SOURCE_UPDATE_ID: transaction.updateId,
         BONNI_LOCAL_SOURCE_UPDATE_HANDOFF: transaction.handoffToken,

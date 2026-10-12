@@ -1,0 +1,238 @@
+.bonni-settings-frame__content button {
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 12px;
+  padding: 9px 13px;
+  color: #d8dbe0;
+  background: #1a1d22;
+  cursor: pointer;
+}
+
+.bonni-settings-frame__content button:hover {
+  border-color: #ef7900;
+}
+
+.bonni-settings-frame__content button:focus-visible {
+  border-color: #ef7900;
+  outline: 3px solid rgba(245, 166, 35, 0.34);
+  outline-offset: 2px;
+}
+
+.bonni-settings-frame__content button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.bonni-settings-frame__content button.is-primary {
+  border-color: #df7100;
+  color: #fff;
+  background: #d96e00;
+  font-weight: 800;
+}
+
+.bonni-settings-frame__content button.is-danger {
+  border-color: rgba(219, 96, 96, 0.42);
+  color: #ffb6b2;
+  background: rgba(125, 25, 25, 0.22);
+}
+
+.bonni-settings-frame .bonni-my-settings__heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 20px;
+  padding: 0 0 12px;
+}
+
+.bonni-settings-frame .bonni-my-settings__heading h2 {
+  margin: 3px 0 5px;
+  color: #f4f5f7;
+  font-size: clamp(24px, 3vw, 34px);
+  letter-spacing: -0.04em;
+}
+
+.bonni-settings-frame .bonni-my-settings__heading p,
+.bonni-settings-frame .bonni-2fa-card p,
+.bonni-settings-frame .bonni-2fa-recovery p {
+  color: #9a9fa8;
+}
+
+.bonni-settings-frame .bonni-2fa-status {
+  color: #a8adb5;
+  background: #1c2026;
+}
+
+.bonni-settings-frame .bonni-2fa-status.is-active {
+  color: #9ce0b1;
+  background: rgba(28, 104, 50, 0.26);
+}
+
+.bonni-settings-frame .bonni-2fa-card,
+.bonni-settings-frame .bonni-2fa-recovery {
+  border-color: rgba(255, 255, 255, 0.11);
+  color: #f2f3f5;
+  background: #13161b;
+  box-shadow: none;
+}
+
+.bonni-settings-frame .bonni-2fa-overview dl {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.bonni-settings-frame .bonni-2fa-overview dl div,
+.bonni-settings-frame .bonni-2fa-request dl div {
+  color: #e9eaed;
+  background: #0e1115;
+}
+
+.bonni-settings-frame .bonni-2fa-overview dt,
+.bonni-settings-frame .bonni-2fa-request dt,
+.bonni-settings-frame .bonni-2fa-proof__head small,
+.bonni-settings-frame .bonni-2fa-field small {
+  color: #858b94;
+}
+
+.bonni-settings-frame .bonni-2fa-request dl,
+.bonni-settings-frame .bonni-2fa-request dl div + div,
+.bonni-settings-frame .bonni-2fa-qr__image {
+  border-color: rgba(255, 255, 255, 0.11);
+}
+
+.bonni-settings-frame .bonni-2fa-field > span {
+  color: #a9aeb6;
+}
+
+.bonni-settings-frame .bonni-2fa-field input {
+  border-color: rgba(255, 255, 255, 0.14);
+  color: #f2f3f5;
+  background: #090b0e;
+}
+
+.bonni-settings-frame .bonni-2fa-qr__image {
+  background: #f7f7f7;
+}
+
+.bonni-settings-frame .bonni-2fa-qr ol {
+  color: #adb2ba;
+}
+
+.bonni-settings-frame .bonni-2fa-warning {
+  color: #ffc77f !important;
+  background: rgba(127, 67, 0, 0.25);
+}
+
+.bonni-settings-frame .bonni-2fa-recovery {
+  border-color: rgba(239, 137, 14, 0.33);
+  background: rgba(108, 54, 0, 0.2);
+}
+
+.bonni-settings-frame .bonni-2fa-recovery li {
+  border-color: rgba(255, 255, 255, 0.12);
+  color: #f5f6f7;
+  background: #0b0d10;
+}
+
+.bonni-settings-frame .bonni-2fa-guide > ol > li {
+  border-color: rgba(255, 255, 255, 0.09);
+}
+
+.bonni-settings-frame .bonni-brand-settings__upload label > span,
+.bonni-settings-frame .bonni-brand-settings__previews > header small,
+.bonni-settings-frame .bonni-brand-settings__draft-note {
+  color: #9298a1;
+}
+
+.bonni-settings-frame .bonni-brand-settings__upload input {
+  border-color: rgba(255, 255, 255, 0.18);
+  color: #c8ccd2;
+  background: #0a0c0f;
+}
+
+.bonni-settings-frame .bonni-brand-preview {
+  border-color: rgba(255, 255, 255, 0.12);
+  background: #e9eaec;
+}
+
+.bonni-settings-frame .bonni-brand-preview figcaption {
+  color: #5d626a;
+}
+
+.bonni-settings-frame .bonni-brand-preview.is-dark {
+  background: #090b0f;
+}
+
+.bonni-settings-frame .bonni-brand-settings__admin-note,
+.bonni-settings-frame .bonni-brand-settings__reconcile {
+  border-color: rgba(239, 137, 14, 0.33);
+  color: #ffc77f;
+  background: rgba(108, 54, 0, 0.2);
+}
+
+.bonni-settings-frame .bonni-brand-settings__loading {
+  border-color: rgba(86, 134, 205, 0.35);
+  color: #a9c8f4;
+  background: rgba(23, 71, 136, 0.19);
+}
+
+.bonni-settings-frame .bonni-brand-settings__revision-conflict {
+  border-color: rgba(219, 96, 96, 0.42);
+  color: #ffb6b2;
+  background: rgba(125, 25, 25, 0.22);
+}
+
+.bonni-settings-frame .bonni-2fa-alert.is-error {
+  border-color: rgba(219, 96, 96, 0.42);
+  color: #ffb6b2;
+  background: rgba(125, 25, 25, 0.22);
+}
+
+.bonni-settings-frame .bonni-2fa-alert.is-success {
+  border-color: rgba(79, 181, 111, 0.35);
+  color: #9ce0b1;
+  background: rgba(28, 104, 50, 0.2);
+}
+
+.bonni-settings-frame .bonni-2fa-alert.is-warning {
+  border: 1px solid rgba(239, 137, 14, 0.33);
+  color: #ffc77f;
+  background: rgba(108, 54, 0, 0.2);
+}
+
+.bonni-settings-frame .bonni-account-recovery__policy dl {
+  border-color: rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.bonni-settings-frame .bonni-account-recovery__policy dl div,
+.bonni-settings-frame .bonni-account-recovery__requests > ul > li {
+  border-color: rgba(255, 255, 255, 0.1);
+  color: #e9eaed;
+  background: #0e1115;
+}
+
+.bonni-settings-frame .bonni-account-recovery textarea {
+  border-color: rgba(255, 255, 255, 0.14);
+  color: #f2f3f5;
+  background: #090b0e;
+}
+
+.bonni-settings-frame .bonni-account-recovery dt,
+.bonni-settings-frame .bonni-account-recovery__request-head small,
+.bonni-settings-frame .bonni-account-recovery__search-note {
+  color: #858b94;
+}
+
+.bonni-settings-frame .bonni-account-recovery__locked {
+  color: #aeb3bc !important;
+  background: rgba(255, 255, 255, 0.055);
+}
+
+.bonni-settings-frame .bonni-account-recovery__one-shot {
+  border-color: rgba(239, 137, 14, 0.33);
+  background: rgba(108, 54, 0, 0.2);
+}
+
+.bonni-settings-frame .bonni-account-recovery__one-shot code {
+  border-color: rgba(239, 137, 14, 0.42);
+  color: #ffc77f;
+  background: #090b0e;
+}

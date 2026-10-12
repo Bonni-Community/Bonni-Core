@@ -1,17 +1,34 @@
-import path from 'node:path';
-import { ensureRunContainer, publicIdentity, readJson, runContainerRoot, slotPath } from './runcontainer-lib.mjs';
+import {
+  buildSlotLaunchPlan,
+  ensureRunSlotFoundation,
+  projectRoot,
+  readSlotPointers,
+  runContainerRoot,
+  verifyProgramSlot,
+} from "./runcontainer-lib.mjs";
 
-const active = await ensureRunContainer();
-const current = await readJson(path.join(runContainerRoot(), 'current.json'));
-const activePublic = publicIdentity(active);
-const ok = Boolean(current) && current.createdAt === activePublic.createdAt && current.userCount === activePublic.userCount;
+const runRoot = runContainerRoot();
+await ensureRunSlotFoundation({ runRoot });
+const pointers = await readSlotPointers({ runRoot });
+const slots = {};
 
-console.log(JSON.stringify({
-  ok,
-  visibleName: 'System-Abgleich',
-  active: activePublic,
-  current,
-  activePath: slotPath('active'),
-}, null, 2));
+for (const role of ["active", "candidate", "previous"]) {
+  if (!pointers.roles[role]) {
+    slots[role] = null;
+    continue;
+  }
+  const verified = await verifyProgramSlot(role, { runRoot });
+  const launch = await buildSlotLaunchPlan(role, { runRoot, installationRoot: projectRoot() });
+  slots[role] = {
+    ok: verified.ok,
+    slotId: verified.receipt.slotId,
+    version: verified.receipt.source.version,
+    treeSha256: verified.receipt.treeSha256,
+    programRoot: launch.programRoot,
+    backendRoot: launch.backendRoot,
+    ports: launch.health,
+  };
+}
 
-if (!ok) process.exit(1);
+console.log(JSON.stringify({ ok: Boolean(slots.active), runRoot, pointerRevision: pointers.revision, slots }, null, 2));
+if (!slots.active) process.exitCode = 1;

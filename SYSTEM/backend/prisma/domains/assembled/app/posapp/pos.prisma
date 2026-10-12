@@ -1,0 +1,181 @@
+enum PosTransactionStatus {
+  OPEN
+  COMPLETED
+  CANCELLED
+  REVERSED
+  FAILED
+}
+
+enum PosPaymentMethod {
+  CASH
+  CARD
+  TRANSFER
+  MEMBER_ACCOUNT
+  OTHER
+}
+
+model PosDevice {
+  id              String   @id @default(cuid())
+  deviceKey       String   @unique
+  label           String
+  locationId      String?
+  tseSerialNumber String?
+  active          Boolean  @default(true)
+  lastSeenAt      DateTime?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+}
+
+model PosTransaction {
+  id                  String               @id @default(cuid())
+  transactionNumber   String               @unique
+  deviceId            String
+  operatorAccountId   String?
+  customerMemberId    String?
+  status              PosTransactionStatus @default(OPEN)
+  currency            String               @default("EUR")
+  netTotal            Decimal              @db.Decimal(14, 2)
+  taxTotal            Decimal              @db.Decimal(14, 2)
+  grossTotal          Decimal              @db.Decimal(14, 2)
+  openedAt            DateTime             @default(now())
+  completedAt         DateTime?
+  cancelledAt         DateTime?
+  externalReference   String?
+  lines               PosTransactionLine[]
+  payments            PosPayment[]
+  receipt             PosReceipt?
+  fiscalEvidence      PosFiscalEvidence?
+  createdAt           DateTime             @default(now())
+  updatedAt           DateTime             @updatedAt
+
+  @@index([deviceId, openedAt])
+  @@index([customerMemberId, openedAt])
+  @@index([status, openedAt])
+}
+
+model PosTransactionLine {
+  id              String         @id @default(cuid())
+  transactionId   String
+  transaction     PosTransaction @relation(fields: [transactionId], references: [id], onDelete: Cascade)
+  productId       String?
+  sku             String?
+  description     String
+  quantity        Decimal        @db.Decimal(14, 3)
+  unitPriceGross  Decimal        @db.Decimal(14, 2)
+  taxRate         Decimal        @db.Decimal(7, 4)
+  lineNet         Decimal        @db.Decimal(14, 2)
+  lineTax         Decimal        @db.Decimal(14, 2)
+  lineGross       Decimal        @db.Decimal(14, 2)
+  createdAt       DateTime       @default(now())
+
+  @@index([transactionId])
+  @@index([productId])
+}
+
+model PosPayment {
+  id                String           @id @default(cuid())
+  transactionId     String
+  transaction       PosTransaction   @relation(fields: [transactionId], references: [id], onDelete: Cascade)
+  method            PosPaymentMethod
+  amount            Decimal          @db.Decimal(14, 2)
+  provider          String?
+  providerReference String?
+  status            String           @default("BOOKED")
+  paidAt            DateTime         @default(now())
+  createdAt         DateTime         @default(now())
+
+  @@index([transactionId])
+  @@index([method, paidAt])
+}
+
+model PosReceipt {
+  id                String         @id @default(cuid())
+  transactionId     String         @unique
+  transaction       PosTransaction @relation(fields: [transactionId], references: [id], onDelete: Restrict)
+  receiptNumber     String         @unique
+  documentHash      String
+  documentObjectKey String?
+  issuedAt          DateTime       @default(now())
+  createdAt         DateTime       @default(now())
+
+  @@index([issuedAt])
+  @@index([documentHash])
+}
+
+model PosFiscalEvidence {
+  id                   String         @id @default(cuid())
+  transactionId        String         @unique
+  transaction          PosTransaction @relation(fields: [transactionId], references: [id], onDelete: Restrict)
+  tseSerialNumber      String
+  tseTransactionNumber String
+  processType          String
+  processData          String
+  signatureCounter     String
+  signatureValue       String
+  signatureAlgorithm   String
+  timeFormat           String
+  startedAt            DateTime
+  finishedAt           DateTime
+  createdAt            DateTime       @default(now())
+
+  @@index([tseSerialNumber, startedAt])
+  @@index([tseTransactionNumber])
+}
+
+model PosCashTransfer {
+  id                   String   @id @default(cuid())
+  correlationId        String   @unique
+  sourceDomain         String
+  sourceRecordId       String
+  requestMessageId     String   @unique
+  requestPayloadHash   String
+  completionMessageId  String?
+  transactionId        String?
+  amount               Decimal  @db.Decimal(14, 2)
+  currency             String   @default("EUR")
+  transferType         String   @default("CASH")
+  purpose              String
+  status               String   @default("REQUESTED")
+  requestedByAccountId String?
+  acceptedByAccountId  String?
+  requestedAt          DateTime @default(now())
+  acceptedAt           DateTime?
+  completedAt          DateTime?
+  rejectedAt           DateTime?
+  rejectionReason      String?
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  @@index([sourceDomain, status, requestedAt])
+  @@index([transactionId])
+  @@index([completionMessageId])
+}
+
+model PosKontorInvoiceRequest {
+  id                 String   @id @default(cuid())
+  correlationId      String   @unique
+  cashTransferId     String?
+  recipientMemberId  String?
+  amount             Decimal  @db.Decimal(14, 2)
+  currency           String   @default("EUR")
+  purpose            String
+  sourceDocumentHash String
+  cashRequestMessageId String @unique
+  cashRequestPayloadHash String
+  status             String   @default("PENDING")
+  domainMessageId    String?
+  completionMessageId String?
+  kontorInvoiceId    String?
+  kontorInvoiceNumber String?
+  requestedAt        DateTime @default(now())
+  completedAt        DateTime?
+  rejectedAt         DateTime?
+  rejectionReason    String?
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  @@index([status, requestedAt])
+  @@index([recipientMemberId])
+  @@index([domainMessageId])
+  @@index([completionMessageId])
+}

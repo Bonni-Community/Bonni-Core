@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import crypto from "node:crypto";
-import { spawn } from "node:child_process";
 import { createReadStream } from "node:fs";
+import { constants as fsConstants } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 
@@ -11,7 +11,8 @@ import {
   signReleaseManifest,
   verifyReleaseManifest,
 } from "../../dist/system/update-release/index.js";
-import { inspectDockerArchiveTags } from "../../src/system/update-runner/archive-tags.mjs";
+import { loadOpsMigrations } from "../database/run-ops-migrations.mjs";
+import { inspectCoreDockerArchivePayload } from "../../src/system/update-runner/archive-tags.mjs";
 
 const ALLOWED_ARGUMENTS = new Set([
   "--archive", "--image", "--version", "--private-key", "--key-id", "--output-dir",
@@ -39,24 +40,6 @@ function required(args, name) {
   return value;
 }
 
-function run(command, args, timeoutMs = 30 * 60_000) {
-  return new Promise((resolve, reject) => {
-    const child = spawn(command, args, { shell: false, windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
-    let stdout = "";
-    let stderr = "";
-    const append = (current, chunk) => `${current}${String(chunk)}`.slice(-1024 * 1024);
-    child.stdout.on("data", (chunk) => { stdout = append(stdout, chunk); });
-    child.stderr.on("data", (chunk) => { stderr = append(stderr, chunk); });
-    const timer = setTimeout(() => child.kill("SIGTERM"), timeoutMs);
-    child.once("error", (error) => { clearTimeout(timer); reject(error); });
-    child.once("close", (code) => {
-      clearTimeout(timer);
-      if (code === 0) resolve({ stdout: stdout.trim(), stderr: stderr.trim() });
-      else reject(new Error(stderr.trim() || stdout.trim() || `${command} endete mit Status ${code}.`));
-    });
-  });
-}
-
 async function sha256(file) {
   const hash = crypto.createHash("sha256");
   for await (const chunk of createReadStream(file)) hash.update(chunk);
@@ -65,6 +48,76 @@ async function sha256(file) {
 
 function canonicalUtc(date) {
   return date.toISOString();
+}
+
+function visibleBonniVersion(value) {
+  return String(value || "").replace(/^(\d+\.\d+\.\d+)\+([A-Za-z])$/u, "$1$2");
+}
+
+function isWithin(root, candidate) {
+  const relative = path.relative(path.resolve(root), path.resolve(candidate));
+  return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+}
+
+function samePath(left, right) {
+  const normalize = (value) => {
+    const resolved = path.normalize(path.resolve(value));
+    return process.platform === "win32" ? resolved.toLocaleLowerCase("en-US") : resolved;
+  };
+  return normalize(left) === normalize(right);
+}
+
+async function ensureOutputDirectory(target) {
+  const absolute = path.resolve(target);
+  const parsed = path.parse(absolute);
+  let cursor = parsed.root;
+  for (const segment of absolute.slice(parsed.root.length).split(path.sep).filter(Boolean)) {
+    cursor = path.join(cursor, segment);
+    await fs.mkdir(cursor, { mode: 0o700 }).catch((error) => {
+      if (error?.code !== "EEXIST") throw error;
+    });
+    const state = await fs.lstat(cursor);
+    if (!state.isDirectory() || state.isSymbolicLink()) throw new Error("RELEASE_OUTPUT_DIRECTORY_UNSAFE");
+    if (!samePath(await fs.realpath(cursor), cursor)) throw new Error("RELEASE_OUTPUT_DIRECTORY_UNSAFE");
+  }
+  return absolute;
+}
+
+async function assertRegularUnlinkedFile(file, errorCode) {
+  const state = await fs.lstat(file);
+  if (!state.isFile() || state.isSymbolicLink() || state.nlink > 1 || state.size <= 0) {
+    throw new Error(errorCode);
+  }
+  return state;
+}
+
+async function assertCleanOutputDirectory(directory, artifactName) {
+  const allowed = new Set([artifactName, "manifest.json"]);
+  for (const entry of await fs.readdir(directory, { withFileTypes: true })) {
+    if (!allowed.has(entry.name) || !entry.isFile() || entry.isSymbolicLink()) {
+      throw new Error(`RELEASE_OUTPUT_NOT_CLEAN: ${entry.name}`);
+    }
+    const state = await fs.lstat(path.join(directory, entry.name));
+    if (!state.isFile() || state.isSymbolicLink() || state.nlink > 1) {
+      throw new Error(`RELEASE_OUTPUT_FILE_UNSAFE: ${entry.name}`);
+    }
+  }
+}
+
+async function replaceFileAtomically(source, destination) {
+  try {
+    await fs.rename(source, destination);
+  } catch (error) {
+    // Windows does not consistently replace an existing file with rename().
+    // Only an already preflighted regular release file may be removed here.
+    if (!["EACCES", "EEXIST", "EPERM"].includes(error?.code)) throw error;
+    const state = await fs.lstat(destination);
+    if (!state.isFile() || state.isSymbolicLink() || state.nlink > 1) {
+      throw new Error(`RELEASE_OUTPUT_FILE_UNSAFE: ${path.basename(destination)}`);
+    }
+    await fs.unlink(destination);
+    await fs.rename(source, destination);
+  }
 }
 
 const args = argumentsMap();
@@ -78,110 +131,136 @@ const imageTag = bonniReleaseImageTag(version);
 const privateKeyFile = path.resolve(required(args, "--private-key"));
 const keyId = args.get("--key-id") || "bonni-core-release";
 const outputDirectory = path.resolve(args.get("--output-dir") || path.join("releases", version));
-const migrationStrategy = args.get("--migration") || "none";
+const packagedOpsMigrations = await loadOpsMigrations();
+const migrationStrategy = args.get("--migration")
+  || (packagedOpsMigrations.length > 0 ? "expand-contract" : "none");
 if (!["none", "expand-contract", "offline"].includes(migrationStrategy)) throw new Error("--migration ist ungültig.");
+if (packagedOpsMigrations.length > 0 && migrationStrategy !== "expand-contract") {
+  throw new Error("RELEASE_OPS_MIGRATIONS_REQUIRE_EXPAND_CONTRACT");
+}
 const migrationRequired = migrationStrategy !== "none";
 const schemaFrom = args.get("--schema-from") || version;
 const schemaTo = args.get("--schema-to") || schemaFrom;
 const expiryDays = Number(args.get("--expires-days") || 90);
 if (!Number.isInteger(expiryDays) || expiryDays < 1 || expiryDays > 90) throw new Error("--expires-days muss zwischen 1 und 90 liegen.");
 
-const archiveStat = await fs.stat(archive);
-if (!archiveStat.isFile() || archiveStat.size <= 0) throw new Error("Das OCI-Archiv fehlt oder ist leer.");
-
-const archiveTags = await inspectDockerArchiveTags(archive, {
-  tarBinary: process.platform === "win32" ? "tar.exe" : "tar",
-});
-assertReleaseArchiveTags(
-  { repository, version, imageTag },
-  archiveTags,
-  {
-    forbiddenTags: [
-      `${repository}:active`,
-      `${repository}:rollback`,
-      process.env.BONNI_ACTIVE_IMAGE_TAG,
-      process.env.BONNI_ROLLBACK_IMAGE_TAG,
-    ].filter(Boolean),
-  },
-);
-
-await run("docker", ["image", "load", "--input", archive]);
-const versionTag = `${repository}:${imageTag}`;
-const inspection = await run("docker", ["image", "inspect", "--format", "{{json .}}", versionTag], 60_000);
-const imageData = JSON.parse(inspection.stdout);
-if (!Array.isArray(imageData.RepoDigests)
-  || (imageData.RepoDigests.length > 0
-    ? !imageData.RepoDigests.includes(image)
-    : imageData.Id !== digest)) {
-  throw new Error("Das Archiv enthält nicht die angegebene, per Digest adressierte Image-Identität.");
-}
-if (imageData.Os !== "linux" || !["amd64", "arm64"].includes(imageData.Architecture)) {
-  throw new Error("Das Release-Image muss Linux für amd64 oder arm64 enthalten.");
+await assertRegularUnlinkedFile(archive, "Das OCI-Archiv fehlt, ist leer oder unsicher.");
+await assertRegularUnlinkedFile(privateKeyFile, "Der private Release-Schluessel fehlt oder ist unsicher.");
+await ensureOutputDirectory(outputDirectory);
+const [realOutputDirectory, realPrivateKeyFile] = await Promise.all([
+  fs.realpath(outputDirectory),
+  fs.realpath(privateKeyFile),
+]);
+if (isWithin(realOutputDirectory, realPrivateKeyFile)) {
+  throw new Error("RELEASE_PRIVATE_KEY_INSIDE_OUTPUT_FORBIDDEN");
 }
 
-await fs.mkdir(outputDirectory, { recursive: true, mode: 0o700 });
 const artifactName = `bonni-core-${imageTag}.oci`;
+await assertCleanOutputDirectory(outputDirectory, artifactName);
 const outputArchive = path.join(outputDirectory, artifactName);
-if (path.resolve(archive) !== path.resolve(outputArchive)) await fs.copyFile(archive, outputArchive);
-const outputStat = await fs.stat(outputArchive);
-const issuedAt = new Date();
-const expiresAt = new Date(issuedAt.getTime() + expiryDays * 24 * 60 * 60_000);
-const privateKey = await fs.readFile(privateKeyFile, "utf8");
+const manifestFile = path.join(outputDirectory, "manifest.json");
+const nonce = `${process.pid}.${crypto.randomBytes(12).toString("hex")}`;
+const temporaryArchive = path.join(outputDirectory, `.${artifactName}.${nonce}.tmp`);
+const temporaryManifest = path.join(outputDirectory, `.manifest.json.${nonce}.tmp`);
 
-const payload = {
-  schemaVersion: 2,
-  product: "bonni-core",
-  channel: "stable",
-  version,
-  artifact: {
-    type: "oci-image-archive",
-    sizeBytes: outputStat.size,
-    sha256: await sha256(outputArchive),
-    source: args.has("--artifact-url")
-      ? { kind: "https", url: required(args, "--artifact-url") }
-      : { kind: "local", path: artifactName },
-    imageIdentity: {
-      repository,
-      digest,
-      platform: {
-        os: "linux",
-        architecture: imageData.Architecture,
-        ...(imageData.Variant ? { variant: imageData.Variant } : {}),
+let archiveIdentity;
+let outputStat;
+let archiveSha256;
+try {
+  // Validate and sign the private staged copy. A concurrent mutation of the
+  // caller-owned input can therefore never change the bytes published later.
+  await fs.copyFile(archive, temporaryArchive, fsConstants.COPYFILE_EXCL);
+  await fs.chmod(temporaryArchive, 0o600);
+  archiveIdentity = await inspectCoreDockerArchivePayload(temporaryArchive, { version });
+  assertReleaseArchiveTags(
+    { repository, version, imageTag },
+    archiveIdentity.tags,
+    {
+      forbiddenTags: [
+        `${repository}:active`,
+        `${repository}:rollback`,
+        process.env.BONNI_ACTIVE_IMAGE_TAG,
+        process.env.BONNI_ROLLBACK_IMAGE_TAG,
+      ].filter(Boolean),
+    },
+  );
+  if (archiveIdentity.digest !== digest) {
+    throw new Error("Das Archiv enthält nicht die angegebene, per Digest adressierte Image-Identität.");
+  }
+  for (const [label, expected] of [
+    ["org.bonni.product", "bonni-core"],
+    ["org.opencontainers.image.version", version],
+    ["org.bonni.runtime.contract", "1"],
+  ]) {
+    if (archiveIdentity.labels[label] !== expected) {
+      throw new Error(`Das Release-Image besitzt nicht das erwartete Label ${label}=${expected}.`);
+    }
+  }
+  outputStat = await assertRegularUnlinkedFile(temporaryArchive, "RELEASE_STAGED_ARCHIVE_INVALID");
+  archiveSha256 = await sha256(temporaryArchive);
+  const issuedAt = new Date();
+  const expiresAt = new Date(issuedAt.getTime() + expiryDays * 24 * 60 * 60_000);
+  const privateKey = await fs.readFile(privateKeyFile, "utf8");
+
+  const payload = {
+    schemaVersion: 2,
+    product: "bonni-core",
+    channel: "stable",
+    version,
+    artifact: {
+      type: "oci-image-archive",
+      sizeBytes: outputStat.size,
+      sha256: archiveSha256,
+      source: args.has("--artifact-url")
+        ? { kind: "https", url: required(args, "--artifact-url") }
+        : { kind: "local", path: artifactName },
+      imageIdentity: {
+        repository,
+        digest,
+        platform: archiveIdentity.platform,
       },
     },
-  },
-  migration: {
-    required: migrationRequired,
-    strategy: migrationStrategy,
-    fromSchemaVersion: schemaFrom,
-    toSchemaVersion: schemaTo,
-    backwardCompatible: migrationStrategy !== "offline",
-  },
-  issuedAt: canonicalUtc(issuedAt),
-  expiresAt: canonicalUtc(expiresAt),
-  minimumRunnerVersion: "0.3.0",
-  releaseNotes: {
-    title: args.get("--title") || `Bonni Core ${version}`,
-    descriptions: {
-      de: args.get("--description-de") || `Bonni Core ${version}`,
-      en: args.get("--description-en") || `Bonni Core ${version}`,
+    migration: {
+      required: migrationRequired,
+      strategy: migrationStrategy,
+      fromSchemaVersion: schemaFrom,
+      toSchemaVersion: schemaTo,
+      backwardCompatible: migrationStrategy !== "offline",
     },
-  },
-};
+    issuedAt: canonicalUtc(issuedAt),
+    expiresAt: canonicalUtc(expiresAt),
+    minimumRunnerVersion: "0.3.0",
+    releaseNotes: {
+      title: args.get("--title") || `Bonni Core ${visibleBonniVersion(version)}`,
+      descriptions: {
+        de: args.get("--description-de") || `Bonni Core ${visibleBonniVersion(version)}`,
+        en: args.get("--description-en") || `Bonni Core ${visibleBonniVersion(version)}`,
+      },
+    },
+  };
 
-const signed = signReleaseManifest(payload, keyId, privateKey);
-const publicKey = crypto.createPublicKey(privateKey);
-verifyReleaseManifest(signed, {
-  trustedKeys: { [keyId]: publicKey },
-  expectedProduct: "bonni-core",
-  expectedChannel: "stable",
-  runnerVersion: "0.3.0",
-  nodeEnv: "production",
-});
+  const signed = signReleaseManifest(payload, keyId, privateKey);
+  const publicKey = crypto.createPublicKey(privateKey);
+  verifyReleaseManifest(signed, {
+    trustedKeys: { [keyId]: publicKey },
+    expectedProduct: "bonni-core",
+    expectedChannel: "stable",
+    runnerVersion: "0.3.0",
+    nodeEnv: "production",
+  });
 
-const manifestFile = path.join(outputDirectory, "manifest.json");
-const temporary = `${manifestFile}.${process.pid}.tmp`;
-await fs.writeFile(temporary, `${JSON.stringify(signed, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
-await fs.rename(temporary, manifestFile);
+  const manifestHandle = await fs.open(temporaryManifest, "wx", 0o600);
+  try {
+    await manifestHandle.writeFile(`${JSON.stringify(signed, null, 2)}\n`, "utf8");
+    await manifestHandle.sync();
+  } finally {
+    await manifestHandle.close();
+  }
+  await replaceFileAtomically(temporaryArchive, outputArchive);
+  await replaceFileAtomically(temporaryManifest, manifestFile);
+} finally {
+  await fs.unlink(temporaryArchive).catch(() => undefined);
+  await fs.unlink(temporaryManifest).catch(() => undefined);
+}
 console.log(`Release erstellt: ${manifestFile}`);
 console.log(`OCI-Archiv: ${outputArchive}`);

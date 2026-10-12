@@ -86,7 +86,7 @@ function targetsFromRoles(user, shell) {
     const rawRole = String(role?.key || role?.label || role || "").trim();
     const normalizedRole = rawRole.toLowerCase();
 
-    if (["admin", "administrator", "system_admin"].includes(normalizedRole)) {
+    if (["admin", "administrator", "system_admin", "system.admin"].includes(normalizedRole)) {
       return ["control-center"];
     }
 
@@ -230,12 +230,32 @@ function permissionKeys(user, shell) {
   return permissionValues(user, shell).map((permission) => permission.toLowerCase());
 }
 
+function roleKeys(user, shell) {
+  return [
+    ...asList(user?.roles),
+    ...asList(user?.permissions?.roles),
+    ...asList(shell?.identity?.roles),
+    ...asList(shell?.permissions?.roles),
+  ].map((role) => String(role?.key || role?.label || role || "").trim().toUpperCase());
+}
+
 export function canOpenControlCenter(user, shell) {
   const assignedTargets = getAssignedTargets(user, shell);
   if (assignedTargets.includes("control-center")) return true;
 
   return permissionKeys(user, shell).some((permission) => (
     ["*", "system.admin", "system_admin"].includes(permission)
+  ));
+}
+
+export function canOpenSystemUpdate(user, shell) {
+  const administratorRole = roleKeys(user, shell).some((role) => (
+    ["ADMIN", "SYSTEM_ADMIN", "SYSTEM.ADMIN"].includes(role)
+  ));
+  if (administratorRole) return true;
+
+  return permissionKeys(user, shell).some((permission) => (
+    permission === "*" || permission.replace(/_/g, ".") === "system.admin"
   ));
 }
 

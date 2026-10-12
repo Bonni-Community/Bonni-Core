@@ -70,6 +70,7 @@ function FeatureModuleFrame({
   token,
   user,
   shell,
+  branding,
   activeWorkspace,
   allowedWorkspaces,
   onChangeWorkspace,
@@ -103,6 +104,7 @@ function FeatureModuleFrame({
     token,
     user,
     shell,
+    branding,
     activeWorkspace,
     allowedWorkspaces,
   };
@@ -125,6 +127,7 @@ function FeatureModuleFrame({
           transport: OPAQUE_RPC_TRANSPORT,
           user: current.user,
           shell: current.shell,
+          branding: current.branding,
           activeWorkspace: current.activeWorkspace,
           allowedWorkspaces: current.allowedWorkspaces,
         })
@@ -132,6 +135,7 @@ function FeatureModuleFrame({
           token: current.token,
           user: current.user,
           shell: current.shell,
+          branding: current.branding,
           activeWorkspace: current.activeWorkspace,
           allowedWorkspaces: current.allowedWorkspaces,
         };
@@ -284,7 +288,7 @@ function FeatureModuleFrame({
 
   useEffect(() => {
     sendContext();
-  }, [token, user, shell, activeWorkspace, allowedWorkspaces]);
+  }, [token, user, shell, branding, activeWorkspace, allowedWorkspaces]);
 
   if (!opaqueEntryAllowed) {
     return <div style={{ padding: 24 }}>Das abgesicherte Modul darf nur aus Bonni Core selbst geladen werden.</div>;
@@ -420,6 +424,7 @@ export default function FeatureModuleHost({
           token={token}
           user={moduleProps.user}
           shell={moduleProps.shell}
+          branding={moduleProps.branding}
           activeWorkspace={moduleProps.activeWorkspace}
           allowedWorkspaces={moduleProps.allowedWorkspaces}
           onChangeWorkspace={moduleProps.onChangeWorkspace}

@@ -1,0 +1,56 @@
+// =====================================================
+// MODULE: STUEBERLAPP / SALES SETTINGS
+// =====================================================
+// Persistent, instance-scoped sales behaviour.
+//
+// Product ids are deliberately stored as scalar references. Bonni Core loads
+// feature schema fragments independently and older installations may not yet
+// expose relation metadata for the referenced Product models. The service
+// validates the configured products before a mode can be activated.
+
+enum StueberlSalesMode {
+  STOCKED_VARIANTS
+  CATEGORY_TALLY
+  VARIANT_TALLY
+  UNLIMITED_PRODUCTS
+}
+
+model StueberlSalesConfiguration {
+  scopeKey                String            @id @default("default")
+  // Das Grundprofil ist nur die Ausgangsvorlage. `activeModules` bleibt die
+  // wirksame Wahrheit und darf nach der Auswahl individuell abweichen.
+  // String statt Prisma-Enum hält spätere zusätzliche Presets migrationsarm.
+  baseProfile             String            @default("STUEBERLVERWALTUNG")
+  // Ordered ids of the active system building blocks. Nullable on purpose:
+  // existing 0.1.16 rows are then unambiguously recognized and derived from
+  // their legacy `mode` without losing the previous behaviour.
+  activeModules           Json?
+  // v3 makes the mutually exclusive category/sort/product grouping explicit.
+  moduleSchemaVersion     Int               @default(5)
+  // Compatibility projection for older frontends and runtime components.
+  // The module list above is the source of truth for all new configurations.
+  mode                    StueberlSalesMode @default(STOCKED_VARIANTS)
+  aggregateDrinkProductId String?
+  aggregateFoodProductId  String?
+  revision                Int               @default(1)
+  updatedByAccountId      String?
+  createdAt               DateTime          @default(now())
+  updatedAt               DateTime          @updatedAt
+
+  history StueberlSalesConfigurationHistory[]
+
+  @@index([mode])
+}
+
+model StueberlSalesConfigurationHistory {
+  id                 String                      @id @default(cuid())
+  scopeKey           String
+  configuration      StueberlSalesConfiguration @relation(fields: [scopeKey], references: [scopeKey], onDelete: Cascade)
+  revision           Int
+  configurationJson  Json
+  changedByAccountId String?
+  changedAt          DateTime                    @default(now())
+
+  @@unique([scopeKey, revision])
+  @@index([scopeKey, changedAt])
+}

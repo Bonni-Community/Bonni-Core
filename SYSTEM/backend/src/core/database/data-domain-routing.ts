@@ -45,7 +45,7 @@ const runtime: DataDomainRoutingRuntime = {
 };
 
 function routingFilePath() {
-  return path.join(path.resolve(env.RUN_SYSTEM_ROOT), "system", FILE_NAME);
+  return path.join(path.resolve(env.BONNI_RUNTIME_STATE_ROOT), "system", FILE_NAME);
 }
 
 function routingKey() {

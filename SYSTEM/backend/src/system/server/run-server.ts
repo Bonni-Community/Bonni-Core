@@ -262,53 +262,58 @@ try {
 
   const app = await createPlatformApp();
 
-  registerServer(
-    app.listen(env.PORT, () => {
-      const metadata = {
-        surface: "platform",
-        port: env.PORT,
-        authMode: env.AUTH_MODE,
-        oidcEnabled: env.OIDC_ENABLED,
-        runtime,
-        database: getDatabaseOperationStatus(),
-      };
+  const onPlatformStarted = () => {
+    const metadata = {
+      surface: "platform",
+      bind: env.SYSTEM_SERVER_BIND || null,
+      port: env.PORT,
+      authMode: env.AUTH_MODE,
+      oidcEnabled: env.OIDC_ENABLED,
+      runtime,
+      database: getDatabaseOperationStatus(),
+    };
 
-      logger.info("Backend started", {
-        module: "server",
-        ...metadata,
+    logger.info("Backend started", {
+      module: "server",
+      ...metadata,
+    });
+
+    if (process.connected && typeof process.send === "function") {
+      process.send({
+        type: "BONNI_BACKEND_READY",
+        runtime: metadata.runtime,
+        port: metadata.port,
       });
+    }
 
-      if (process.connected && typeof process.send === "function") {
-        process.send({
-          type: "BONNI_BACKEND_READY",
-          runtime: metadata.runtime,
-          port: metadata.port,
-        });
-      }
-
-      if (runtime.slotRole === "active") {
-        const updateScheduler = startCoreUpdateScheduler();
-        logger.info("Bonni-Core-Updateprüfung geplant", {
-          module: "core-update",
-          updateScheduler,
-        });
-        void scheduleEmergencyAutoStart("active-platform-started")
-          .then((schedule) => {
-            if (schedule.scheduled || schedule.reason !== "EMERGENCY_DISABLED") {
-              logger.info("Emergency-Backend Autostart geprüft", {
-                module: "emergency-control",
-                schedule,
-              });
-            }
-          })
-          .catch((error) => {
-            logger.warn("Emergency-Backend Autostart konnte nicht geplant werden", {
+    if (runtime.slotRole === "active") {
+      const updateScheduler = startCoreUpdateScheduler();
+      logger.info("Bonni-Core-Updateprüfung geplant", {
+        module: "core-update",
+        updateScheduler,
+      });
+      void scheduleEmergencyAutoStart("active-platform-started")
+        .then((schedule) => {
+          if (schedule.scheduled || schedule.reason !== "EMERGENCY_DISABLED") {
+            logger.info("Emergency-Backend Autostart geprüft", {
               module: "emergency-control",
-              error: errorDetails(error),
+              schedule,
             });
+          }
+        })
+        .catch((error) => {
+          logger.warn("Emergency-Backend Autostart konnte nicht geplant werden", {
+            module: "emergency-control",
+            error: errorDetails(error),
           });
-      }
-    }),
+        });
+    }
+  };
+
+  registerServer(
+    env.SYSTEM_SERVER_BIND
+      ? app.listen(env.PORT, env.SYSTEM_SERVER_BIND, onPlatformStarted)
+      : app.listen(env.PORT, onPlatformStarted),
   );
 } catch (error) {
   const metadata = {

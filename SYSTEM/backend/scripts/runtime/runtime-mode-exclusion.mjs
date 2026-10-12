@@ -1,5 +1,4 @@
 import crypto from "node:crypto";
-import { constants as fsConstants } from "node:fs";
 import fs from "node:fs/promises";
 import net from "node:net";
 import path from "node:path";
@@ -17,8 +16,17 @@ const CORE_CHILD_FILE = "core-child.json";
 const HEARTBEAT_FILE = "heartbeat.json";
 const UPDATE_COMMAND_LOCK_FILE = "update-command.lock";
 const HOST_BACKEND_RUNTIME_FILE = "host-backend-runtime.json";
+const HOST_BACKEND_RESTART_RECOVERY_FILE = "host-backend-runtime.restart-recovery.json";
+const HOST_BACKEND_RESTART_RECOVERY_SCHEMA = "bonni.local-host-backend-restart-recovery/v1";
 const IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/u;
 const TOKEN = /^[A-Za-z0-9_-]{32,128}$/u;
+const WINDOWS_EVENT_RECORD_ID = /^(?:[1-9][0-9]{0,19})$/u;
+const WINDOWS_KERNEL_GENERAL_PROVIDER_ID = "a68ca8b7-004f-d7b6-a698-07e2de0f1f5d";
+const WINDOWS_KERNEL_BOOT_PROVIDER_ID = "15ca44ff-4d7a-4baa-bba5-0998955e531e";
+const WINDOWS_EVENT_MACHINE_NAME = /^[^\u0000-\u001f\u007f]{1,255}$/u;
+const WINDOWS_BOOT_EVENT_CLUSTER_MS = 15 * 1_000;
+const HOST_BACKEND_BIND_SETTLE_ATTEMPTS = 200;
+const HOST_BACKEND_BIND_SETTLE_DELAY_MS = 25;
 
 function exclusionError(code, detail = "") {
   const error = new Error(detail ? `${code}:${detail}` : code);
@@ -123,6 +131,69 @@ function validateHostBackendRuntime(value) {
   return Object.freeze(value);
 }
 
+function validateHostBackendRestartRecovery(value) {
+  const keys = [
+    "schemaVersion", "receiptPid", "receiptToken", "receiptEntry",
+    "receiptStartedAt", "armedBootRecordId", "armedBootTime",
+    "armedBootProviderId", "armedBootMachineName", "armedAt",
+  ];
+  if (!exactKeys(value, keys)
+    || value.schemaVersion !== HOST_BACKEND_RESTART_RECOVERY_SCHEMA
+    || !validPid(value.receiptPid)
+    || typeof value.receiptToken !== "string" || !TOKEN.test(value.receiptToken)
+    || value.receiptEntry !== "start"
+    || !validTimestamp(value.receiptStartedAt)
+    || typeof value.armedBootRecordId !== "string"
+    || !WINDOWS_EVENT_RECORD_ID.test(value.armedBootRecordId)
+    || !validTimestamp(value.armedBootTime)
+    || value.armedBootProviderId !== WINDOWS_KERNEL_GENERAL_PROVIDER_ID
+    || typeof value.armedBootMachineName !== "string"
+    || !WINDOWS_EVENT_MACHINE_NAME.test(value.armedBootMachineName)
+    || !validTimestamp(value.armedAt)) {
+    throw exclusionError("LOCAL_HOST_BACKEND_RESTART_RECOVERY_INVALID");
+  }
+  return Object.freeze(value);
+}
+
+function validWindowsBootEvent(value, expectedProviderId = WINDOWS_KERNEL_GENERAL_PROVIDER_ID) {
+  return exactKeys(value, ["recordId", "timeCreated", "providerId", "machineName"])
+    && typeof value.recordId === "string"
+    && WINDOWS_EVENT_RECORD_ID.test(value.recordId)
+    && validTimestamp(value.timeCreated)
+    && value.providerId === expectedProviderId
+    && typeof value.machineName === "string"
+    && WINDOWS_EVENT_MACHINE_NAME.test(value.machineName);
+}
+
+function validWindowsBootEvidence(value) {
+  if (!exactKeys(value, [
+    "recordId", "timeCreated", "providerId", "machineName", "bootType",
+    "bootEvent", "uptimeConsistent", "recentEvents",
+  ])
+    || !validWindowsBootEvent({
+      recordId: value?.recordId,
+      timeCreated: value?.timeCreated,
+      providerId: value?.providerId,
+      machineName: value?.machineName,
+    })
+    || !Array.isArray(value.recentEvents)
+    || value.recentEvents.length < 1 || value.recentEvents.length > 16
+    || !value.recentEvents.every((event) => validWindowsBootEvent(event))
+    || value.recentEvents[0].recordId !== value.recordId
+    || value.recentEvents[0].timeCreated !== value.timeCreated
+    || value.recentEvents[0].providerId !== value.providerId
+    || value.recentEvents[0].machineName !== value.machineName
+    || typeof value.bootType !== "string" || !/^(?:0|[1-9][0-9]{0,9})$/u.test(value.bootType)
+    || !validWindowsBootEvent(value.bootEvent, WINDOWS_KERNEL_BOOT_PROVIDER_ID)
+    || value.bootEvent.machineName !== value.machineName
+    || Math.abs(Date.parse(value.bootEvent.timeCreated) - Date.parse(value.timeCreated))
+      > WINDOWS_BOOT_EVENT_CLUSTER_MS
+    || typeof value.uptimeConsistent !== "boolean") return false;
+  return new Set(value.recentEvents.map(
+    (event) => `${event.recordId}\0${event.timeCreated}\0${event.providerId}\0${event.machineName}`,
+  )).size === value.recentEvents.length;
+}
+
 function validateSupervisorLock(value) {
   const keys = ["pid", "instanceId", "startedAt"];
   if (!exactKeys(value, keys)
@@ -166,6 +237,12 @@ function defaultPidAlive(pid) {
     if (error?.code === "EPERM") return true;
     throw error;
   }
+}
+
+function permittedHostBackendFromEnvironment(environment = process.env) {
+  const pid = Number(environment?.BONNI_LOCAL_HOST_BACKEND_LEASE_OWNER_PID || 0);
+  const token = String(environment?.BONNI_LOCAL_HOST_BACKEND_LEASE_TOKEN || "");
+  return validPid(pid) && TOKEN.test(token) ? Object.freeze({ pid, token }) : null;
 }
 
 function parsePort(value, fallback, label) {
@@ -213,6 +290,38 @@ async function ensureRealDirectory(directory) {
   }
 }
 
+export async function assertNoWindowsStartRepairTransaction({ productRoot } = {}) {
+  const root = path.resolve(productRoot);
+  if (root === path.parse(root).root) {
+    throw exclusionError("WINDOWS_START_REPAIR_PRODUCT_ROOT_INVALID");
+  }
+  const rootState = await fs.lstat(root);
+  if (!rootState.isDirectory() || rootState.isSymbolicLink()) {
+    throw exclusionError("WINDOWS_START_REPAIR_PRODUCT_ROOT_INVALID");
+  }
+  const backupRoot = path.join(root, "BACKUP");
+  const transactionRoot = path.join(backupRoot, ".bonni-windows-start-repair");
+  for (const directory of [backupRoot, transactionRoot]) {
+    const state = await fs.lstat(directory).catch((error) => {
+      if (error?.code === "ENOENT") return null;
+      throw error;
+    });
+    if (!state) return { ok: true, active: false };
+    if (!state.isDirectory() || state.isSymbolicLink()) {
+      throw exclusionError("WINDOWS_START_REPAIR_TRANSACTION_ROOT_UNSAFE", directory);
+    }
+  }
+  const activeJournal = path.join(transactionRoot, "active.json");
+  const active = await fs.lstat(activeJournal).catch((error) => {
+    if (error?.code === "ENOENT") return null;
+    throw error;
+  });
+  if (active) {
+    throw exclusionError("WINDOWS_START_REPAIR_TRANSACTION_ACTIVE");
+  }
+  return { ok: true, active: false };
+}
+
 export async function runtimeControlRoot(productRoot, { create = false } = {}) {
   const root = path.resolve(productRoot);
   if (root === path.parse(root).root) throw exclusionError("LOCAL_SOURCE_RUNTIME_PRODUCT_ROOT_INVALID");
@@ -220,6 +329,10 @@ export async function runtimeControlRoot(productRoot, { create = false } = {}) {
   if (!rootStat.isDirectory() || rootStat.isSymbolicLink()) {
     throw exclusionError("LOCAL_SOURCE_RUNTIME_PRODUCT_ROOT_INVALID");
   }
+  // The repair installer replaces this module first and restores it last.
+  // Consequently every mixed program tree remains fail-closed after a crash,
+  // even while the older prestart gate is still installed.
+  await assertNoWindowsStartRepairTransaction({ productRoot: root });
   const parts = ["SYSTEM", ".bonni-source-update", "control-center"];
   let current = root;
   for (let index = 0; index < parts.length; index += 1) {
@@ -269,6 +382,258 @@ async function readReceipt(file, validator) {
   }
 }
 
+async function removeReceiptArtifact(file, observed, code) {
+  const current = await fs.lstat(file).catch((error) => {
+    if (error?.code === "ENOENT") return null;
+    throw error;
+  });
+  if (!current || current.isSymbolicLink()
+    || current.dev !== observed.dev || current.ino !== observed.ino) {
+    throw exclusionError(code, path.basename(file));
+  }
+  await fs.unlink(file);
+}
+
+async function readObservedSwapReceipt(file, observedState, validator, {
+  allowStableInvalid = false,
+} = {}) {
+  if (!file || !observedState) {
+    return Object.freeze({ receipt: null, changed: false, invalid: false });
+  }
+  try {
+    const receipt = await readReceipt(file, validator);
+    if (!receipt
+      || receipt.dev !== observedState.dev
+      || receipt.ino !== observedState.ino) {
+      return Object.freeze({ receipt: null, changed: true, invalid: false });
+    }
+    return Object.freeze({ receipt, changed: false, invalid: false });
+  } catch (error) {
+    const current = await fs.lstat(file).catch((stateError) => {
+      if (stateError?.code === "ENOENT") return null;
+      throw stateError;
+    });
+    if (!current
+      || current.dev !== observedState.dev
+      || current.ino !== observedState.ino) {
+      return Object.freeze({ receipt: null, changed: true, invalid: false });
+    }
+    if (allowStableInvalid) {
+      return Object.freeze({ receipt: null, changed: false, invalid: true });
+    }
+    throw error;
+  }
+}
+
+async function recoverHostBackendReceiptSwap(controlRoot, { isPidAlive = defaultPidAlive } = {}) {
+  const file = path.join(controlRoot, HOST_BACKEND_RUNTIME_FILE);
+  const entries = await fs.readdir(controlRoot, { withFileTypes: true }).catch((error) => {
+    if (error?.code === "ENOENT") return [];
+    throw error;
+  });
+  const stagedNames = entries
+    .map((entry) => entry.name)
+    .filter((name) => name.startsWith(`${HOST_BACKEND_RUNTIME_FILE}.bind-staged-`));
+  const previousNames = entries
+    .map((entry) => entry.name)
+    .filter((name) => name.startsWith(`${HOST_BACKEND_RUNTIME_FILE}.bind-previous-`));
+  if (stagedNames.length > 1 || previousNames.length > 1) {
+    throw exclusionError("LOCAL_HOST_BACKEND_RUNTIME_BIND_ARTIFACT_INVALID");
+  }
+  const stagedFile = stagedNames[0] ? path.join(controlRoot, stagedNames[0]) : null;
+  const previousFile = previousNames[0] ? path.join(controlRoot, previousNames[0]) : null;
+  const [canonicalState, stagedState, previousState] = await Promise.all(
+    [file, stagedFile, previousFile].map((target) => target ? fs.lstat(target).catch((error) => {
+      if (error?.code === "ENOENT") return null;
+      throw error;
+    }) : null),
+  );
+  for (const [target, state] of [[file, canonicalState], [stagedFile, stagedState], [previousFile, previousState]]) {
+    if (state && (!state.isFile() || state.isSymbolicLink())) {
+      throw exclusionError("LOCAL_HOST_BACKEND_RUNTIME_BIND_ARTIFACT_INVALID", path.basename(target));
+    }
+  }
+  if (!stagedState && !previousState) return;
+  const [canonicalRead, stagedRead, previousRead] = await Promise.all([
+    readObservedSwapReceipt(file, canonicalState, validateHostBackendRuntime),
+    readObservedSwapReceipt(stagedFile, stagedState, validateHostBackendRuntime, {
+      allowStableInvalid: true,
+    }),
+    readObservedSwapReceipt(previousFile, previousState, validateHostBackendRuntime),
+  ]);
+  if (canonicalRead.changed || stagedRead.changed || previousRead.changed) {
+    return Object.freeze({ deferred: true, canonicalPresent: false });
+  }
+  const canonical = canonicalRead.receipt;
+  const staged = stagedRead.receipt;
+  const stagedInvalid = stagedRead.invalid;
+  const previous = previousRead.receipt;
+  const artifactToken = (name, marker) => name?.slice(name.indexOf(marker) + marker.length) || "";
+  const stagedToken = artifactToken(stagedNames[0], ".bind-staged-");
+  const previousToken = artifactToken(previousNames[0], ".bind-previous-");
+  if ((stagedState && !TOKEN.test(stagedToken))
+    || (previousState && !TOKEN.test(previousToken))) {
+    throw exclusionError("LOCAL_HOST_BACKEND_RUNTIME_BIND_ARTIFACT_INVALID");
+  }
+  const sameOwner = (left, right) => left && right
+    && left.value.pid === right.value.pid
+    && left.value.token === right.value.token
+    && left.value.entry === right.value.entry
+    && left.value.startedAt === right.value.startedAt;
+
+  // Readers can arrive while a live parent is updating childPid: first the
+  // staged file is synced, then the canonical name is displaced for a very
+  // short Windows rename window. No reader may consume a live transaction.
+  // After it settles, the higher-level gate independently checks whether the
+  // caller inherited the exact owner PID and secret token. Dead owners still
+  // take the strict recovery path below.
+  const artifactTokens = [
+    stagedState ? stagedToken : null,
+    previousState ? previousToken : null,
+  ].filter(Boolean);
+  const ownerReceipts = [canonical, staged, previous].filter(Boolean);
+  const artifactOwner = ownerReceipts[0] || null;
+  const artifactOwnerIsLive = artifactOwner
+    && artifactTokens.length > 0
+    && artifactTokens.every((token) => token === artifactOwner.value.token)
+    && ownerReceipts.length > 0
+    && ownerReceipts.every((receipt) => sameOwner(artifactOwner, receipt))
+    && await Promise.resolve(isPidAlive(artifactOwner.value.pid));
+  if (artifactOwnerIsLive) {
+    return Object.freeze({ deferred: true, canonicalPresent: Boolean(canonical) });
+  }
+
+  if (previous) {
+    if (previousToken !== previous.value.token || (stagedState && stagedToken !== previous.value.token)) {
+      throw exclusionError("LOCAL_HOST_BACKEND_RUNTIME_BIND_RECOVERY_INVALID");
+    }
+    if (!canonical) {
+      if ((!staged && !stagedInvalid) || (staged && !sameOwner(previous, staged))) {
+        throw exclusionError("LOCAL_HOST_BACKEND_RUNTIME_BIND_RECOVERY_INVALID");
+      }
+      await fs.rename(previousFile, file);
+      const restored = await readReceipt(file, validateHostBackendRuntime);
+      if (!restored || restored.dev !== previous.dev || restored.ino !== previous.ino) {
+        throw exclusionError("LOCAL_HOST_BACKEND_RUNTIME_BIND_OWNER_RACE");
+      }
+      await removeReceiptArtifact(stagedFile, staged || {
+        dev: stagedState.dev, ino: stagedState.ino,
+      }, "LOCAL_HOST_BACKEND_RUNTIME_BIND_OWNER_RACE");
+      return Object.freeze({ deferred: false, canonicalPresent: true });
+    }
+    if (staged || !sameOwner(previous, canonical)) {
+      throw exclusionError("LOCAL_HOST_BACKEND_RUNTIME_BIND_RECOVERY_INVALID");
+    }
+    await removeReceiptArtifact(
+      previousFile,
+      previous,
+      "LOCAL_HOST_BACKEND_RUNTIME_BIND_OWNER_RACE",
+    );
+    return Object.freeze({ deferred: false, canonicalPresent: true });
+  }
+  if (!canonical || stagedToken !== canonical.value.token
+    || (!stagedInvalid && (!staged || !sameOwner(canonical, staged)))) {
+    throw exclusionError("LOCAL_HOST_BACKEND_RUNTIME_BIND_RECOVERY_INVALID");
+  }
+  await removeReceiptArtifact(
+    stagedFile,
+    staged || { dev: stagedState.dev, ino: stagedState.ino },
+    "LOCAL_HOST_BACKEND_RUNTIME_BIND_OWNER_RACE",
+  );
+  return Object.freeze({ deferred: false, canonicalPresent: true });
+}
+
+async function readHostBackendRuntime(controlRoot, {
+  isPidAlive = defaultPidAlive,
+  wait = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)),
+} = {}) {
+  const file = path.join(controlRoot, HOST_BACKEND_RUNTIME_FILE);
+  for (let attempt = 0; attempt < HOST_BACKEND_BIND_SETTLE_ATTEMPTS; attempt += 1) {
+    const recovery = await recoverHostBackendReceiptSwap(controlRoot, { isPidAlive });
+    if (recovery?.deferred) {
+      if (attempt === HOST_BACKEND_BIND_SETTLE_ATTEMPTS - 1) {
+        throw exclusionError("LOCAL_HOST_BACKEND_RUNTIME_BIND_IN_PROGRESS");
+      }
+      await wait(HOST_BACKEND_BIND_SETTLE_DELAY_MS);
+      continue;
+    }
+    let receipt = await readReceipt(file, validateHostBackendRuntime);
+    if (!receipt) return null;
+    const createPrefix = `${HOST_BACKEND_RUNTIME_FILE}.create-`;
+    const entries = await fs.readdir(controlRoot, { withFileTypes: true }).catch((error) => {
+      if (error?.code === "ENOENT") return [];
+      throw error;
+    });
+    for (const entry of entries) {
+      if (!entry.name.startsWith(createPrefix) || !entry.name.endsWith(".tmp")) continue;
+      const temporary = path.join(controlRoot, entry.name);
+      const state = await fs.lstat(temporary);
+      if (state.isFile() && !state.isSymbolicLink()
+        && state.dev === receipt.dev && state.ino === receipt.ino) {
+        await fs.unlink(temporary);
+      }
+    }
+    receipt = await readReceipt(file, validateHostBackendRuntime);
+    if (receipt) return receipt;
+    throw exclusionError("LOCAL_HOST_BACKEND_RUNTIME_BIND_OWNER_RACE");
+  }
+  throw exclusionError("LOCAL_HOST_BACKEND_RUNTIME_BIND_IN_PROGRESS");
+}
+
+async function replaceHostBackendRuntimeReceipt({
+  controlRoot,
+  observed,
+  updated,
+  testHooks = {},
+}) {
+  const file = path.join(controlRoot, HOST_BACKEND_RUNTIME_FILE);
+  const stagedFile = `${file}.bind-staged-${observed.value.token}`;
+  const previousFile = `${file}.bind-previous-${observed.value.token}`;
+  await recoverHostBackendReceiptSwap(controlRoot);
+  if (await fs.lstat(stagedFile).catch(() => null)
+    || await fs.lstat(previousFile).catch(() => null)) {
+    throw exclusionError("LOCAL_HOST_BACKEND_RUNTIME_BIND_ARTIFACT_PRESENT");
+  }
+  const handle = await fs.open(stagedFile, "wx", 0o600);
+  try {
+    if (testHooks.afterBindStagedCreated) await testHooks.afterBindStagedCreated(stagedFile);
+    await handle.writeFile(`${JSON.stringify(updated, null, 2)}\n`, "utf8");
+    await handle.sync();
+  } finally {
+    await handle.close().catch(() => undefined);
+  }
+  try {
+    if (testHooks.afterBindStagedSynced) await testHooks.afterBindStagedSynced(stagedFile);
+    const current = await readReceipt(file, validateHostBackendRuntime);
+    if (!current || current.dev !== observed.dev || current.ino !== observed.ino
+      || current.value.token !== observed.value.token) {
+      throw exclusionError("LOCAL_HOST_BACKEND_RUNTIME_OWNERSHIP_LOST");
+    }
+    await fs.rename(file, previousFile);
+    if (testHooks.afterBindOwnerDisplaced) await testHooks.afterBindOwnerDisplaced(previousFile);
+    await fs.rename(stagedFile, file);
+    if (testHooks.afterBindReplacementActivated) await testHooks.afterBindReplacementActivated(file);
+    const installed = await readReceipt(file, validateHostBackendRuntime);
+    if (!installed || installed.value.token !== updated.token
+      || installed.value.pid !== updated.pid || installed.value.childPid !== updated.childPid) {
+      throw exclusionError("LOCAL_HOST_BACKEND_RUNTIME_BIND_VERIFY_FAILED");
+    }
+    const previous = await readReceipt(previousFile, validateHostBackendRuntime);
+    if (!previous || previous.dev !== observed.dev || previous.ino !== observed.ino) {
+      throw exclusionError("LOCAL_HOST_BACKEND_RUNTIME_BIND_OWNER_RACE");
+    }
+    await removeReceiptArtifact(
+      previousFile,
+      previous,
+      "LOCAL_HOST_BACKEND_RUNTIME_BIND_OWNER_RACE",
+    );
+    return installed;
+  } catch (error) {
+    await recoverHostBackendReceiptSwap(controlRoot).catch(() => undefined);
+    throw error;
+  }
+}
+
 async function removeExact(file, observed, ownerRaceCode = "DOCKER_RUNTIME_ACTIVATION_OWNER_RACE") {
   const current = await fs.lstat(file).catch((error) => {
     if (error?.code === "ENOENT") return null;
@@ -300,6 +665,339 @@ async function removeExact(file, observed, ownerRaceCode = "DOCKER_RUNTIME_ACTIV
   return true;
 }
 
+async function archiveExact(file, observed, ownerRaceCode, now = () => new Date()) {
+  const current = await fs.lstat(file).catch((error) => {
+    if (error?.code === "ENOENT") return null;
+    throw error;
+  });
+  if (!current) return null;
+  if (current.isSymbolicLink() || current.dev !== observed.dev || current.ino !== observed.ino) {
+    throw exclusionError(ownerRaceCode);
+  }
+  const timestamp = now().toISOString().replace(/[-:.]/gu, "");
+  const moved = `${file}.stale-${timestamp}-${crypto.randomBytes(6).toString("hex")}`;
+  await fs.rename(file, moved);
+  const movedStat = await fs.lstat(moved);
+  if (movedStat.dev !== observed.dev || movedStat.ino !== observed.ino) {
+    let restored = false;
+    try {
+      await fs.link(moved, file);
+      restored = true;
+    } catch (error) {
+      if (error?.code !== "EEXIST") throw error;
+    }
+    if (restored) await fs.unlink(moved);
+    throw exclusionError(ownerRaceCode);
+  }
+  return moved;
+}
+
+export async function reconcileStaleLocalHostBackendRuntime({
+  productRoot,
+  isPidAlive = defaultPidAlive,
+  probePort = defaultProbePort,
+  environment = process.env,
+  deferUnboundToRestartRecovery = false,
+  wait = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)),
+  now = () => new Date(),
+} = {}) {
+  const controlRoot = await runtimeControlRoot(productRoot, { create: false });
+  const file = path.join(controlRoot, HOST_BACKEND_RUNTIME_FILE);
+  const observed = await readHostBackendRuntime(controlRoot, { isPidAlive, wait });
+  if (!observed) return Object.freeze({ reconciled: false, reason: "absent" });
+
+  // On Windows only, the caller can route this one ambiguous spawn window to
+  // the boot-evidence recovery before trusting a numeric PID. After a reboot
+  // that PID may already belong to an unrelated process. The specialized
+  // recovery still checks a live owner on the armed boot and ignores it only
+  // after a full-restart proof.
+  if (!observed.value.childPid && deferUnboundToRestartRecovery) {
+    throw exclusionError("LOCAL_HOST_BACKEND_RUNTIME_STALE_UNBOUND", observed.value.entry);
+  }
+  for (const pid of [observed.value.pid, observed.value.childPid]) {
+    if (pid && await Promise.resolve(isPidAlive(pid))) {
+      throw exclusionError("LOCAL_HOST_BACKEND_RUNTIME_ACTIVE", String(pid));
+    }
+  }
+  // Ohne gebundene Child-PID könnte ein unmittelbar vor dem Bind abgestürzter
+  // Wrapper einen noch startenden Waisenprozess hinterlassen haben. Dieser
+  // seltene Zustand bleibt bewusst fail-closed und wird nicht automatisch
+  // umbenannt.
+  if (!observed.value.childPid) {
+    throw exclusionError("LOCAL_HOST_BACKEND_RUNTIME_STALE_UNBOUND", observed.value.entry);
+  }
+
+  const ports = [...new Set([
+    4_198,
+    4_000,
+    4_101,
+    4_201,
+    parsePort(environment.BONNI_INSTALLATION_MONITOR_PORT, 4_198, "monitor"),
+    parsePort(environment.PORT, 4_000, "core"),
+    // Der lokale Host-Core bindet standardmäßig 4101. Das prestart-Gate lädt
+    // bewusst keine .env-Datei; deshalb muss bereits der Fallback dem echten
+    // Host-Default entsprechen, damit ein verwaister Endpunkt nicht übersehen
+    // und sein Laufzeitbeleg irrtümlich archiviert wird.
+    parsePort(environment.LOCAL_AUTH_PORT, 4_101, "local-auth"),
+    parsePort(environment.MODULE_MANAGER_PORT, 4_201, "module-manager"),
+  ])];
+  for (let pass = 0; pass < 2; pass += 1) {
+    for (const port of ports) {
+      if (await probePort(port)) {
+        throw exclusionError("LOCAL_SOURCE_RUNTIME_CORE_PORT_ACTIVE", String(port));
+      }
+    }
+    if (pass === 0) await wait(250);
+  }
+
+  const rechecked = await readHostBackendRuntime(controlRoot, { isPidAlive, wait });
+  if (!rechecked) return Object.freeze({ reconciled: false, reason: "already-reconciled" });
+  if (
+    rechecked.dev !== observed.dev
+    || rechecked.ino !== observed.ino
+    || rechecked.value.token !== observed.value.token
+  ) {
+    throw exclusionError("LOCAL_HOST_BACKEND_RUNTIME_RECONCILE_RACE");
+  }
+  for (const pid of [rechecked.value.pid, rechecked.value.childPid]) {
+    if (pid && await Promise.resolve(isPidAlive(pid))) {
+      throw exclusionError("LOCAL_HOST_BACKEND_RUNTIME_ACTIVE", String(pid));
+    }
+  }
+  const archivedPath = await archiveExact(
+    file,
+    rechecked,
+    "LOCAL_HOST_BACKEND_RUNTIME_RECONCILE_RACE",
+    now,
+  );
+  return Object.freeze({
+    reconciled: Boolean(archivedPath),
+    reason: archivedPath ? "stale-archived" : "already-reconciled",
+    archivedPath,
+    entry: rechecked.value.entry,
+  });
+}
+
+async function createHostBackendRestartRecoveryIntent({
+  file,
+  receipt,
+  bootEvidence,
+  now,
+}) {
+  const value = {
+    schemaVersion: HOST_BACKEND_RESTART_RECOVERY_SCHEMA,
+    receiptPid: receipt.value.pid,
+    receiptToken: receipt.value.token,
+    receiptEntry: receipt.value.entry,
+    receiptStartedAt: receipt.value.startedAt,
+    armedBootRecordId: bootEvidence.recordId,
+    armedBootTime: bootEvidence.timeCreated,
+    armedBootProviderId: bootEvidence.providerId,
+    armedBootMachineName: bootEvidence.machineName,
+    armedAt: now().toISOString(),
+  };
+  const temporary = `${file}.create-${process.pid}-${crypto.randomBytes(6).toString("hex")}.tmp`;
+  const handle = await fs.open(temporary, "wx", 0o600);
+  try {
+    await handle.writeFile(`${JSON.stringify(value, null, 2)}\n`, "utf8");
+    await handle.sync();
+  } finally {
+    await handle.close().catch(() => undefined);
+  }
+  try {
+    await fs.link(temporary, file);
+  } catch (error) {
+    if (error?.code !== "EEXIST") throw error;
+  } finally {
+    await fs.rm(temporary, { force: true }).catch(() => undefined);
+  }
+  const created = await readReceipt(file, validateHostBackendRestartRecovery);
+  if (!created
+    || created.value.receiptPid !== value.receiptPid
+    || created.value.receiptToken !== value.receiptToken
+    || created.value.receiptStartedAt !== value.receiptStartedAt
+    || created.value.armedBootRecordId !== value.armedBootRecordId
+    || created.value.armedBootTime !== value.armedBootTime
+    || created.value.armedBootProviderId !== value.armedBootProviderId
+    || created.value.armedBootMachineName !== value.armedBootMachineName) {
+    throw exclusionError("LOCAL_HOST_BACKEND_RESTART_RECOVERY_RACE");
+  }
+  return created;
+}
+
+function restartRecoveryMatchesReceipt(recovery, receipt) {
+  return recovery.value.receiptPid === receipt.value.pid
+    && recovery.value.receiptToken === receipt.value.token
+    && recovery.value.receiptEntry === receipt.value.entry
+    && recovery.value.receiptStartedAt === receipt.value.startedAt;
+}
+
+export async function reconcileStaleUnboundLocalHostBackendRuntimeAfterRestart({
+  productRoot,
+  bootEvidence,
+  isPidAlive = defaultPidAlive,
+  probePort = defaultProbePort,
+  environment = process.env,
+  wait = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)),
+  now = () => new Date(),
+} = {}) {
+  const controlRoot = await runtimeControlRoot(productRoot, { create: false });
+  const receiptFile = path.join(controlRoot, HOST_BACKEND_RUNTIME_FILE);
+  const recoveryFile = path.join(controlRoot, HOST_BACKEND_RESTART_RECOVERY_FILE);
+  const [observed, existingRecovery] = await Promise.all([
+    readHostBackendRuntime(controlRoot, { isPidAlive, wait }),
+    readReceipt(recoveryFile, validateHostBackendRestartRecovery),
+  ]);
+
+  // A crash can happen after the runtime receipt was archived but before its
+  // restart intent was archived. The intent has no runtime authority of its
+  // own and can be closed idempotently when no receipt remains.
+  if (!observed) {
+    if (!existingRecovery) return Object.freeze({ reconciled: false, reason: "absent" });
+    const archivedRecoveryPath = await archiveExact(
+      recoveryFile,
+      existingRecovery,
+      "LOCAL_HOST_BACKEND_RESTART_RECOVERY_RACE",
+      now,
+    );
+    return Object.freeze({
+      reconciled: false,
+      reason: "orphan-recovery-archived",
+      archivedRecoveryPath,
+    });
+  }
+  if (!validWindowsBootEvidence(bootEvidence)) {
+    throw exclusionError("LOCAL_HOST_BACKEND_WINDOWS_BOOT_EVIDENCE_INVALID");
+  }
+  if (observed.value.childPid !== null) {
+    if (existingRecovery) {
+      throw exclusionError("LOCAL_HOST_BACKEND_RESTART_RECOVERY_RECEIPT_MISMATCH");
+    }
+    return Object.freeze({ reconciled: false, reason: "receipt-bound" });
+  }
+  if (observed.value.entry !== "start") {
+    return Object.freeze({ reconciled: false, reason: "unsupported-entry" });
+  }
+  if (!existingRecovery && await Promise.resolve(isPidAlive(observed.value.pid))) {
+    throw exclusionError("LOCAL_HOST_BACKEND_RUNTIME_ACTIVE", String(observed.value.pid));
+  }
+
+  const recovery = existingRecovery || await createHostBackendRestartRecoveryIntent({
+    file: recoveryFile,
+    receipt: observed,
+    bootEvidence,
+    now,
+  });
+  if (!restartRecoveryMatchesReceipt(recovery, observed)) {
+    throw exclusionError("LOCAL_HOST_BACKEND_RESTART_RECOVERY_RECEIPT_MISMATCH");
+  }
+  const sameBootEvent = recovery.value.armedBootRecordId === bootEvidence.recordId
+    && recovery.value.armedBootTime === bootEvidence.timeCreated
+    && recovery.value.armedBootProviderId === bootEvidence.providerId
+    && recovery.value.armedBootMachineName === bootEvidence.machineName;
+  if (sameBootEvent) {
+    if (await Promise.resolve(isPidAlive(observed.value.pid))) {
+      throw exclusionError("LOCAL_HOST_BACKEND_RUNTIME_ACTIVE", String(observed.value.pid));
+    }
+    throw exclusionError("LOCAL_HOST_BACKEND_RUNTIME_RESTART_REQUIRED", observed.value.entry);
+  }
+  // Both immutable fields must move together. A partial change points to an
+  // event-log replacement or malformed evidence and must never unlock.
+  if (recovery.value.armedBootRecordId === bootEvidence.recordId
+    || recovery.value.armedBootTime === bootEvidence.timeCreated
+    || recovery.value.armedBootProviderId !== bootEvidence.providerId) {
+    throw exclusionError("LOCAL_HOST_BACKEND_WINDOWS_BOOT_EVIDENCE_MISMATCH");
+  }
+  if (BigInt(bootEvidence.recordId) <= BigInt(recovery.value.armedBootRecordId)) {
+    throw exclusionError("LOCAL_HOST_BACKEND_WINDOWS_BOOT_EVIDENCE_NOT_NEWER");
+  }
+  const armedBootEventStillPresent = bootEvidence.recentEvents.some(
+    (event) => event.recordId === recovery.value.armedBootRecordId
+      && event.timeCreated === recovery.value.armedBootTime
+      && event.providerId === recovery.value.armedBootProviderId
+      && event.machineName === recovery.value.armedBootMachineName,
+  );
+  if (!armedBootEventStillPresent) {
+    throw exclusionError("LOCAL_HOST_BACKEND_WINDOWS_BOOT_EVIDENCE_ANCHOR_MISSING");
+  }
+  if (bootEvidence.bootType !== "0" || bootEvidence.uptimeConsistent !== true) {
+    throw exclusionError("LOCAL_HOST_BACKEND_RUNTIME_RESTART_REQUIRED", "full-restart");
+  }
+
+  // Kernel-General event 12 identifies the current OS start. The reader binds
+  // it to the OS uptime, and the changed-event path above accepts only the
+  // Kernel-Boot full-restart type. Together they prove that an unrecorded child
+  // from the old spawn window cannot still be alive. Ports are still checked
+  // twice, including every immutable RUN slot.
+  const ports = [...new Set([
+    4_198,
+    4_000,
+    4_100,
+    4_101,
+    4_201,
+    4_300,
+    4_301,
+    4_302,
+    4_400,
+    4_401,
+    4_402,
+    parsePort(environment.BONNI_INSTALLATION_MONITOR_PORT, 4_198, "monitor"),
+    parsePort(environment.PORT, 4_000, "core"),
+    parsePort(environment.LOCAL_AUTH_PORT, 4_101, "local-auth"),
+    parsePort(environment.MODULE_MANAGER_PORT, 4_201, "module-manager"),
+    parsePort(environment.BONNI_LOCAL_RUN_PUBLIC_PORT, 4_000, "public"),
+    parsePort(environment.BONNI_ACTIVE_INTERNAL_PORT, 4_100, "active"),
+    parsePort(environment.BONNI_ACTIVE_LOCAL_AUTH_PORT, 4_101, "active-local-auth"),
+    parsePort(environment.BONNI_CANDIDATE_INTERNAL_PORT, 4_300, "candidate"),
+    parsePort(environment.BONNI_CANDIDATE_LOCAL_AUTH_PORT, 4_301, "candidate-local-auth"),
+    4_302,
+    parsePort(environment.BONNI_PREVIOUS_INTERNAL_PORT, 4_400, "previous"),
+    parsePort(environment.BONNI_PREVIOUS_LOCAL_AUTH_PORT, 4_401, "previous-local-auth"),
+    4_402,
+  ])];
+  for (let pass = 0; pass < 2; pass += 1) {
+    for (const port of ports) {
+      if (await probePort(port)) {
+        throw exclusionError("LOCAL_SOURCE_RUNTIME_CORE_PORT_ACTIVE", String(port));
+      }
+    }
+    if (pass === 0) await wait(1_000);
+  }
+
+  const [rechecked, recheckedRecovery] = await Promise.all([
+    readHostBackendRuntime(controlRoot, { isPidAlive, wait }),
+    readReceipt(recoveryFile, validateHostBackendRestartRecovery),
+  ]);
+  if (!rechecked
+    || rechecked.dev !== observed.dev || rechecked.ino !== observed.ino
+    || rechecked.value.token !== observed.value.token
+    || rechecked.value.childPid !== null
+    || !recheckedRecovery
+    || recheckedRecovery.dev !== recovery.dev || recheckedRecovery.ino !== recovery.ino
+    || !restartRecoveryMatchesReceipt(recheckedRecovery, rechecked)) {
+    throw exclusionError("LOCAL_HOST_BACKEND_RESTART_RECOVERY_RACE");
+  }
+  const archivedPath = await archiveExact(
+    receiptFile,
+    rechecked,
+    "LOCAL_HOST_BACKEND_RESTART_RECOVERY_RACE",
+    now,
+  );
+  const archivedRecoveryPath = await archiveExact(
+    recoveryFile,
+    recheckedRecovery,
+    "LOCAL_HOST_BACKEND_RESTART_RECOVERY_RACE",
+    now,
+  );
+  return Object.freeze({
+    reconciled: true,
+    reason: "restart-proven-stale-archived",
+    archivedPath,
+    archivedRecoveryPath,
+    entry: rechecked.value.entry,
+  });
+}
+
 export async function assertNoLiveLocalSourceRuntime({
   productRoot,
   isPidAlive = defaultPidAlive,
@@ -310,13 +1008,15 @@ export async function assertNoLiveLocalSourceRuntime({
   permittedHostBackend = null,
 } = {}) {
   const controlRoot = await runtimeControlRoot(productRoot, { create: false });
-  const [lock, core, heartbeat, updateCommand, hostBackend] = await Promise.all([
+  const [lock, core, heartbeat, updateCommand] = await Promise.all([
     readReceipt(path.join(controlRoot, SUPERVISOR_LOCK_FILE), validateSupervisorLock),
     readReceipt(path.join(controlRoot, CORE_CHILD_FILE), validateCoreChild),
     readReceipt(path.join(controlRoot, HEARTBEAT_FILE), validateHeartbeat),
     readReceipt(path.join(controlRoot, UPDATE_COMMAND_LOCK_FILE), validateUpdateCommandLock),
-    readReceipt(path.join(controlRoot, HOST_BACKEND_RUNTIME_FILE), validateHostBackendRuntime),
   ]);
+  const hostBackend = await readHostBackendRuntime(controlRoot, {
+    isPidAlive,
+  });
   if (updateCommand) {
     // A dead owner is crash evidence, not permission to switch modes: source
     // files may already be partially changed and must first be recovered by
@@ -404,7 +1104,7 @@ export async function assertNoLiveLocalSourceRuntime({
   if (probeCoreWithoutReceipts || lock || heartbeat || core || hostBackend) {
     const corePorts = [
       parsePort(environment.PORT, 4_000, "core"),
-      parsePort(environment.LOCAL_AUTH_PORT, 4_001, "local-auth"),
+      parsePort(environment.LOCAL_AUTH_PORT, 4_101, "local-auth"),
     ];
     for (const port of new Set(corePorts)) {
       if (await probePort(port)) {
@@ -450,15 +1150,13 @@ export async function assertContainerRuntimeActivationInactive({
     // Supervisor/Core evidence and loopback ports.
     throw exclusionError("DOCKER_RUNTIME_ACTIVATION_STALE", String(activation.value.pid));
   }
-  const hostBackend = await readReceipt(
-    path.join(controlRoot, HOST_BACKEND_RUNTIME_FILE),
-    validateHostBackendRuntime,
-  );
+  const permittedHostBackend = permittedHostBackendFromEnvironment(environment);
+  const hostBackend = await readHostBackendRuntime(controlRoot, {
+    isPidAlive,
+  });
   if (!hostBackend) return { ok: true };
-  const permittedPid = Number(environment.BONNI_LOCAL_HOST_BACKEND_LEASE_OWNER_PID || 0);
-  const permittedToken = String(environment.BONNI_LOCAL_HOST_BACKEND_LEASE_TOKEN || "");
-  if (hostBackend.value.pid === permittedPid
-    && hostBackend.value.token === permittedToken
+  if (hostBackend.value.pid === permittedHostBackend?.pid
+    && hostBackend.value.token === permittedHostBackend?.token
     && await Promise.resolve(isPidAlive(hostBackend.value.pid))) {
     return { ok: true, inheritedHostLease: true };
   }
@@ -478,12 +1176,17 @@ export async function acquireLocalHostBackendRuntimeLease({
   productRoot,
   entry,
   ownerPid = process.pid,
+  initialChildPid = null,
   now = () => new Date(),
   isPidAlive = defaultPidAlive,
   probePort = defaultProbePort,
   environment = process.env,
+  testHooks = {},
 } = {}) {
   if (!validPid(ownerPid)) throw exclusionError("LOCAL_HOST_BACKEND_RUNTIME_PID_INVALID");
+  if (!(initialChildPid === null || validPid(initialChildPid))) {
+    throw exclusionError("LOCAL_HOST_BACKEND_RUNTIME_CHILD_PID_INVALID");
+  }
   if (typeof entry !== "string" || !IDENTIFIER.test(entry)) {
     throw exclusionError("LOCAL_HOST_BACKEND_RUNTIME_ENTRY_INVALID");
   }
@@ -504,16 +1207,38 @@ export async function acquireLocalHostBackendRuntimeLease({
     const receipt = {
       schemaVersion: LOCAL_HOST_BACKEND_RUNTIME_SCHEMA,
       pid: ownerPid,
-      childPid: null,
+      childPid: initialChildPid,
       token: crypto.randomBytes(32).toString("base64url"),
       entry,
       startedAt: now().toISOString(),
     };
-    let handle;
+    let temporary = null;
     try {
-      handle = await fs.open(file, "wx", 0o600);
-      await handle.writeFile(`${JSON.stringify(receipt, null, 2)}\n`, "utf8");
-      await handle.sync();
+      temporary = `${file}.create-${ownerPid}-${crypto.randomBytes(6).toString("hex")}.tmp`;
+      const createHandle = await fs.open(temporary, "wx", 0o600);
+      try {
+        if (testHooks.afterCreateTemporaryOpened) {
+          await testHooks.afterCreateTemporaryOpened(temporary);
+        }
+        await createHandle.writeFile(`${JSON.stringify(receipt, null, 2)}\n`, "utf8");
+        await createHandle.sync();
+      } finally {
+        await createHandle.close().catch(() => undefined);
+      }
+      if (testHooks.afterCreateTemporarySynced) {
+        await testHooks.afterCreateTemporarySynced(temporary);
+      }
+      await fs.link(temporary, file);
+      if (testHooks.afterCreateCanonicalLinked) {
+        await testHooks.afterCreateCanonicalLinked(file);
+      }
+      await fs.unlink(temporary);
+      temporary = null;
+      const created = await readHostBackendRuntime(controlRoot, { isPidAlive });
+      if (!created || created.value.token !== receipt.token
+        || created.value.pid !== ownerPid || created.value.childPid !== initialChildPid) {
+        throw exclusionError("LOCAL_HOST_BACKEND_RUNTIME_CREATE_VERIFY_FAILED");
+      }
       const leaseEnvironment = {
         ...environment,
         BONNI_LOCAL_HOST_BACKEND_LEASE_OWNER_PID: String(ownerPid),
@@ -538,25 +1263,25 @@ export async function acquireLocalHostBackendRuntimeLease({
         if (released || !validPid(childPid)) {
           throw exclusionError("LOCAL_HOST_BACKEND_RUNTIME_CHILD_PID_INVALID");
         }
-        const current = await readReceipt(file, validateHostBackendRuntime);
-        const handleStat = await handle.stat();
+        const current = await readHostBackendRuntime(controlRoot, { isPidAlive });
         if (!current || current.value.token !== receipt.token
-          || current.dev !== handleStat.dev || current.ino !== handleStat.ino) {
+          || current.value.pid !== ownerPid) {
           throw exclusionError("LOCAL_HOST_BACKEND_RUNTIME_OWNERSHIP_LOST");
         }
         receipt.childPid = childPid;
-        await handle.truncate(0);
-        await handle.write(`${JSON.stringify(receipt, null, 2)}\n`, 0, "utf8");
-        await handle.sync();
+        await replaceHostBackendRuntimeReceipt({
+          controlRoot,
+          observed: current,
+          updated: receipt,
+          testHooks,
+        });
       };
       const release = async () => {
         if (released) return true;
         released = true;
-        const handleStat = await handle.stat().catch(() => null);
-        await handle.close().catch(() => undefined);
-        const current = await readReceipt(file, validateHostBackendRuntime);
-        if (!handleStat || !current || current.value.token !== receipt.token
-          || current.dev !== handleStat.dev || current.ino !== handleStat.ino) {
+        const current = await readHostBackendRuntime(controlRoot, { isPidAlive });
+        if (!current || current.value.token !== receipt.token
+          || current.value.pid !== ownerPid) {
           throw exclusionError("LOCAL_HOST_BACKEND_RUNTIME_OWNERSHIP_LOST");
         }
         return removeExact(file, current, "LOCAL_HOST_BACKEND_RUNTIME_OWNER_RACE");
@@ -567,17 +1292,13 @@ export async function acquireLocalHostBackendRuntimeLease({
         release,
       });
     } catch (error) {
-      if (handle) {
-        const handleStat = await handle.stat().catch(() => null);
-        await handle.close().catch(() => undefined);
-        const current = await readReceipt(file, validateHostBackendRuntime).catch(() => null);
-        if (handleStat && current && current.value.token === receipt.token
-          && current.dev === handleStat.dev && current.ino === handleStat.ino) {
-          await removeExact(file, current, "LOCAL_HOST_BACKEND_RUNTIME_OWNER_RACE").catch(() => undefined);
-        }
+      if (temporary) await fs.rm(temporary, { force: true }).catch(() => undefined);
+      const current = await readHostBackendRuntime(controlRoot, { isPidAlive }).catch(() => null);
+      if (current && current.value.token === receipt.token && current.value.pid === ownerPid) {
+        await removeExact(file, current, "LOCAL_HOST_BACKEND_RUNTIME_OWNER_RACE").catch(() => undefined);
       }
       if (error?.code !== "EEXIST") throw error;
-      const existing = await readReceipt(file, validateHostBackendRuntime);
+      const existing = await readHostBackendRuntime(controlRoot, { isPidAlive });
       if (!existing) continue;
       const live = await Promise.all(
         [existing.value.pid, existing.value.childPid]
@@ -609,10 +1330,7 @@ export async function assertLocalHostBackendRuntimeLease({
     throw exclusionError("LOCAL_HOST_BACKEND_RUNTIME_PROOF_INVALID");
   }
   const controlRoot = await runtimeControlRoot(productRoot, { create: false });
-  const receipt = await readReceipt(
-    path.join(controlRoot, HOST_BACKEND_RUNTIME_FILE),
-    validateHostBackendRuntime,
-  );
+  const receipt = await readHostBackendRuntime(controlRoot);
   if (!receipt || receipt.value.pid !== ownerPid || receipt.value.token !== token) {
     throw exclusionError("LOCAL_HOST_BACKEND_RUNTIME_PROOF_NOT_OWNED");
   }
@@ -627,25 +1345,13 @@ export async function bindLocalHostBackendRuntimeChild({
 } = {}) {
   if (!validPid(childPid)) throw exclusionError("LOCAL_HOST_BACKEND_RUNTIME_CHILD_PID_INVALID");
   const controlRoot = await runtimeControlRoot(productRoot, { create: false });
-  const file = path.join(controlRoot, HOST_BACKEND_RUNTIME_FILE);
-  const observed = await readReceipt(file, validateHostBackendRuntime);
+  const observed = await readHostBackendRuntime(controlRoot);
   if (!observed || observed.value.pid !== ownerPid || observed.value.token !== token) {
     throw exclusionError("LOCAL_HOST_BACKEND_RUNTIME_PROOF_NOT_OWNED");
   }
-  const handle = await fs.open(file, fsConstants.O_RDWR | fsConstants.O_NOFOLLOW);
-  try {
-    const handleStat = await handle.stat();
-    if (handleStat.dev !== observed.dev || handleStat.ino !== observed.ino) {
-      throw exclusionError("LOCAL_HOST_BACKEND_RUNTIME_OWNERSHIP_LOST");
-    }
-    const updated = { ...observed.value, childPid };
-    await handle.truncate(0);
-    await handle.write(`${JSON.stringify(updated, null, 2)}\n`, 0, "utf8");
-    await handle.sync();
-    return Object.freeze(updated);
-  } finally {
-    await handle.close().catch(() => undefined);
-  }
+  const updated = { ...observed.value, childPid };
+  await replaceHostBackendRuntimeReceipt({ controlRoot, observed, updated });
+  return Object.freeze(updated);
 }
 
 export async function readDockerRuntimeDeactivationIntent({ productRoot } = {}) {

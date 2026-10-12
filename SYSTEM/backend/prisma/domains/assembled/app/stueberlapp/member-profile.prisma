@@ -1,0 +1,33 @@
+// App-owned extension data for Bonni Core persons and member profiles.
+// Core IDs are stored as scalar references so the optional app schema does not
+// force reverse relations into the Bonni Core schema.
+
+model StueberlMemberDetails {
+  memberProfileId      String   @id
+  socialCategory       String?
+  // Nullable during the compatibility window: null means that the value has
+  // not yet been copied from the former Core MemberProfile column.
+  allowNegativeBalance Boolean?
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+}
+
+// Stueberl's balance account is app-owned. The ids are copied unchanged from
+// the former Core MemberAccount rows so all scalar ledger/session references
+// keep pointing at the same logical account.
+model StueberlMemberAccount {
+  id            String   @id @default(cuid())
+  memberId      String   @unique
+  balanceCached Decimal  @default(0)
+  lastSettledAt DateTime?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+}
+
+// Instance-wide Stueberl UI settings must not live in Bonni Core.
+model StueberlSurfaceSetting {
+  key       String   @id
+  value     Json
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}

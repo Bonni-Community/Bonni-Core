@@ -1,0 +1,21 @@
+// Shared StueberlApp domain types.
+//
+// These enums belong to the app domain and are intentionally kept outside
+// Bonni Core. Keeping them in one small schema file prevents feature models
+// from depending on archived or duplicated Prisma sources.
+
+enum LocalNodeStatus {
+  ONLINE
+  DEGRADED
+  EMERGENCY_LOCAL
+  SYNCING
+  READ_ONLY
+  ERROR
+}
+
+enum RiskLevel {
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+}

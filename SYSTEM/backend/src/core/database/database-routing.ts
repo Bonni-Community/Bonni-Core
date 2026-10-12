@@ -82,11 +82,11 @@ const runtime: RoutingRuntime = {
 };
 
 function routingFilePath() {
-  return path.join(path.resolve(env.RUN_SYSTEM_ROOT), "system", ROUTING_FILE_NAME);
+  return path.join(path.resolve(env.BONNI_RUNTIME_STATE_ROOT), "system", ROUTING_FILE_NAME);
 }
 
 function fullSyncLockPath() {
-  return path.join(path.resolve(env.RUN_SYSTEM_ROOT), "system", FULL_SYNC_LOCK_FILE_NAME);
+  return path.join(path.resolve(env.BONNI_RUNTIME_STATE_ROOT), "system", FULL_SYNC_LOCK_FILE_NAME);
 }
 
 function routingKey() {

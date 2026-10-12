@@ -14,6 +14,7 @@ import {
   saveControlCenterSystemSettings,
 } from "../../../system/api/systemSettingsApi.js";
 import { BONNI_CORE_VERSION } from "../../../system/version.js";
+import { formatBonniCoreVersion } from "../update/localUpdatePresentation.js";
 
 import { controlCenterLabels as labels, labelKind, labelStatus } from "../language/index.js";
 import {
@@ -80,7 +81,7 @@ const TWO_FACTOR_INSTALLATION_GUIDE = Object.freeze({
       ["Verbindung eintragen", "Trage die HTTPS-Adresse des privacyIDEA-Servers und – falls verwendet – den Realm ein."],
       ["Sicherheitsregeln festlegen", "Lege Gueltigkeit, erlaubte Versuche sowie die vom Anbieter geforderten Prueffelder fest."],
       ["Verbindung pruefen", "Speichere die Adapterkonfiguration und pruefe die Erreichbarkeit ohne Benutzergeheimnisse in Bonni zu uebernehmen."],
-      ["Benutzer zentral freigeben", "Administratoren stossen die 2FA-Einrichtung kontogenau an. Benutzer schliessen sie in „Meine Einstellungen“ ab."],
+      ["Benutzer zentral freigeben", "Administratoren stossen die 2FA-Einrichtung kontogenau an. Benutzer schliessen sie in „Einstellungen“ ab."],
     ],
     privacyIdeaNote: "Wichtig: Der Store zeigt niemals persoenliche Token, QR-Codes, Freigabepasswoerter oder Wiederherstellungscodes an.",
   },
@@ -111,7 +112,8 @@ function descriptionOf(module, language = "en") {
 }
 
 function versionOf(module) {
-  return module?.version || module?.manifest?.version || module?.installation?.version || module?.installedVersion || "—";
+  const version = module?.version || module?.manifest?.version || module?.installation?.version || module?.installedVersion || "";
+  return module?.source === "bonni-core" ? formatBonniCoreVersion(version) : version || "—";
 }
 
 function keyOf(module) {
@@ -150,7 +152,7 @@ function buildStoreFeedbackText({ category, title, description, includeTechnical
       "### Technische Angaben",
       `- Paket: ${keyOf(module)}`,
       `- Plugin-Version: ${versionOf(module)}`,
-      `- Bonni-Core-Version: ${BONNI_CORE_VERSION}`,
+      `- Bonni-Core-Version: ${formatBonniCoreVersion(BONNI_CORE_VERSION)}`,
       `- Oberflächensprache: ${language || "—"}`,
     );
   }
@@ -949,9 +951,9 @@ function StoreDetail({ open, module, language, details, plan, result, busy, toke
               <h3>Kompatibilität</h3>
               {compatibility ? (
                 <>
-                  <p><strong>{compatible ? "Freigegeben" : "Gesperrt"}</strong> für Bonni Core {compatibility.coreVersion || "—"}</p>
-                  {compatibility.minimumCoreVersion ? <small>Mindestens Bonni Core {compatibility.minimumCoreVersion}</small> : null}
-                  {compatibility.maximumCoreVersion ? <small>Höchstens Bonni Core {compatibility.maximumCoreVersion}</small> : null}
+                  <p><strong>{compatible ? "Freigegeben" : "Gesperrt"}</strong> für Bonni Core {formatBonniCoreVersion(compatibility.coreVersion)}</p>
+                  {compatibility.minimumCoreVersion ? <small>Mindestens Bonni Core {formatBonniCoreVersion(compatibility.minimumCoreVersion)}</small> : null}
+                  {compatibility.maximumCoreVersion ? <small>Höchstens Bonni Core {formatBonniCoreVersion(compatibility.maximumCoreVersion)}</small> : null}
                   {compatibility.reasons?.length ? <ul>{compatibility.reasons.map((reason) => <li key={reason}>{reason}</li>)}</ul> : null}
                 </>
               ) : <p>Wird aus dem Manifest geladen.</p>}

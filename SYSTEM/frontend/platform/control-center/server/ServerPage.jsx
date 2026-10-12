@@ -27,6 +27,7 @@ import ServerBackendConfigTab from "./tab/BackendConfig.jsx";
 import ServerDatabaseConfigTab from "./tab/DatabaseConfig.jsx";
 import ServerJsonBackupTab from "./tab/JsonBackup.jsx";
 import ServerSwitchTab from "./tab/Switch.jsx";
+import { formatBonniCoreVersion } from "../update/localUpdatePresentation.js";
 import "./ServerPage.css";
 
 function formatDelay(ms) {
@@ -884,7 +885,7 @@ export default function ServerPage({ token }) {
           ["Antwortzeit", health?.latencyMs == null ? "—" : `${health.latencyMs} ms`],
           ["Letzte Prüfung", health?.checkedAt ? new Date(health.checkedAt).toLocaleString("de-DE") : "—"],
           ["Rolle", health?.runtime?.slotRole || (isRedundant ? "redundant" : "normal")],
-          ["Version", health?.runtime?.version || "—"],
+          ["Version", formatBonniCoreVersion(health?.runtime?.version)],
           ["PID", health?.runtime?.pid || (isRedundant ? status?.process?.pid || "—" : "—")],
           ["Origin", targetConfig?.origin || "—"],
         ],
@@ -982,7 +983,7 @@ export default function ServerPage({ token }) {
         ["Antwortzeit", latency],
         ["Letzte Prüfung", checkedAt],
         ["Rolle", runtime.slotRole || "normal"],
-        ["Version", runtime.version || "—"],
+        ["Version", formatBonniCoreVersion(runtime.version)],
         ["PID", runtime.pid || "—"],
         ["Origin", targetConfig?.origin || "—"],
       ];

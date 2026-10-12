@@ -4,6 +4,7 @@ import { AccountType } from "@prisma/client";
 
 import { getServerPrismaClient } from "../../../core/database/database.js";
 import { LoginError, normalizeLoginError } from "../../../core/errors/login-error.js";
+import { validate } from "../../../core/http/http.js";
 import { validateExactLocalPassword } from "../../../core/modules/identity/local-password-policy.js";
 import { listModuleManifests } from "../../module-manager/manifests/index.js";
 import type {
@@ -15,6 +16,12 @@ import { verifyPasswordRuntime } from "../password-runtime.js";
 import { isForbiddenInteractiveLoginName } from "../system-account-policy.js";
 import { coreTokenService } from "../token/core-token.service.js";
 import * as twoFactorService from "../../../core/modules/security/two-factor/service.js";
+import {
+  changeOwnPasswordSchema,
+  ownChangeHistorySchema,
+  updateOwnProfileSchema,
+} from "../../security/identity/schemas/auth.schemas.js";
+import * as selfAccountService from "../../security/identity/services/account.service.js";
 
 const router = Router();
 router.use((_req, res, next) => {
@@ -445,6 +452,17 @@ function createIdentity(
     isSandbox: Boolean(account.isSandbox),
     personId: account.personId || null,
     memberId: account.person?.member?.id || null,
+    person: account.person ? {
+      id: account.person.id,
+      displayName: account.person.displayName,
+      firstName: account.person.firstName,
+      secondFirstName: account.person.secondFirstName,
+      lastName: account.person.lastName,
+      nickname: account.person.nickname,
+      email: account.person.email,
+      phone: account.person.phone,
+      birthDate: account.person.birthDate,
+    } : null,
     roles,
     permissions,
     memberCapabilities: capabilities,
@@ -545,6 +563,11 @@ function requestMeta(req: any) {
       ? req.headers["user-agent"]
       : undefined,
   };
+}
+
+function authenticatedAccountId(req: any) {
+  if (req.bonniIdentityVerified !== true) return "";
+  return String(req.user?.accountId || req.user?.id || "").trim();
 }
 
 function sessionTokenHash(token: string) {
@@ -905,6 +928,43 @@ router.get("/me", async (req, res) => {
       code: normalized.code,
       message: normalized.message,
     });
+  }
+});
+
+router.patch("/me/profile", validate(updateOwnProfileSchema), async (req, res, next) => {
+  const accountId = authenticatedAccountId(req);
+  if (!accountId) {
+    return res.status(401).json({ code: "UNAUTHENTICATED", message: "Nicht angemeldet" });
+  }
+  try {
+    return res.json(await selfAccountService.updateMeProfile(accountId, req.body));
+  } catch (error) {
+    return next(error);
+  }
+});
+
+router.post("/me/password", validate(changeOwnPasswordSchema), async (req, res, next) => {
+  const accountId = authenticatedAccountId(req);
+  if (!accountId) {
+    return res.status(401).json({ code: "UNAUTHENTICATED", message: "Nicht angemeldet" });
+  }
+  try {
+    return res.json(await selfAccountService.changeMePassword(accountId, req.body));
+  } catch (error) {
+    return next(error);
+  }
+});
+
+router.get("/me/history", validate(ownChangeHistorySchema), async (req, res, next) => {
+  const accountId = authenticatedAccountId(req);
+  if (!accountId) {
+    return res.status(401).json({ code: "UNAUTHENTICATED", message: "Nicht angemeldet" });
+  }
+  try {
+    const scope = req.query.scope === "security" ? "security" : undefined;
+    return res.json(await selfAccountService.getMyChangeHistory(accountId, scope));
+  } catch (error) {
+    return next(error);
   }
 });
 

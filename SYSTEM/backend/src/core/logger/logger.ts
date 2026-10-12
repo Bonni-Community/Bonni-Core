@@ -3,7 +3,9 @@ import path from "node:path";
 import winston from "winston";
 import { env } from "../config/env.js";
 
-const logDir = path.join(process.cwd(), "archives", "logs");
+const logDir = env.BONNI_LOG_ROOT
+  ? path.resolve(env.BONNI_LOG_ROOT)
+  : path.join(process.cwd(), "archives", "logs");
 
 fs.mkdirSync(logDir, { recursive: true });
 

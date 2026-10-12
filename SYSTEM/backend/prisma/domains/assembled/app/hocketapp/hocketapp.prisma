@@ -1,0 +1,12 @@
+// HocketApp owns exactly one scoped persistence delegate.
+// Domain aggregates remain versioned JSON documents so the application can
+// evolve its internal records without depending on Bonni Core or Stüberl
+// tables. The Core assembler supplies generator and datasource definitions.
+model HocketRecord {
+  key       String   @id
+  value     Json
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([updatedAt])
+}

@@ -99,7 +99,90 @@ export async function fetchInstallationUpdateStatus(access, {
   return payload;
 }
 
+function exactMonitorBinding(value, normalized) {
+  const binding = value?.binding && typeof value.binding === "object"
+    ? value.binding
+    : value?.acceptanceGate?.binding && typeof value.acceptanceGate.binding === "object"
+      ? value.acceptanceGate.binding
+      : value?.progress?.acceptanceGate?.binding && typeof value.progress.acceptanceGate.binding === "object"
+        ? value.progress.acceptanceGate.binding
+        : value?.progress && typeof value.progress === "object"
+          ? value.progress
+          : value;
+  return binding?.requestId === normalized.requestId
+    && binding?.updateId === normalized.updateId
+    && binding?.manifestSha256 === normalized.manifestSha256;
+}
+
+async function postInstallationMonitorAction(pathname, access, {
+  fetchImpl = globalThis.fetch,
+  signal,
+  now = Date.now(),
+} = {}) {
+  const normalized = normalizeInstallationMonitorAccess(access, now);
+  if (!normalized) throw new Error("INSTALLATION_MONITOR_ACCESS_INVALID");
+  if (typeof fetchImpl !== "function") throw new Error("INSTALLATION_MONITOR_FETCH_UNAVAILABLE");
+  const target = new URL(pathname, normalized.origin);
+  const body = {
+    requestId: normalized.requestId,
+    updateId: normalized.updateId,
+    manifestSha256: normalized.manifestSha256,
+  };
+  const response = await fetchImpl(target.href, {
+    method: "POST",
+    headers: {
+      Accept: "application/json",
+      "Content-Type": "application/json",
+      "X-Bonni-Update-Monitor": normalized.token,
+    },
+    body: JSON.stringify(body),
+    cache: "no-store",
+    credentials: "omit",
+    referrerPolicy: "no-referrer",
+    signal,
+  });
+  const payload = await response.json().catch(() => null);
+  if (
+    !response.ok
+    || payload?.ok !== true
+    || payload?.role !== "installation-server"
+  ) throw new Error(payload?.error || `INSTALLATION_MONITOR_HTTP_${response.status}`);
+  if (!exactMonitorBinding(payload, normalized)) {
+    throw new Error("INSTALLATION_MONITOR_ACTION_MISMATCH");
+  }
+  return payload;
+}
+
+export function confirmInstallationUpdate(access, options = {}) {
+  return postInstallationMonitorAction("/api/local-update/confirm", access, options);
+}
+
+export function retryInstallationUpdateCutover(access, options = {}) {
+  return postInstallationMonitorAction("/api/local-update/retry", access, options);
+}
+
 export function installationMonitorRequestsCoreSwitch(monitorStatus) {
+  const progress = monitorStatus?.progress || {};
+  const gate = progress?.acceptanceGate && typeof progress.acceptanceGate === "object"
+    ? progress.acceptanceGate
+    : progress?.confirmation && typeof progress.confirmation === "object"
+      ? progress.confirmation
+      : {};
+  const progressPhase = String(progress.phase || "").trim().toLowerCase().replaceAll("_", "-");
+  const acceptanceState = String(
+    gate.state
+      || progress.confirmationState
+      || progress.acceptanceState
+      || (["confirmation", "awaiting-confirmation"].includes(progressPhase) ? "armed" : progress.status || ""),
+  ).trim().toLowerCase().replaceAll("_", "-");
+  if (new Set([
+    "armed",
+    "confirmation",
+    "awaiting-confirmation",
+    "rollback-required",
+    "confirmation-failed",
+    "failed-old-active",
+  ]).has(acceptanceState)) return false;
   if (monitorStatus?.switchTarget === "core") return true;
   if (monitorStatus?.switchTarget === "installation") return false;
   return Boolean(

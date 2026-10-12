@@ -1,0 +1,8 @@
+{
+  "schemaVersion": "bonni.core-license-component/v1",
+  "product": "bonni-core",
+  "productVersion": "0.1.20",
+  "component": "frontend",
+  "dependencyCount": 63,
+  "inventorySha256": "54fe3bdda7517bb3c100a9bdf8eee5c9502f0d3b24f660cae4a8d060331dbe91"
+}

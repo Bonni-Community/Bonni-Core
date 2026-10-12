@@ -10,6 +10,7 @@ import {
   getDatabaseTargetConnectionString,
   type DatabaseTarget,
 } from "../../../core/database/database.js";
+import { withPersistentSnapshotLock } from "../../../core/storage/persistent-snapshot-lock.js";
 
 const FULL_SYNC_TIMEOUT_MS = 30 * 60 * 1000;
 const MAX_STDERR_CHARS = 64_000;
@@ -113,7 +114,19 @@ export function getDatabaseFullSyncConfirmation(target: DatabaseTarget) {
   return expectedConfirmation(target);
 }
 
-export async function runDatabaseFullSync(input: unknown) {
+type FullSyncDependencies = {
+  getConnectionString?: typeof getDatabaseTargetConnectionString;
+  beginMaintenance?: typeof beginDatabaseFullSync;
+  finishMaintenance?: typeof finishDatabaseFullSync;
+  disconnectTarget?: typeof disconnectDatabaseTarget;
+  runTool?: typeof runPostgresTool;
+  withSnapshotLock?: typeof withPersistentSnapshotLock;
+};
+
+export async function runDatabaseFullSync(
+  input: unknown,
+  dependencies: FullSyncDependencies = {},
+) {
   const body = input && typeof input === "object" ? input as Record<string, unknown> : {};
   const source: DatabaseTarget | null = body.source === "normal" || body.source === "redundant"
     ? body.source
@@ -135,8 +148,14 @@ export async function runDatabaseFullSync(input: unknown) {
     });
   }
 
-  const sourceConnection = connectionEnvironment(getDatabaseTargetConnectionString(source));
-  const targetConnection = connectionEnvironment(getDatabaseTargetConnectionString(target));
+  const getConnectionString = dependencies.getConnectionString || getDatabaseTargetConnectionString;
+  const beginMaintenance = dependencies.beginMaintenance || beginDatabaseFullSync;
+  const finishMaintenance = dependencies.finishMaintenance || finishDatabaseFullSync;
+  const disconnectTarget = dependencies.disconnectTarget || disconnectDatabaseTarget;
+  const runTool = dependencies.runTool || runPostgresTool;
+  const withSnapshotLock = dependencies.withSnapshotLock || withPersistentSnapshotLock;
+  const sourceConnection = connectionEnvironment(getConnectionString(source));
+  const targetConnection = connectionEnvironment(getConnectionString(target));
   if (sourceConnection.identity === targetConnection.identity) {
     throw Object.assign(new Error("DATABASE_FULL_SYNC_SOURCE_EQUALS_TARGET"), { statusCode: 409 });
   }
@@ -144,46 +163,51 @@ export async function runDatabaseFullSync(input: unknown) {
   const startedAt = Date.now();
   const temporaryDirectory = await fs.mkdtemp(path.join(os.tmpdir(), "bonni-db-full-sync-"));
   const dumpFile = path.join(temporaryDirectory, "database.dump");
-  let maintenanceAcquired = false;
-  let succeeded = false;
 
   try {
-    beginDatabaseFullSync(source, target);
-    maintenanceAcquired = true;
-    await runPostgresTool(executable("pg_dump"), [
-      "--format=custom",
-      "--no-owner",
-      "--no-acl",
-      `--file=${dumpFile}`,
-    ], sourceConnection.env);
+    return await withSnapshotLock("database-full-sync", async () => {
+      // Lock ordering is always persistent snapshot lock -> DB maintenance.
+      // Branding mutations use the same order, preventing a maintenance/lock
+      // inversion while keeping dump and restore one immutable phase.
+      let maintenanceAcquired = false;
+      let succeeded = false;
+      try {
+        beginMaintenance(source, target);
+        maintenanceAcquired = true;
+        await runTool(executable("pg_dump"), [
+          "--format=custom",
+          "--no-owner",
+          "--no-acl",
+          `--file=${dumpFile}`,
+        ], sourceConnection.env);
 
-    await disconnectDatabaseTarget(target);
-    await runPostgresTool(executable("pg_restore"), [
-      "--clean",
-      "--if-exists",
-      "--no-owner",
-      "--no-acl",
-      "--single-transaction",
-      `--dbname=${targetConnection.database}`,
-      dumpFile,
-    ], targetConnection.env);
+        await disconnectTarget(target);
+        await runTool(executable("pg_restore"), [
+          "--clean",
+          "--if-exists",
+          "--no-owner",
+          "--no-acl",
+          "--single-transaction",
+          `--dbname=${targetConnection.database}`,
+          dumpFile,
+        ], targetConnection.env);
 
-    succeeded = true;
-    return {
-      ok: true,
-      source,
-      target,
-      completedAt: new Date().toISOString(),
-      durationMs: Date.now() - startedAt,
-      message: `${target === "normal" ? "Normale" : "Redundante"} Datenbank wurde vollständig aus der ${source === "normal" ? "normalen" : "redundanten"} Datenbank wiederhergestellt.`,
-    };
-  } finally {
-    try {
-      if (maintenanceAcquired) {
-        await finishDatabaseFullSync(source, target, succeeded);
+        succeeded = true;
+        return {
+          ok: true,
+          source,
+          target,
+          completedAt: new Date().toISOString(),
+          durationMs: Date.now() - startedAt,
+          message: `${target === "normal" ? "Normale" : "Redundante"} Datenbank wurde vollständig aus der ${source === "normal" ? "normalen" : "redundanten"} Datenbank wiederhergestellt.`,
+        };
+      } finally {
+        if (maintenanceAcquired) {
+          await finishMaintenance(source, target, succeeded);
+        }
       }
-    } finally {
-      await fs.rm(temporaryDirectory, { recursive: true, force: true }).catch(() => undefined);
-    }
+    });
+  } finally {
+    await fs.rm(temporaryDirectory, { recursive: true, force: true }).catch(() => undefined);
   }
 }

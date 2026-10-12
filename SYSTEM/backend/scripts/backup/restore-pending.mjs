@@ -4,10 +4,10 @@ import { createReadStream, existsSync } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 
+import { resolvePersistentStorageRoot } from "../storage/persistent-storage-root.mjs";
+
 function storageRoot() {
-  if (process.env.BONNI_STORAGE_ROOT) return path.resolve(process.env.BONNI_STORAGE_ROOT);
-  const runtimeStorage = path.resolve(process.cwd(), "../storage");
-  return existsSync(runtimeStorage) ? runtimeStorage : path.resolve(process.cwd(), "storage");
+  return resolvePersistentStorageRoot();
 }
 
 function backupsRoot() {

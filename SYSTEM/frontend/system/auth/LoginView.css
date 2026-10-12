@@ -18,9 +18,9 @@ body {
 
 .bonni-login-page {
   --bonni-login-orange: #f5b000;
-  --bonni-login-blue: #0b1f4d;
+  --bonni-login-blue: #0a2d6b;
   --bonni-login-ink: #060708;
-  --bonni-login-panel: #0c0e11;
+  --bonni-login-panel: #090b0e;
   --bonni-login-line: rgba(255, 255, 255, 0.16);
   min-height: 100vh;
   min-height: 100dvh;
@@ -31,20 +31,20 @@ body {
   color-scheme: dark;
   font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   background:
-    linear-gradient(to top right, rgba(11, 31, 77, 0.62) 0%, rgba(11, 31, 77, 0) 31%),
-    linear-gradient(to top left, rgba(120, 72, 4, 0.48) 0%, rgba(120, 72, 4, 0) 29%),
-    linear-gradient(132deg, rgba(255, 255, 255, 0.04) 0 12%, transparent 12% 100%),
-    linear-gradient(145deg, #171a1f 0%, var(--bonni-login-ink) 44%, #090b0e 100%);
+    linear-gradient(to top right, rgba(10, 45, 107, 0.62) 0%, rgba(10, 45, 107, 0.2) 23%, rgba(10, 45, 107, 0) 51%),
+    linear-gradient(to top left, rgba(167, 77, 0, 0.42) 0%, rgba(167, 77, 0, 0.12) 24%, rgba(167, 77, 0, 0) 52%),
+    linear-gradient(to bottom left, rgba(255, 255, 255, 0.055) 0%, rgba(255, 255, 255, 0.018) 31%, rgba(255, 255, 255, 0) 62%),
+    linear-gradient(145deg, #1a1d21 0%, var(--bonni-login-ink) 45%, #030405 100%);
 }
 
 .bonni-login-page__content {
-  width: min(1180px, calc(100% - clamp(36px, 8vw, 112px)));
+  width: min(1240px, calc(100% - clamp(36px, 8vw, 112px)));
   margin: auto;
   padding: clamp(42px, 7vh, 82px) 0 clamp(34px, 6vh, 68px);
   display: grid;
-  grid-template-columns: minmax(250px, 0.82fr) minmax(380px, 1fr);
+  grid-template-columns: minmax(280px, 0.88fr) minmax(380px, 1fr);
   align-items: center;
-  gap: clamp(54px, 9vw, 130px);
+  gap: clamp(50px, 8vw, 118px);
 }
 
 .bonni-login-brand {
@@ -53,25 +53,30 @@ body {
   place-items: center;
 }
 
-.bonni-login-brand__signet {
+.bonni-login-brand__hexagon {
+  width: min(100%, 430px);
+  aspect-ratio: 1 / 1;
+  display: grid;
+  padding: 8px;
+  clip-path: polygon(50% 0%, 93% 25%, 93% 75%, 50% 100%, 7% 75%, 7% 25%);
+  background: linear-gradient(145deg, #2a2d32 0%, #050607 74%, #9d4d08 100%);
+}
+
+.bonni-login-brand__hexagon-body {
+  width: 100%;
+  height: 100%;
+  display: grid;
+  place-items: center;
+  clip-path: polygon(50% 0%, 93% 25%, 93% 75%, 50% 100%, 7% 75%, 7% 25%);
+  background: #ffffff;
+}
+
+.bonni-login-brand__logo {
   display: block;
-  width: min(100%, 410px);
+  width: 92%;
   height: auto;
-}
-
-.bonni-login-brand__corner {
-  fill: none;
-  stroke: #f5b000;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-  stroke-width: 12;
-}
-
-.bonni-login-brand__divider {
-  fill: none;
-  stroke: rgba(255, 255, 255, 0.28);
-  stroke-linecap: round;
-  stroke-width: 2;
+  aspect-ratio: 1 / 1;
+  object-fit: contain;
 }
 
 .bonni-login-panel {
@@ -86,8 +91,8 @@ body {
   gap: 22px;
   padding: clamp(30px, 5vw, 52px);
   border: 1px solid var(--bonni-login-line);
-  border-radius: 26px;
-  background: var(--bonni-login-panel);
+  border-radius: 28px;
+  background: linear-gradient(145deg, #111318 0%, var(--bonni-login-panel) 58%, #070809 100%);
 }
 
 .bonni-login-card__header {
@@ -271,12 +276,12 @@ body {
 .bonni-login-button--primary {
   border-color: rgba(255, 255, 255, 0.2);
   color: #ffffff;
-  background: linear-gradient(110deg, #e69f00 0%, #c9563d 50%, #233d86 100%);
+  background: linear-gradient(105deg, #e9a000 0%, #d77b25 30%, #b04e46 58%, #244a9a 100%);
 }
 
 .bonni-login-button--primary:hover {
   border-color: rgba(255, 255, 255, 0.4);
-  background: linear-gradient(110deg, #f5b000 0%, #dc6546 50%, #2d4ca0 100%);
+  background: linear-gradient(105deg, #f5b000 0%, #e88b2c 30%, #c45a4f 58%, #2d58b5 100%);
 }
 
 .bonni-login-button--secondary {
@@ -309,13 +314,27 @@ body {
 .bonni-login-slogan {
   position: relative;
   width: 100%;
-  min-height: 72px;
+  min-height: 78px;
   display: flex;
   align-items: center;
+  justify-content: space-between;
+  gap: 24px;
   padding: 18px clamp(28px, 6vw, 88px);
   border-top: 1px solid rgba(255, 255, 255, 0.13);
   color: #aeb2ba;
-  background: #050607;
+  background:
+    linear-gradient(to right, rgba(10, 45, 107, 0.24) 0%, rgba(5, 6, 7, 0) 34%, rgba(5, 6, 7, 0) 66%, rgba(153, 69, 0, 0.18) 100%),
+    #050607;
+}
+
+.bonni-login-slogan::before {
+  content: "";
+  position: absolute;
+  top: -1px;
+  right: 0;
+  left: 0;
+  height: 2px;
+  background: linear-gradient(90deg, #235bd3 0%, #7595e8 29%, rgba(255, 255, 255, 0.92) 50%, #e4ad68 72%, #ef7900 100%);
 }
 
 .bonni-login-slogan p {
@@ -323,6 +342,12 @@ body {
   margin: 0;
   font-size: 0.86rem;
   line-height: 1.5;
+}
+
+.bonni-login-slogan__copyright {
+  flex: 0 0 auto;
+  color: #8f949d;
+  white-space: nowrap;
 }
 
 .bonni-login-panel > .bonni-password-recovery {
@@ -339,8 +364,8 @@ body {
     padding: 32px 0 36px;
   }
 
-  .bonni-login-brand__signet {
-    width: min(52vw, 210px);
+  .bonni-login-brand__hexagon {
+    width: min(54vw, 230px);
   }
 
   .bonni-login-panel {
@@ -371,12 +396,16 @@ body {
 
   .bonni-login-slogan {
     min-height: 66px;
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 5px;
     padding: 14px 18px;
   }
 
   .bonni-login-slogan p {
     font-size: 0.78rem;
   }
+
 }
 
 @media (max-height: 700px) and (min-width: 841px) {
@@ -384,7 +413,7 @@ body {
     padding-block: 26px;
   }
 
-  .bonni-login-brand__signet {
+  .bonni-login-brand__hexagon {
     width: min(58vh, 360px);
   }
 

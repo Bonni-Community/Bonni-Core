@@ -1,0 +1,8 @@
+.bonni-app-shell__surface {
+  min-height: 100vh;
+  min-height: 100dvh;
+}
+
+.bonni-app-shell__surface.is-settings-open {
+  overflow: hidden;
+}

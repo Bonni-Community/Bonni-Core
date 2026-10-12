@@ -8,6 +8,8 @@ import { env } from "../../../../core/config/env.js";
 import { prisma } from "../../../../core/database/prisma.js";
 import { getSystemRuntimeConfig } from "../../../runtime/runtime.config.js";
 import { resolvePostgreSqlTool } from "./postgres-tool.service.js";
+import { resolvePersistentStorageRoot } from "../../../../../scripts/storage/persistent-storage-root.mjs";
+import { acquirePersistentSnapshotLock } from "../../../../core/storage/persistent-snapshot-lock.js";
 
 export type SystemBackupComponentStatus = "pending" | "running" | "completed" | "failed" | "skipped";
 
@@ -41,9 +43,7 @@ const BACKUP_ID_PATTERN = /^backup-[a-zA-Z0-9._-]+$/;
 let activeBackupId: string | null = null;
 
 function persistentStorageRoot() {
-  if (process.env.BONNI_STORAGE_ROOT) return path.resolve(process.env.BONNI_STORAGE_ROOT);
-  const runtimeStorage = path.resolve(process.cwd(), "../storage");
-  return existsSync(runtimeStorage) ? runtimeStorage : path.resolve(process.cwd(), "storage");
+  return resolvePersistentStorageRoot();
 }
 
 export function systemBackupsRoot() {
@@ -308,6 +308,13 @@ export async function createSystemBackup(options: {
     const databaseRecord = await safeDatabaseRecord({ action: "create", status: "running", filePath: root, startedAt });
     databaseRecordId = databaseRecord?.id || null;
 
+    // The dump and persistent-storage copy are one logical snapshot. Branding
+    // replace/reset uses this same cross-process lock, so a dump can never
+    // reference a logo which disappears before the storage phase copies it.
+    const releasePersistentSnapshot = await acquirePersistentSnapshotLock({
+      operation: `system-backup:${id}`,
+    });
+    try {
     const databaseComponent = manifest.components[0];
     databaseComponent.status = "running";
     await options.onProgress?.({ backupId: id, component: databaseComponent.key, status: "running" });
@@ -332,9 +339,13 @@ export async function createSystemBackup(options: {
     await copyDirectory(storageRoot, path.join(root, storageComponent.relativePath), [
       systemBackupsRoot(),
       path.join(storageRoot, "system", "update-center", "downloads"),
+      path.join(storageRoot, "system", "locks"),
     ]);
     storageComponent.status = "completed";
     await options.onProgress?.({ backupId: id, component: storageComponent.key, status: "completed" });
+    } finally {
+      await releasePersistentSnapshot();
+    }
 
     manifest.files = await buildFileManifest(root);
     for (const component of manifest.components) {

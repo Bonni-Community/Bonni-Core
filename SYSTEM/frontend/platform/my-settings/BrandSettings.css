@@ -1,0 +1,198 @@
+.bonni-brand-settings {
+  display: grid;
+  gap: 14px;
+}
+
+.bonni-brand-settings__editor {
+  display: grid;
+  grid-template-columns: minmax(220px, 0.7fr) minmax(0, 1.3fr);
+  gap: 28px;
+}
+
+.bonni-brand-settings__fields,
+.bonni-brand-settings__upload {
+  display: grid;
+  gap: 14px;
+}
+
+.bonni-brand-settings__upload {
+  gap: 9px;
+}
+
+.bonni-brand-settings__upload label {
+  display: grid;
+  gap: 7px;
+}
+
+.bonni-brand-settings__upload label > span {
+  color: #5f5961;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.bonni-brand-settings__upload input {
+  width: 100%;
+  border: 1px dashed #c7c7cc;
+  border-radius: 12px;
+  padding: 12px;
+  background: #fafafa;
+}
+
+.bonni-brand-settings__upload small,
+.bonni-brand-settings__previews > header small {
+  color: #77727a;
+}
+
+.bonni-brand-settings__previews > header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 16px;
+}
+
+.bonni-brand-settings__previews > div {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.bonni-brand-preview {
+  display: grid;
+  grid-template-rows: minmax(150px, 1fr) auto;
+  overflow: hidden;
+  margin: 0;
+  border: 1px solid #dedee2;
+  border-radius: 14px;
+  background: #fff;
+}
+
+.bonni-brand-preview > img {
+  align-self: center;
+  justify-self: center;
+  display: block;
+  width: min(58%, 170px);
+  height: auto;
+  max-height: 150px;
+  object-fit: contain;
+}
+
+.bonni-brand-preview figcaption {
+  display: grid;
+  gap: 3px;
+  padding: 12px 14px;
+  border-top: 1px solid rgba(127, 127, 127, 0.22);
+  color: #6e6970;
+  font-size: 11px;
+}
+
+.bonni-brand-preview figcaption strong {
+  overflow: hidden;
+  color: inherit;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bonni-brand-preview.is-dark {
+  color: #fff;
+  background: #090b0f;
+}
+
+.bonni-brand-preview.is-dark figcaption {
+  color: rgba(255, 255, 255, 0.68);
+}
+
+.bonni-brand-preview.is-compact {
+  grid-template-rows: 92px auto;
+}
+
+.bonni-brand-preview.is-compact > img {
+  width: 64px;
+  max-height: 64px;
+}
+
+.bonni-brand-settings__admin-note {
+  margin: 0;
+  border: 1px solid #efd8ba;
+  border-radius: 12px;
+  padding: 12px 14px;
+  color: #783f00;
+  background: #fff9f1;
+}
+
+.bonni-brand-settings__reconcile {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  border: 1px solid #efd8ba;
+  border-radius: 12px;
+  padding: 12px 14px;
+  color: #783f00;
+  background: #fff9f1;
+}
+
+.bonni-brand-settings__reconcile p {
+  margin: 0;
+}
+
+.bonni-brand-settings__loading {
+  margin: 0;
+  border: 1px solid #d8e1ef;
+  border-radius: 12px;
+  padding: 12px 14px;
+  color: #29476e;
+  background: #f5f8fd;
+}
+
+.bonni-brand-settings__draft-note {
+  margin: 0;
+  color: #4f4a52;
+  font-size: 12px;
+}
+
+.bonni-brand-settings__revision-conflict {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  border: 1px solid #e4b3b8;
+  border-radius: 12px;
+  padding: 12px 14px;
+  color: #7b1f2a;
+  background: #fff5f6;
+}
+
+.bonni-brand-settings__revision-conflict p {
+  margin: 4px 0 0;
+}
+
+.bonni-brand-settings__revision-conflict button {
+  flex: 0 0 auto;
+}
+
+.bonni-brand-settings__reconcile button {
+  flex: 0 0 auto;
+}
+
+.bonni-brand-settings input:disabled {
+  cursor: not-allowed;
+  opacity: 0.68;
+}
+
+@media (max-width: 800px) {
+  .bonni-brand-settings__editor,
+  .bonni-brand-settings__previews > div {
+    grid-template-columns: 1fr;
+  }
+
+  .bonni-brand-settings__reconcile {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .bonni-brand-settings__revision-conflict {
+    align-items: stretch;
+    flex-direction: column;
+  }
+}

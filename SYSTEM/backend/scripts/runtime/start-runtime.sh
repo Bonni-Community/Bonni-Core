@@ -230,7 +230,7 @@ if ! docker image inspect "$SYSTEM_IMAGE" >/dev/null 2>&1; then
   docker build \
     --file "$BONNI_HOST_PROJECT_ROOT/SYSTEM/backend/Dockerfile" \
     --tag "$SYSTEM_IMAGE" \
-    --build-arg "BONNI_CORE_VERSION=${SYSTEM_VERSION:-0.1.20}" \
+    --build-arg "BONNI_CORE_VERSION=${SYSTEM_VERSION:-0.1.20+e}" \
     --build-arg "BONNI_CORE_REVISION=${BONNI_CORE_REVISION:-unknown}" \
     "$BONNI_HOST_PROJECT_ROOT"
 fi

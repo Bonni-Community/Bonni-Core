@@ -2,11 +2,16 @@ import { constants as fileConstants, promises as fs } from "node:fs";
 import { createHash, randomBytes } from "node:crypto";
 import path from "node:path";
 
+import { resolvePersistentMediaStorageRoot } from "../../../scripts/storage/persistent-storage-root.mjs";
+
 const DEFAULT_MAX_UPLOAD_BYTES = 10 * 1024 * 1024;
 const HARD_MAX_UPLOAD_BYTES = 100 * 1024 * 1024;
 const MAX_METADATA_BYTES = 16 * 1024;
 const MAX_SIDECAR_BYTES = 64 * 1024;
-const MODULE_KEY = /^(app|addon|plugin|bridge)\.[a-z0-9][a-z0-9.-]{0,158}[a-z0-9]$/;
+// `core.branding` is the only Core-owned media namespace. Feature modules still
+// receive a runtime that is bound to their app/add-on/plug-in key and therefore
+// cannot create or remove Core branding objects.
+const MODULE_KEY = /^(?:(?:app|addon|plugin|bridge)\.[a-z0-9][a-z0-9.-]{0,158}[a-z0-9]|core\.branding)$/;
 const OBJECT_TOKEN = /^[A-Za-z0-9_-]{32}$/;
 const MEDIA_ID = /^([A-Za-z0-9_-]{4,256})\.([A-Za-z0-9_-]{32})$/;
 const KIND = /^[a-z][a-z0-9._-]{0,63}$/;
@@ -145,12 +150,22 @@ export function resolveMediaPublicBasePath(value = process.env.MEDIA_PUBLIC_BASE
   return candidate;
 }
 
-function resolveStorageRoot(value = process.env.MEDIA_STORAGE_ROOT) {
+function resolveStorageRoot(value?: string) {
   const candidate = String(value || "").trim();
   if (candidate.includes("\u0000")) {
     throw mediaError("CORE_MEDIA_STORAGE_ROOT_INVALID", 500);
   }
-  return path.resolve(candidate || path.join(process.cwd(), "storage", "media"));
+  if (candidate) return path.resolve(candidate);
+  try {
+    return resolvePersistentMediaStorageRoot();
+  } catch (error) {
+    throw mediaError(
+      (error as { code?: string })?.code || "CORE_MEDIA_STORAGE_ROOT_INVALID",
+      500,
+      undefined,
+      error,
+    );
+  }
 }
 
 function assertModuleKey(value: unknown) {

@@ -1,0 +1,6 @@
+{
+  "schema": "bonni.app-registry/v1",
+  "registryId": "bonni-official",
+  "sequence": 1,
+  "apps": []
+}

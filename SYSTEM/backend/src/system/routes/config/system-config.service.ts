@@ -235,6 +235,7 @@ type DatabaseProbeConfig = {
 
 type StoredDatabaseTarget = DatabaseProbeConfig & {
   autoConnect: boolean;
+  configured: boolean;
 };
 
 function db() {
@@ -835,6 +836,7 @@ function storedDatabaseTargets(settings: SettingMap) {
       textSetting(settings, SETTING_KEYS.databaseSslMode, parsedNormal.sslMode || "prefer"),
     ),
     autoConnect: boolSetting(settings, SETTING_KEYS.databaseAutoConnect, true),
+    configured: true,
   };
 
   const backupUrl = textSetting(settings, SETTING_KEYS.backupDatabaseUrl, "");
@@ -850,6 +852,10 @@ function storedDatabaseTargets(settings: SettingMap) {
     schema: text(parsedRedundant.schema, normal.schema).trim() || normal.schema,
     sslMode: databaseSslMode(parsedRedundant.sslMode || normal.sslMode),
     autoConnect: boolSetting(settings, SETTING_KEYS.redundantDatabaseAutoConnect, false),
+    // host/port/database above also form the harmless UI preview shown before
+    // a redundant target is saved. Only a persisted backup URL proves that
+    // this target is real and may enter the runtime routing file.
+    configured: Boolean(backupUrl.trim()),
   };
 
   return { normal, redundant };
@@ -878,6 +884,7 @@ function routingDatabaseTarget(
     schema: text(parsed.schema, normal?.schema || "public").trim() || "public",
     sslMode: databaseSslMode(parsed.sslMode || normal?.sslMode || "prefer"),
     autoConnect: target === "normal",
+    configured: target === "normal" || Boolean(connectionString.trim()),
   };
 }
 
@@ -930,6 +937,7 @@ function publicDatabaseTarget(config: StoredDatabaseTarget) {
     schema: config.schema,
     sslMode: config.sslMode,
     autoConnect: config.autoConnect,
+    configured: config.configured,
     connectionUrl: redactConnectionString(buildDatabaseUrl({
       provider: "postgresql",
       host: config.host,
@@ -963,7 +971,9 @@ async function applyStoredTargetsToRuntime(
   return configureDatabaseRouting({
     mode,
     normalUrl: storedDatabaseTargetUrl(targets.normal),
-    redundantUrl: storedDatabaseTargetUrl(targets.redundant),
+    redundantUrl: targets.redundant.configured
+      ? storedDatabaseTargetUrl(targets.redundant)
+      : "",
   });
 }
 
@@ -1082,6 +1092,10 @@ function normalizeDatabaseTargetUpdate(input: unknown, stored: StoredDatabaseTar
     schema,
     sslMode,
     autoConnect,
+    // Saving the form is the explicit act that turns the redundant preview
+    // into a configured target. A real localhost:5433 target therefore stays
+    // distinguishable from the identical unsaved default preview.
+    configured: true,
   } satisfies StoredDatabaseTarget;
 }
 

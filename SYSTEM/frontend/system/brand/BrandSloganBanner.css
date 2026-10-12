@@ -1,0 +1,173 @@
+.bonni-brand-slogan {
+  position: relative;
+  width: 100%;
+  min-height: 78px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  padding: 18px clamp(28px, 6vw, 88px);
+  border-top: 1px solid rgba(255, 255, 255, 0.13);
+  color: #aeb2ba;
+  background:
+    linear-gradient(to right, rgba(10, 45, 107, 0.24) 0%, rgba(5, 6, 7, 0) 34%, rgba(5, 6, 7, 0) 66%, rgba(153, 69, 0, 0.18) 100%),
+    #050607;
+  box-sizing: border-box;
+}
+
+.bonni-brand-slogan::before {
+  content: "";
+  position: absolute;
+  top: -1px;
+  right: 0;
+  left: 0;
+  height: 2px;
+  background: linear-gradient(90deg, #235bd3 0%, #7595e8 29%, rgba(255, 255, 255, 0.92) 50%, #e4ad68 72%, #ef7900 100%);
+}
+
+.bonni-brand-slogan p {
+  max-width: 570px;
+  margin: 0;
+  font-size: 0.86rem;
+  line-height: 1.5;
+}
+
+.bonni-brand-slogan__copyright {
+  flex: 0 0 auto;
+  color: #8f949d;
+  white-space: nowrap;
+}
+
+.bonni-brand-slogan__meta {
+  display: flex;
+  align-items: center;
+}
+
+.bonni-brand-slogan--compact {
+  min-height: 46px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  padding-block: 10px;
+}
+
+.bonni-brand-slogan--compact .bonni-brand-slogan__meta {
+  grid-column: 1;
+  justify-self: start;
+}
+
+.bonni-brand-slogan--compact .bonni-brand-slogan__copyright {
+  color: #747a83;
+  font-size: 0.7rem;
+}
+
+.bonni-brand-slogan__links {
+  grid-column: 2;
+  justify-self: end;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.bonni-brand-slogan__links a,
+.bonni-brand-slogan__links button {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 8px;
+  border: 0;
+  padding: 6px;
+  color: #b6bbc4;
+  background: transparent;
+  font: inherit;
+  line-height: 1;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.bonni-brand-slogan__links a:hover,
+.bonni-brand-slogan__links button:hover {
+  color: #fff;
+  background: rgba(255, 255, 255, 0.07);
+}
+
+.bonni-brand-slogan__links a:focus-visible,
+.bonni-brand-slogan__links button:focus-visible {
+  outline: 3px solid rgba(245, 176, 0, 0.34);
+  outline-offset: 2px;
+}
+
+.bonni-brand-slogan__links svg {
+  width: 15px;
+  height: 15px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.7;
+}
+
+.bonni-brand-slogan__github img {
+  width: 19px;
+  height: 19px;
+  border-radius: 50%;
+  filter: grayscale(1);
+  opacity: 0.82;
+  object-fit: cover;
+}
+
+.bonni-brand-slogan__github:hover img {
+  opacity: 1;
+}
+
+.bonni-brand-slogan__documentation svg {
+  width: 16px;
+  height: 16px;
+}
+
+.bonni-brand-slogan__view-mode {
+  position: relative;
+  margin-left: 7px;
+}
+
+.bonni-brand-slogan__view-mode::before {
+  content: "";
+  position: absolute;
+  top: 5px;
+  bottom: 5px;
+  left: -7px;
+  width: 1px;
+  background: rgba(255, 255, 255, 0.16);
+}
+
+.bonni-brand-slogan__view-mode[data-active-view="desktop"] {
+  color: #a9bee8;
+}
+
+.bonni-brand-slogan__view-mode[data-active-view="mobile"] {
+  color: #e6ad62;
+}
+
+@media (max-width: 520px) {
+  .bonni-brand-slogan {
+    min-height: 66px;
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 5px;
+    padding: 14px 18px;
+  }
+
+  .bonni-brand-slogan p {
+    font-size: 0.78rem;
+  }
+
+  .bonni-brand-slogan--compact {
+    min-height: 42px;
+    align-items: center;
+    grid-template-columns: minmax(0, 1fr) auto;
+    padding: 9px 14px;
+  }
+
+  .bonni-brand-slogan__links a,
+  .bonni-brand-slogan__links button {
+    padding: 5px;
+  }
+}

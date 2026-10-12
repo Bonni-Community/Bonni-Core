@@ -1,7 +1,12 @@
 import { Router } from "express";
 import { validate } from "../../../../core/core.js";
 import { requireAuth } from "../middleware/requireAuth.js";
-import { loginSchema, loginTwoFactorSchema, logoutSchema, refreshSchema } from "../schemas/auth.schemas.js";
+import {
+  loginSchema,
+  loginTwoFactorSchema,
+  logoutSchema,
+  refreshSchema,
+} from "../schemas/auth.schemas.js";
 import * as authService from "../services/auth.service.js";
 import * as accountService from "../services/account.service.js";
 

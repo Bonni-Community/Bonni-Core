@@ -4,6 +4,9 @@
 // Technische Bonni-Account-Identität und Basis-Login.
 // Fach-Apps, Terminals oder Plugins dürfen eigene Profile liefern,
 // Bonni Core besitzt hier nur den Start-/Login-Kern.
+// Der additive Produktionsvertrag für die Security-/Recovery-Felder dieses
+// Modells ist unveränderlich an
+// ops/migrations/20260829-security-recovery-two-factor.sql gebunden.
 // =====================================================
 
 enum AccountType {

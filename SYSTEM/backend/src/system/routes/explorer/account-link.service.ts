@@ -327,6 +327,7 @@ export async function approveAccountLink(accountId: string, requestId: string) {
         phone: request.primaryPerson.phone || oldPerson.phone,
         nickname: request.primaryPerson.nickname || oldPerson.nickname,
         firstName: request.primaryPerson.firstName || oldPerson.firstName,
+        secondFirstName: request.primaryPerson.secondFirstName || oldPerson.secondFirstName,
         lastName: request.primaryPerson.lastName || oldPerson.lastName,
       },
     });

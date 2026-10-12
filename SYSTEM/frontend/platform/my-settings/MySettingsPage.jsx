@@ -18,35 +18,51 @@ import {
   retainTotpSetupAfterError,
 } from "../../core/modules/security/two-factor/model/enrollmentFlowPolicy.js";
 import AccountRecoveryPanel from "../../core/modules/security/identity/components/AccountRecoveryPanel.jsx";
+import {
+  resetBrandingLogo,
+  saveBrandingMetadata,
+  uploadBrandingLogo,
+} from "../../system/api/brandingApi.js";
+import { useBranding } from "../../system/brand/BrandContext.jsx";
+import BrandLogo from "../../system/brand/BrandLogo.jsx";
+import {
+  applyOwnBrandingLogoSuccess,
+  applyOwnBrandingMetadataSuccess,
+  brandingEditConflictState,
+  brandingEditHasConflict,
+  brandingEditHasDirtyText,
+  brandingFileExpectedRevision,
+  brandingTextExpectedRevision,
+  changeBrandingText,
+  createBrandingEditState,
+  discardLocalBrandingEdits,
+  observeBrandingRevision,
+  selectBrandingEditFile,
+} from "../../system/brand/brandingEditState.js";
+import {
+  brandingErrorMessage,
+  classifyBrandingMutationFailure,
+  isBrandingRevisionConflict,
+} from "../../system/brand/brandingErrorMessages.js";
+import MySettingsFrame from "./MySettingsFrame.jsx";
+import UserSettingsSection, { USER_SETTINGS_SECTIONS } from "./UserSettingsSections.jsx";
 import "./MySettingsPage.css";
+import "./BrandSettings.css";
+import "./MySettingsOverlay.css";
 
 const EMPTY_SETUP_INPUT = Object.freeze({
   enrollmentPassword: "",
   currentPassword: "",
 });
 
-function displayName(user, shell) {
-  return user?.displayName
-    || user?.name
-    || shell?.identity?.displayName
-    || user?.loginName
-    || shell?.identity?.loginName
-    || "Benutzer";
-}
-
-function accountLabel(user, shell) {
-  return user?.loginName || shell?.identity?.loginName || user?.email || "Persoenliches Konto";
-}
-
-function initials(value) {
-  return String(value || "B")
-    .split(/[\s._-]+/)
-    .filter(Boolean)
-    .map((part) => part[0])
-    .join("")
-    .slice(0, 2)
-    .toUpperCase();
-}
+const SETTINGS_FRAME_SECTIONS = Object.freeze(USER_SETTINGS_SECTIONS.map((section) => Object.freeze({
+  id: section.key,
+  label: section.label,
+  subsections: Object.freeze(section.tabs.map((tab) => Object.freeze({
+    id: tab.key,
+    label: tab.label,
+  }))),
+})));
 
 function formatDateTime(value) {
   if (!value) return "—";
@@ -102,8 +118,14 @@ function canManageRecoveryPolicy(user, shell) {
   });
 }
 
-export default function MySettingsPage({ token, user, shell, onClose, onSessionRevoked, onSessionInvalidated }) {
-  const [activeTab, setActiveTab] = useState("security");
+export default function MySettingsPage({ token, user, shell, onClose, onSessionRevoked, onSessionInvalidated, onProfileUpdated, appLogoUrl, appLogoAlt }) {
+  const {
+    branding,
+    brandingLoading,
+    brandingError: brandingLoadError,
+    refreshBranding,
+  } = useBranding();
+  const [activeTab, setActiveTab] = useState("profile:data");
   const [status, setStatus] = useState(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
@@ -118,8 +140,47 @@ export default function MySettingsPage({ token, user, shell, onClose, onSessionR
   const [proofAction, setProofAction] = useState("");
   const [sessionRevokedMessage, setSessionRevokedMessage] = useState("");
   const controllerRef = useRef(null);
+  const brandingControllerRef = useRef(null);
+  const brandingFileInputRef = useRef(null);
   const setupScopeRef = useRef(null);
+  const [brandingEdits, setBrandingEdits] = useState(() => createBrandingEditState(branding));
+  const [brandingPreviewUrl, setBrandingPreviewUrl] = useState("");
+  const [brandingBusy, setBrandingBusy] = useState(false);
+  const [brandingReconciling, setBrandingReconciling] = useState(false);
+  const [brandingReconciliationNeeded, setBrandingReconciliationNeeded] = useState(false);
+  const [brandingError, setBrandingError] = useState("");
+  const [brandingNotice, setBrandingNotice] = useState("");
   const accountId = user?.accountId || user?.id || shell?.identity?.accountId || shell?.identity?.id || "";
+  const canManageBranding = canManageRecoveryPolicy(user, shell);
+  const brandingConflicts = brandingEditConflictState(brandingEdits, branding.revision);
+  const brandingEditConflict = brandingEditHasConflict(brandingEdits, branding.revision);
+  const brandingEditorBlocked = brandingBusy
+    || brandingReconciling
+    || brandingReconciliationNeeded
+    || brandingLoading
+    || Boolean(brandingLoadError);
+  const brandingWriteBlocked = brandingEditorBlocked || brandingEditConflict;
+  const brandingHasDirtyText = brandingEditHasDirtyText(brandingEdits);
+  const brandingDraft = brandingEdits.draft;
+  const brandingFile = brandingEdits.file;
+
+  useEffect(() => {
+    setBrandingEdits((current) => observeBrandingRevision(current, branding));
+  }, [
+    branding.revision,
+    branding.displayName,
+    branding.logoAltText,
+  ]);
+
+  useEffect(() => {
+    if (!brandingFile) {
+      setBrandingPreviewUrl("");
+      return undefined;
+    }
+    const previewUrl = URL.createObjectURL(brandingFile);
+    setBrandingPreviewUrl(previewUrl);
+    return () => URL.revokeObjectURL(previewUrl);
+  }, [brandingFile]);
 
   function replaceSetupInput(next) {
     setupInputRef.current = next;
@@ -183,9 +244,221 @@ export default function MySettingsPage({ token, user, shell, onClose, onSessionR
       window.removeEventListener("pagehide", purgeOnPageHide);
       window.removeEventListener("keydown", purgeOnScreenshotKey);
       controllerRef.current?.abort();
+      brandingControllerRef.current?.abort();
+      brandingControllerRef.current = null;
       setupInputRef.current = { ...EMPTY_SETUP_INPUT };
     };
   }, [token, accountId]);
+
+  function nextBrandingController() {
+    brandingControllerRef.current?.abort();
+    const controller = new AbortController();
+    brandingControllerRef.current = controller;
+    return controller;
+  }
+
+  function finishBrandingMutation(controller) {
+    if (brandingControllerRef.current !== controller) return;
+    brandingControllerRef.current = null;
+    setBrandingBusy(false);
+  }
+
+  async function reloadBrandingForEditing({ interrupted = false } = {}) {
+    if (brandingReconciling) return;
+    setBrandingReconciling(true);
+    setBrandingError("");
+    setBrandingNotice("");
+    try {
+      const next = await refreshBranding();
+      if (!next) throw new Error("Die aktuelle Darstellung konnte nicht vom Server geladen werden.");
+      setBrandingReconciliationNeeded(false);
+      setBrandingNotice(interrupted
+        ? "Der aktuelle Serverstand wurde nach der unterbrochenen Speicheranfrage neu geladen. Bitte prüfe Name, Alternativtext und Logo vor einer weiteren Änderung."
+        : "Der aktuelle Serverstand der Darstellung wurde neu geladen.");
+    } catch (reloadError) {
+      setBrandingReconciliationNeeded(true);
+      setBrandingError(brandingErrorMessage(
+        reloadError,
+        "Der aktuelle Serverstand konnte nicht bestätigt werden. Speichern bleibt gesperrt; bitte erneut laden.",
+      ));
+    } finally {
+      setBrandingReconciling(false);
+    }
+  }
+
+  async function handleBrandingRevisionConflict(failureSentence) {
+    const next = await refreshBranding();
+    setBrandingNotice("");
+    if (next) {
+      setBrandingReconciliationNeeded(false);
+      setBrandingError(`Die Darstellung wurde zwischenzeitlich in einer anderen Sitzung geändert. Der aktuelle Serverstand wurde neu geladen. ${failureSentence} Lokale Entwürfe bleiben zur Prüfung sichtbar, können aber erst nach Auflösung des Revisionskonflikts verwendet werden.`);
+      return;
+    }
+    setBrandingReconciliationNeeded(true);
+    setBrandingError(`Die Darstellung wurde zwischenzeitlich in einer anderen Sitzung geändert. ${failureSentence} Der aktuelle Serverstand konnte nicht geladen werden; Speichern bleibt gesperrt.`);
+  }
+
+  function markBrandingMutationUncertain(actionLabel) {
+    setBrandingReconciliationNeeded(true);
+    setBrandingNotice("");
+    setBrandingError(`Der Ausgang der Anfrage „${actionLabel}“ ist unklar. Die Änderung kann serverseitig bereits wirksam sein. Vor weiteren Änderungen muss der aktuelle Serverstand neu geladen werden.`);
+  }
+
+  function selectBrandingFile(event) {
+    const file = event.target.files?.[0] || null;
+    setBrandingError("");
+    setBrandingNotice("");
+    if (!file) {
+      setBrandingEdits((current) => selectBrandingEditFile(current, null, branding.revision));
+      return;
+    }
+    if (file.type !== "image/png" || file.size <= 0 || file.size > 2 * 1024 * 1024) {
+      event.target.value = "";
+      setBrandingEdits((current) => selectBrandingEditFile(current, null, branding.revision));
+      setBrandingError("Bitte eine gültige PNG-Datei mit höchstens 2 MB auswählen.");
+      return;
+    }
+    setBrandingEdits((current) => selectBrandingEditFile(current, file, branding.revision));
+  }
+
+  function updateBrandingDraft(field, value) {
+    setBrandingEdits((current) => changeBrandingText(current, field, value, branding.revision));
+    setBrandingError("");
+    setBrandingNotice("");
+  }
+
+  function discardBrandingConflict() {
+    setBrandingEdits((current) => discardLocalBrandingEdits(current, branding));
+    if (brandingFileInputRef.current) brandingFileInputRef.current.value = "";
+    setBrandingError("");
+    setBrandingNotice("Der aktuelle Serverstand wurde übernommen. Lokale Textentwürfe und eine ausgewählte Logo-Datei wurden verworfen.");
+  }
+
+  async function saveBranding(event) {
+    event.preventDefault();
+    if (!canManageBranding || brandingWriteBlocked || !brandingHasDirtyText) return;
+    const controller = nextBrandingController();
+    setBrandingBusy(true);
+    setBrandingError("");
+    setBrandingNotice("");
+    let mutationCompleted = false;
+    let requestStarted = false;
+    try {
+      requestStarted = true;
+      await saveBrandingMetadata(token, {
+        displayName: brandingDraft.displayName.trim(),
+        logoAltText: brandingDraft.logoAltText.trim(),
+        expectedRevision: brandingTextExpectedRevision(brandingEdits, branding.revision),
+      }, { signal: controller.signal });
+      mutationCompleted = true;
+      const afterMetadata = await refreshBranding();
+      if (!afterMetadata) throw new Error("Die gespeicherte Darstellung konnte nicht neu geladen werden.");
+      if (!controller.signal.aborted) {
+        setBrandingEdits((current) => applyOwnBrandingMetadataSuccess(current, afterMetadata));
+        setBrandingNotice("Name und Alternativtext wurden gespeichert. Das Logo wurde nicht verändert und wird nur über die eigene Upload-Aktion geändert.");
+      }
+    } catch (saveError) {
+      if (!controller.signal.aborted) {
+        const failureKind = classifyBrandingMutationFailure(saveError, { requestStarted });
+        if (mutationCompleted) {
+          markBrandingMutationUncertain("Name und Alternativtext speichern");
+        } else if (failureKind === "conflict" || isBrandingRevisionConflict(saveError)) {
+          await handleBrandingRevisionConflict("Name und Alternativtext wurden nicht gespeichert.");
+        } else if (failureKind === "uncertain") {
+          markBrandingMutationUncertain("Name und Alternativtext speichern");
+        } else {
+          setBrandingError(brandingErrorMessage(
+            saveError,
+            "Name und Alternativtext konnten nicht gespeichert werden.",
+          ));
+        }
+      }
+    } finally {
+      finishBrandingMutation(controller);
+    }
+  }
+
+  async function uploadSelectedBrandingLogo() {
+    if (!canManageBranding || brandingWriteBlocked || !brandingFile) return;
+    const expectedRevision = brandingFileExpectedRevision(brandingEdits);
+    if (expectedRevision === null) return;
+    const controller = nextBrandingController();
+    setBrandingBusy(true);
+    setBrandingError("");
+    setBrandingNotice("");
+    let mutationCompleted = false;
+    let requestStarted = false;
+    try {
+      requestStarted = true;
+      await uploadBrandingLogo(token, brandingFile, expectedRevision, { signal: controller.signal });
+      mutationCompleted = true;
+      const next = await refreshBranding();
+      if (!next) throw new Error("Das gespeicherte Logo konnte nicht neu geladen werden.");
+      if (!controller.signal.aborted) {
+        setBrandingEdits((current) => applyOwnBrandingLogoSuccess(current, next));
+        if (brandingFileInputRef.current) brandingFileInputRef.current.value = "";
+        setBrandingNotice(`Das Logo wurde gespeichert. Login und Bonni Core verwenden es sofort; angebundene Apps erhalten es über den zentralen Kontext. ${brandingHasDirtyText ? "Deine ungespeicherten Änderungen an Name oder Alternativtext bleiben im Formular erhalten." : "Name und Alternativtext wurden nicht verändert."}`);
+      }
+    } catch (uploadError) {
+      if (!controller.signal.aborted) {
+        const failureKind = classifyBrandingMutationFailure(uploadError, { requestStarted });
+        if (mutationCompleted) {
+          markBrandingMutationUncertain("Logo hochladen");
+        } else if (failureKind === "conflict" || isBrandingRevisionConflict(uploadError)) {
+          await handleBrandingRevisionConflict("Das Logo wurde nicht gespeichert.");
+        } else if (failureKind === "uncertain") {
+          markBrandingMutationUncertain("Logo hochladen");
+        } else {
+          setBrandingError(`Das Logo wurde nicht gespeichert. ${brandingErrorMessage(
+            uploadError,
+            "Der PNG-Upload ist fehlgeschlagen.",
+          )}`);
+        }
+      }
+    } finally {
+      finishBrandingMutation(controller);
+    }
+  }
+
+  async function restoreDefaultLogo() {
+    if (!canManageBranding || brandingWriteBlocked) return;
+    const controller = nextBrandingController();
+    setBrandingBusy(true);
+    setBrandingError("");
+    setBrandingNotice("");
+    let mutationCompleted = false;
+    let requestStarted = false;
+    try {
+      requestStarted = true;
+      await resetBrandingLogo(token, branding.revision, { signal: controller.signal });
+      mutationCompleted = true;
+      const next = await refreshBranding();
+      if (!next) throw new Error("Das Standardlogo konnte nicht neu geladen werden.");
+      if (!controller.signal.aborted) {
+        setBrandingEdits((current) => applyOwnBrandingLogoSuccess(current, next));
+        if (brandingFileInputRef.current) brandingFileInputRef.current.value = "";
+        setBrandingNotice(`Das mit Bonni Core gelieferte Standardlogo ist wieder aktiv. ${brandingHasDirtyText ? "Deine ungespeicherten Änderungen an Name oder Alternativtext bleiben im Formular erhalten." : "Name und Alternativtext wurden nicht verändert."}`);
+      }
+    } catch (resetError) {
+      if (!controller.signal.aborted) {
+        const failureKind = classifyBrandingMutationFailure(resetError, { requestStarted });
+        if (mutationCompleted) {
+          markBrandingMutationUncertain("Standardlogo wiederherstellen");
+        } else if (failureKind === "conflict" || isBrandingRevisionConflict(resetError)) {
+          await handleBrandingRevisionConflict("Das Logo wurde nicht zurückgesetzt.");
+        } else if (failureKind === "uncertain") {
+          markBrandingMutationUncertain("Standardlogo wiederherstellen");
+        } else {
+          setBrandingError(brandingErrorMessage(
+            resetError,
+            "Das Logo konnte nicht zurückgesetzt werden.",
+          ));
+        }
+      }
+    } finally {
+      finishBrandingMutation(controller);
+    }
+  }
 
   useEffect(() => {
     const request = status?.enrollmentRequest;
@@ -395,6 +668,11 @@ export default function MySettingsPage({ token, user, shell, onClose, onSessionR
       return;
     }
     controllerRef.current?.abort();
+    if (brandingControllerRef.current) {
+      brandingControllerRef.current.abort();
+      brandingControllerRef.current = null;
+      void refreshBranding();
+    }
     purgeOneShotState();
     setProofAction("");
     onClose?.();
@@ -403,15 +681,38 @@ export default function MySettingsPage({ token, user, shell, onClose, onSessionR
   function selectTab(nextTab) {
     if (nextTab === activeTab) return;
     controllerRef.current?.abort();
+    if (brandingControllerRef.current) {
+      const interruptedBrandingController = brandingControllerRef.current;
+      brandingControllerRef.current = null;
+      setBrandingBusy(false);
+      setBrandingReconciliationNeeded(true);
+      setBrandingError("");
+      setBrandingNotice("");
+      interruptedBrandingController.abort();
+    }
     purgeOneShotState();
     setProofAction("");
     setError("");
     setNotice("");
     setActiveTab(nextTab);
-    if (nextTab === "security") loadStatus();
+    if (nextTab === "security:two-factor") loadStatus();
+    if (nextTab === "profile:image" && brandingReconciliationNeeded) {
+      void reloadBrandingForEditing({ interrupted: true });
+    }
   }
 
-  const name = displayName(user, shell);
+  const [activeSection, activeSubsection] = activeTab.split(":");
+
+  function selectSection(sectionId) {
+    const nextSection = USER_SETTINGS_SECTIONS.find((section) => section.key === sectionId);
+    const firstTab = nextSection?.tabs?.[0]?.key;
+    if (firstTab) selectTab(`${sectionId}:${firstTab}`);
+  }
+
+  function selectSubsection(subsectionId) {
+    selectTab(`${activeSection}:${subsectionId}`);
+  }
+
   const request = status?.enrollmentRequest;
   const expectedSetupScope = `${token}:${accountId}:${request?.id || "none"}`;
   const liveTotpSetup = totpSetup
@@ -432,35 +733,101 @@ export default function MySettingsPage({ token, user, shell, onClose, onSessionR
     && Date.parse(request.expiresAt) > Date.now();
 
   return (
-    <main className="bonni-my-settings" aria-label="Meine Einstellungen">
-      <header className="bonni-my-settings__topbar">
-        <div>
-          <p>Bonni Core</p>
-          <h1>Meine Einstellungen</h1>
-        </div>
-        <button type="button" onClick={close} aria-label="Meine Einstellungen schliessen">Schliessen</button>
-      </header>
+    <MySettingsFrame
+      user={user}
+      shell={shell}
+      activeSection={activeSection}
+      activeSubsection={activeSubsection}
+      sections={SETTINGS_FRAME_SECTIONS}
+      onSelectSection={selectSection}
+      onSelectSubsection={selectSubsection}
+      onClose={close}
+      appLogoUrl={appLogoUrl}
+      appLogoAlt={appLogoAlt}
+    >
+      <UserSettingsSection
+        activeKey={activeTab}
+        token={token}
+        user={user}
+        shell={shell}
+        onSessionRevoked={onSessionRevoked}
+        onSessionInvalidated={onSessionInvalidated}
+        onProfileUpdated={onProfileUpdated}
+        brandingPanel={(
+            <form className="bonni-brand-settings" onSubmit={saveBranding}>
+              <div className="bonni-my-settings__heading">
+                <div><p className="bonni-2fa-eyebrow">Zentrale Darstellung</p><h2>Logo und sichtbarer Name</h2><p>Diese Darstellung gilt sofort im Login und in Bonni Core. Angebundene Apps erhalten sie als zentralen Kontext und müssen ihn in ihrer jeweiligen App-Version verwenden.</p></div>
+                <span className={`bonni-2fa-status${canManageBranding && !brandingWriteBlocked ? " is-active" : ""}`}>{brandingLoading ? "Wird geladen" : canManageBranding ? brandingWriteBlocked ? "Gesperrt" : "Bearbeitbar" : "Nur Ansicht"}</span>
+              </div>
 
-      <div className="bonni-my-settings__layout">
-        <aside className="bonni-my-settings__sidebar">
-          <div className="bonni-my-settings__identity">
-            <span aria-hidden="true">{initials(name)}</span>
-            <div><strong>{name}</strong><small>{accountLabel(user, shell)}</small></div>
-          </div>
-          <nav aria-label="Einstellungsbereiche">
-            <button type="button" className={activeTab === "security" ? "is-active" : ""} aria-current={activeTab === "security" ? "page" : undefined} onClick={() => selectTab("security")}><span aria-hidden="true">🛡</span><span><strong>Sicherheit</strong><small>2FA und Recoverycodes</small></span></button>
-            <button type="button" className={activeTab === "recovery" ? "is-active" : ""} aria-current={activeTab === "recovery" ? "page" : undefined} onClick={() => selectTab("recovery")}><span aria-hidden="true">↻</span><span><strong>Notfall</strong><small>Kontowiederherstellung</small></span></button>
-          </nav>
-          <p>Diese Core-Oberflaeche sieht in jeder Bonni-App gleich aus.</p>
-        </aside>
+              {brandingError ? <p className="bonni-2fa-alert is-error" role="alert">{brandingError}</p> : null}
+              {brandingLoadError && !brandingError ? <p className="bonni-2fa-alert is-error" role="alert">Die aktuelle Darstellung konnte nicht bestätigt werden. Speichern bleibt gesperrt, bis der Serverstand neu geladen wurde.</p> : null}
+              {brandingNotice ? <p className="bonni-2fa-alert is-success" role="status">{brandingNotice}</p> : null}
+              {brandingLoading && !brandingReconciliationNeeded ? <p className="bonni-brand-settings__loading" role="status">Der aktuelle Serverstand der Darstellung wird geladen. Änderungen sind bis dahin gesperrt.</p> : null}
+              {brandingReconciliationNeeded ? (
+                <div className="bonni-brand-settings__reconcile" role="status">
+                  <p>{brandingReconciling ? "Der aktuelle Serverstand wird nach einer unterbrochenen Anfrage neu geladen …" : "Eine unterbrochene Anfrage kann serverseitig bereits abgeschlossen sein. Vor weiteren Änderungen muss der aktuelle Stand neu geladen werden."}</p>
+                  {!brandingReconciling ? <button type="button" onClick={() => reloadBrandingForEditing({ interrupted: true })}>Aktuellen Serverstand neu laden</button> : null}
+                </div>
+              ) : brandingLoadError ? (
+                <div className="bonni-brand-settings__reconcile"><button type="button" onClick={() => reloadBrandingForEditing()}>Darstellung erneut laden</button></div>
+              ) : null}
+              {brandingEditConflict ? (
+                <div className="bonni-brand-settings__revision-conflict" role="alert">
+                  <div>
+                    <strong>Die zentrale Darstellung wurde parallel geändert.</strong>
+                    <p>{brandingConflicts.text && brandingConflicts.file
+                      ? "Dein Textentwurf und die ausgewählte Logo-Datei gehören zu einer älteren Revision. Speichern und Upload bleiben gesperrt."
+                      : brandingConflicts.text
+                        ? "Dein Textentwurf gehört zu einer älteren Revision. Speichern und Logoaktionen bleiben gesperrt."
+                        : "Die ausgewählte Logo-Datei gehört zu einer älteren Revision. Der Upload bleibt gesperrt."}</p>
+                  </div>
+                  <button type="button" onClick={discardBrandingConflict}>Lokale Entwürfe verwerfen und Serverstand übernehmen</button>
+                </div>
+              ) : null}
 
-        <section className="bonni-my-settings__content">
-          {activeTab === "recovery" ? (
+              <section className="bonni-2fa-card bonni-brand-settings__editor">
+                <div>
+                  <p className="bonni-2fa-eyebrow">Eine Quelle für das ganze System</p>
+                  <h3>Aktives Erscheinungsbild</h3>
+                  <p>Bonni Core verwendet diese Quelle direkt. Angebundene Apps bekommen den Branding-Kontext zentral bereitgestellt; sichtbar wird er dort, sobald die jeweilige App-Version ihn verwendet.</p>
+                </div>
+                <div className="bonni-brand-settings__fields">
+                  <label className="bonni-2fa-field"><span>Sichtbarer Name</span><input value={brandingDraft.displayName} onChange={(event) => updateBrandingDraft("displayName", event.target.value)} maxLength={120} required disabled={!canManageBranding || brandingEditorBlocked} /></label>
+                  <label className="bonni-2fa-field"><span>Alternativtext des Logos</span><input value={brandingDraft.logoAltText} onChange={(event) => updateBrandingDraft("logoAltText", event.target.value)} maxLength={180} required disabled={!canManageBranding || brandingEditorBlocked} /><small>Wird von Vorleseprogrammen verwendet, wenn das Logo nicht nur dekorativ ist.</small></label>
+                  {brandingHasDirtyText ? <p className="bonni-brand-settings__draft-note" role="status">Ungespeicherte Änderungen an Name oder Alternativtext bleiben bei Logo-Upload und Logo-Reset erhalten.</p> : null}
+                  <div className="bonni-brand-settings__upload"><label><span>Neues Logo als PNG</span><input ref={brandingFileInputRef} type="file" accept="image/png,.png" onChange={selectBrandingFile} disabled={!canManageBranding || brandingEditorBlocked} /></label><small>Maximal 2 MB und 2048 × 2048 Pixel. Das Seitenverhältnis bleibt unverändert. Der Upload ist bewusst vom Speichern des Namens getrennt.</small><button type="button" onClick={uploadSelectedBrandingLogo} disabled={!canManageBranding || brandingWriteBlocked || !brandingFile}>Ausgewähltes Logo hochladen</button></div>
+                </div>
+              </section>
+
+              <section className="bonni-2fa-card bonni-brand-settings__previews" aria-label="Logo-Vorschau">
+                <header><div><p className="bonni-2fa-eyebrow">Vorschau</p><h3>Hell, dunkel und kompakt</h3></div><small>Revision {branding.revision}</small></header>
+                <div>
+                  {["light", "dark", "compact"].map((surface) => (
+                    <figure className={`bonni-brand-preview is-${surface}`} key={surface}>
+                      {brandingPreviewUrl
+                        ? <img src={brandingPreviewUrl} alt={brandingDraft.logoAltText || "Logo-Vorschau"} />
+                        : <BrandLogo alt={brandingDraft.logoAltText} />}
+                      <figcaption>{surface === "light" ? "Helle Fläche" : surface === "dark" ? "Dunkle Fläche" : "Kompakte Verwendung"}<strong>{brandingDraft.displayName || branding.displayName}</strong></figcaption>
+                    </figure>
+                  ))}
+                </div>
+              </section>
+
+              {!canManageBranding ? <p className="bonni-brand-settings__admin-note">Nur Administratoren dürfen die zentrale Darstellung verändern.</p> : null}
+              <div className="bonni-2fa-actions">
+                <button type="button" onClick={restoreDefaultLogo} disabled={!canManageBranding || brandingWriteBlocked}>Standardlogo wiederherstellen</button>
+                <button type="submit" className="is-primary" disabled={!canManageBranding || brandingWriteBlocked || !brandingHasDirtyText || !brandingDraft.displayName.trim() || !brandingDraft.logoAltText.trim()}>{brandingBusy ? "Wird gespeichert …" : "Name und Alternativtext speichern"}</button>
+              </div>
+            </form>
+        )}
+        recoveryPanel={(
             <AccountRecoveryPanel
               token={token}
               canManagePolicy={canManageRecoveryPolicy(user, shell)}
             />
-          ) : (
+        )}
+        twoFactorPanel={(
             <>
           <div className="bonni-my-settings__heading">
             <div><p className="bonni-2fa-eyebrow">Kontosicherheit</p><h2>Zwei-Faktor-Authentifizierung (2FA)</h2><p>Schuetzt die Anmeldung und sensible Bereiche zusaetzlich zum Passwort.</p></div>
@@ -587,9 +954,8 @@ export default function MySettingsPage({ token, user, shell, onClose, onSessionR
             </>
           ) : null}
             </>
-          )}
-        </section>
-      </div>
-    </main>
+        )}
+      />
+    </MySettingsFrame>
   );
 }

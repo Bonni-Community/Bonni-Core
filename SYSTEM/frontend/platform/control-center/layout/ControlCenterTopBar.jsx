@@ -111,7 +111,7 @@ const QUICK_ACTIONS = [
   { key: "secure", icon: "▣", label: "Sicherer Zugriff", kind: "status" },
   { key: "sync", icon: "↻", label: "Registry synchronisieren", action: "sync" },
   { key: "logout", icon: "⎋", label: "Logout", action: "logout" },
-  { key: "my-settings", icon: "◉", label: "Meine Einstellungen", action: "my-settings" },
+  { key: "my-settings", icon: "◉", label: "Einstellungen", action: "my-settings" },
   { key: "terminal", icon: ">_", label: "Terminal", target: "terminal" },
   { key: "files", icon: "▤", label: "Datei-Verwaltung", target: "system" },
   { key: "help", icon: "?", label: "Systemstatus", target: "system" },

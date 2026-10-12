@@ -3,10 +3,11 @@ import { constants as fsConstants } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 
-import { getProjectRoot } from "../../../boot/run-system/run-system.paths.js";
+import { getProductRoot, getProjectRoot } from "../../../boot/run-system/run-system.paths.js";
 import { createSystemBackup, validateSystemBackup } from "../backup/index.js";
 import { queueLocalSourceUpdate } from "./local-source-inbox.service.js";
 import { localSourceVersionRequiresLifecycle } from "./local-source-lifecycle-policy.js";
+import { removeCoreLicenseVersion } from "../../../../platform/module-manager/licensing/central-license-catalog.service.js";
 
 const SCHEMA = "bonni.local-source-deployment-lifecycle/v1";
 const HOLD_DAYS = 14;
@@ -75,7 +76,7 @@ type RollbackIntent = {
 };
 
 function stateRoot() {
-  return path.join(getProjectRoot(), "SYSTEM", ".bonni-source-update");
+  return path.join(getProductRoot(), "SYSTEM", ".bonni-source-update");
 }
 
 function lifecycleFile() {
@@ -99,7 +100,7 @@ function rollbackStagingPackage(intentId: string) {
 }
 
 function rollbackInboxTarget(updateId: string) {
-  return path.join(getProjectRoot(), "UPDATE", "inbox", updateId);
+  return path.join(getProductRoot(), "UPDATE", "inbox", updateId);
 }
 
 function validVersion(value: unknown): value is string {
@@ -110,18 +111,21 @@ function validVersion(value: unknown): value is string {
 function parseLifecycle(value: unknown): LocalDeploymentLifecycle | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const record = value as Record<string, unknown>;
-  const status = String(record.status || record.state || "");
+  const status = String(record.status || "");
+  const activatedAt = Date.parse(String(record.activatedAt || ""));
+  const holdUntil = Date.parse(String(record.holdUntil || ""));
   if (
     record.schemaVersion !== SCHEMA
     || record.protocol !== "bonni-deployment-lifecycle/1"
     || record.mode !== "local-source"
     || !["holding", "rolling-back", "rolled-back", "finalized"].includes(status)
+    || record.state !== status
     || !Number.isSafeInteger(record.generation) || Number(record.generation) <= 0
     || !HOLD_ID.test(String(record.holdId || ""))
     || record.holdDays !== HOLD_DAYS
-    || !Number.isFinite(Date.parse(String(record.activatedAt || "")))
-    || !Number.isFinite(Date.parse(String(record.holdUntil || "")))
-    || Date.parse(String(record.holdUntil)) - Date.parse(String(record.activatedAt)) !== HOLD_MS
+    || !Number.isFinite(activatedAt)
+    || !Number.isFinite(holdUntil)
+    || holdUntil - activatedAt !== HOLD_MS
     || !validVersion(record.previousVersion)
     || !validVersion(record.targetVersion)
     || !validVersion(record.activeVersion)
@@ -130,9 +134,54 @@ function parseLifecycle(value: unknown): LocalDeploymentLifecycle | null {
     || !UPDATE_ID.test(String(record.rollbackUpdateId || ""))
     || !SHA256.test(String(record.rollbackManifestSha256 || ""))
     || record.holdPath !== `deployment-holds/${record.holdId}`
+    || typeof record.blocksUpdates !== "boolean"
+    || typeof record.followUpdatesBlocked !== "boolean"
+    || typeof record.canFinalize !== "boolean"
+    || typeof record.canRollback !== "boolean"
     || (record.rollbackIntentId !== undefined
       && record.rollbackIntentId !== null
       && !HOLD_ID.test(String(record.rollbackIntentId)))
+  ) return null;
+
+  const activeIsTarget = record.activeVersion === record.targetVersion;
+  const activeIsPrevious = record.activeVersion === record.previousVersion;
+  const blocked = record.blocksUpdates === true && record.followUpdatesBlocked === true;
+  const unblocked = record.blocksUpdates === false && record.followUpdatesBlocked === false;
+  if (
+    (status === "holding" && (
+      !activeIsTarget
+      || !blocked
+      || record.canFinalize !== true
+      || record.canRollback !== true
+      || typeof record.blockReason !== "string"
+      || !record.blockReason
+    ))
+    || (status === "rolling-back" && (
+      !activeIsTarget
+      || !blocked
+      || record.canFinalize !== false
+      || record.canRollback !== false
+      || typeof record.blockReason !== "string"
+      || !record.blockReason
+      || !Number.isFinite(Date.parse(String(record.rollbackRequestedAt || "")))
+    ))
+    || (status === "finalized" && (
+      !activeIsTarget
+      || !unblocked
+      || record.canFinalize !== false
+      || record.canRollback !== false
+      || record.blockReason !== null
+      || !["developer", "automatic-14-day-expiry"].includes(String(record.finalizeReason || ""))
+      || !Number.isFinite(Date.parse(String(record.finalizedAt || "")))
+    ))
+    || (status === "rolled-back" && (
+      !activeIsPrevious
+      || !unblocked
+      || record.canFinalize !== false
+      || record.canRollback !== false
+      || record.blockReason !== null
+      || !Number.isFinite(Date.parse(String(record.rolledBackAt || "")))
+    ))
   ) return null;
 
   return record as unknown as LocalDeploymentLifecycle;
@@ -165,9 +214,9 @@ function activeManifestRequiresLifecycle(value: unknown) {
     ) return true;
   }
 
-  // Update 11 (+b) is the migration boundary at which every local Core build
-  // revision creates a 14-day lifecycle receipt. Update 10 (+a) legitimately
-  // predates that contract and is handled by the external bootstrap once.
+  // Only the exact historic 0.1.19+a bootstrap predates lifecycle receipts.
+  // Every later maintenance revision, including 0.1.20+e, must remain bound
+  // to the ordinary 14-day lifecycle contract.
   return localSourceVersionRequiresLifecycle(
     (record.versions as Record<string, unknown> | undefined)?.coreVersion,
   );
@@ -192,6 +241,14 @@ async function readLifecycleReceipt(): Promise<LifecycleReceipt | null> {
   try { raw = JSON.parse(source); } catch { throw new Error("LOCAL_DEPLOYMENT_STATE_INVALID"); }
   const lifecycle = parseLifecycle(raw);
   if (!lifecycle) throw new Error("LOCAL_DEPLOYMENT_STATE_INVALID");
+  if (["holding", "rolling-back", "finalized"].includes(lifecycle.status)) {
+    await assertForwardActive(lifecycle);
+  } else {
+    await assertRolledBackActive(lifecycle);
+  }
+  if (["holding", "rolling-back"].includes(lifecycle.status)) {
+    await assertRollbackHoldPackage(lifecycle);
+  }
   return {
     lifecycle,
     sha256: crypto.createHash("sha256").update(source, "utf8").digest("hex"),
@@ -438,12 +495,50 @@ async function assertForwardActive(lifecycle: LocalDeploymentLifecycle) {
   }
 }
 
+async function assertRolledBackActive(lifecycle: LocalDeploymentLifecycle) {
+  const active = await readJson(path.join(stateRoot(), "active-manifest.json"));
+  if (
+    !active
+    || typeof active !== "object"
+    || Array.isArray(active)
+    || (active as Record<string, unknown>).updateId !== lifecycle.rollbackUpdateId
+    || (active as Record<string, unknown>).manifestSha256 !== lifecycle.rollbackManifestSha256
+    || ((active as Record<string, unknown>).versions as Record<string, unknown> | undefined)?.coreVersion !== lifecycle.previousVersion
+  ) {
+    throw Object.assign(new Error("LOCAL_DEPLOYMENT_ACTIVE_RECEIPT_MISMATCH"), {
+      code: "LOCAL_DEPLOYMENT_ACTIVE_RECEIPT_MISMATCH",
+      statusCode: 409,
+    });
+  }
+}
+
 async function removeHold(lifecycle: LocalDeploymentLifecycle) {
   const expected = path.join(stateRoot(), "deployment-holds", lifecycle.holdId);
   const resolved = path.resolve(expected);
   const holdsRoot = path.resolve(stateRoot(), "deployment-holds");
   if (path.dirname(resolved) !== holdsRoot) throw new Error("LOCAL_DEPLOYMENT_HOLD_PATH_INVALID");
+  const state = await fs.lstat(resolved).catch((error) => {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw error;
+  });
+  if (!state) return;
+  if (!state.isDirectory() || state.isSymbolicLink()) {
+    throw new Error("LOCAL_DEPLOYMENT_HOLD_PATH_UNSAFE");
+  }
   await fs.rm(resolved, { recursive: true, force: true });
+}
+
+async function cleanupLifecycleLicenses(lifecycle: LocalDeploymentLifecycle) {
+  // Core licenses are keyed by the visible version. Two developer builds with
+  // the same version therefore share one catalog entry; deleting either side
+  // would delete the license of the still-active program stand as well.
+  if (lifecycle.previousVersion === lifecycle.targetVersion) return;
+  const systemRoot = path.join(getProductRoot(), "SYSTEM");
+  if (lifecycle.status === "finalized") {
+    await removeCoreLicenseVersion(lifecycle.previousVersion, "lifecycle-finalized", systemRoot);
+  } else if (lifecycle.status === "rolled-back") {
+    await removeCoreLicenseVersion(lifecycle.targetVersion, "lifecycle-rolled-back", systemRoot);
+  }
 }
 
 async function finalizeLifecycle(
@@ -479,6 +574,7 @@ async function finalizeLifecycle(
   // next reconciliation removes it. It can never leave a holding lifecycle
   // whose rollback payload was already destroyed.
   await writeLifecycleCas(receipt, finalized);
+  await cleanupLifecycleLicenses(finalized);
   await removeHold(finalized);
   return finalized;
 }
@@ -638,7 +734,7 @@ async function publishRollbackPackage(
   intent: RollbackIntent,
 ) {
   assertIntentMatchesLifecycle(intent, lifecycle);
-  const inbox = path.join(getProjectRoot(), "UPDATE", "inbox");
+  const inbox = path.join(getProductRoot(), "UPDATE", "inbox");
   const target = rollbackInboxTarget(lifecycle.rollbackUpdateId);
   await fs.mkdir(inbox, { recursive: true });
   const entries = await fs.readdir(inbox);
@@ -733,6 +829,7 @@ async function reconcileRollbackIntentLocked(receipt: LifecycleReceipt | null) {
   let { lifecycle } = receipt;
 
   if (["finalized", "rolled-back"].includes(lifecycle.status)) {
+    await cleanupLifecycleLicenses(lifecycle);
     await removeHold(lifecycle);
     if (intent) await cleanupRollbackIntent(intent, { removePublishedPackage: true });
     return readLifecycleReceipt();

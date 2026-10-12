@@ -1,0 +1,4298 @@
+// KontorApp owns every model in this file. References to Bonni-Core members
+// and accounts are opaque scalar IDs, never cross-module Prisma relations.
+
+model KontorCounter {
+  key   String @id
+  value Int    @default(0)
+}
+
+model KontorAccountingConfiguration {
+  id                   String    @id @default("default")
+  templateKey          String    @default("SKR42_EUR")
+  standardVersion      String    @default("2026")
+  accountingMethod     String    @default("EUR")
+  sphereField          String    @default("KOST1")
+  organizationType     String?
+  nonprofitStatus      String?
+  legacySource         String?
+  fiscalYearStartMonth Int       @default(1)
+  organizationChartLabel String  @default("Organisation")
+  organizationChartName  String  @default("Verein")
+  setupCompletedAt     DateTime?
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt
+}
+
+model KontorAccountingTemplate {
+  id                String                            @id @default(cuid())
+  name              String
+  frameKey          String
+  description       String?
+  accountingMethod  String
+  sphereField       String
+  standardVersion   String                            @default("CUSTOM")
+  organizationTypes Json                              @default("[]")
+  sourceTemplateKey String?
+  validFrom          String?
+  validUntil         String?
+  replaces           String?
+  replacedBy         String?
+  decisionHint       String?
+  transitionGuidance String?
+  sourceUrl          String?
+  active            Boolean                           @default(true)
+  accounts          KontorAccountingTemplateAccount[]
+  createdAt         DateTime                          @default(now())
+  updatedAt         DateTime                          @updatedAt
+
+  @@index([active, name])
+  @@index([frameKey])
+}
+
+model KontorAccountingTemplateAccount {
+  id          String                   @id @default(cuid())
+  templateId  String
+  template    KontorAccountingTemplate @relation(fields: [templateId], references: [id], onDelete: Cascade)
+  code        String
+  name        String
+  accountType String
+  section     String?
+  description String?
+  reportingPosition String?
+  active      Boolean                  @default(true)
+  sortOrder   Int                      @default(0)
+  createdAt   DateTime                 @default(now())
+  updatedAt   DateTime                 @updatedAt
+
+  @@unique([templateId, code])
+  @@index([templateId, accountType, sortOrder])
+}
+
+model KontorMemberProfile {
+  id           String  @id @default(cuid())
+  memberId     String  @unique
+  memberNumber String  @unique
+  secondName   String?
+  callName     String?
+  mobile       String?
+  gender       String?
+  status       String  @default("ACTIVE_MEMBER")
+  joinedAt     DateTime?
+  leftAt       DateTime?
+  groups       Json    @default("[]")
+  shoeSize     String?
+  shirtSize    String?
+  jacketSize   String?
+  trouserSize  String?
+  gloveSize    String?
+  clothingSize String?
+  internalNotes String?
+  photoFileName String?
+  photoMimeType String?
+  photoData     Bytes?
+
+  customValues       KontorMemberCustomValue[]
+  documents          KontorMemberDocument[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([status])
+  @@index([joinedAt])
+}
+
+model KontorMemberGroup {
+  id          String                    @id @default(cuid())
+  name        String                    @unique
+  description String?
+  color       String                    @default("#ff8a00")
+  active      Boolean                   @default(true)
+  parentId    String?
+  parent      KontorMemberGroup?        @relation("KontorMemberGroupHierarchy", fields: [parentId], references: [id], onDelete: SetNull)
+  children    KontorMemberGroup[]       @relation("KontorMemberGroupHierarchy")
+  sortOrder   Int                       @default(0)
+  imageFileName String?
+  imageMimeType String?
+  imageData     Bytes?
+  displayMode   String                    @default("TEXT")
+  displayCaption String?
+  accessProfileKey String?
+  accessProfileAssignedAt DateTime?
+  accessProfileAssignedByAccountId String?
+  members     KontorMemberGroupMember[]
+  calendarVisibility KontorCalendarEventGroup[]
+  createdByAccountId String?
+  createdAt   DateTime                  @default(now())
+  updatedAt   DateTime                  @updatedAt
+
+  @@index([active, name])
+  @@index([parentId, sortOrder, name])
+}
+
+model KontorMemberGroupMember {
+  id        String            @id @default(cuid())
+  groupId   String
+  group     KontorMemberGroup @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  memberId  String
+  createdAt DateTime          @default(now())
+
+  @@unique([groupId, memberId])
+  @@index([memberId])
+}
+
+model KontorCalendarEvent {
+  id                 String                     @id @default(cuid())
+  title              String
+  eventType          String                     @default("TERMIN")
+  description        String?
+  location           String?
+  startsAt           DateTime
+  endsAt             DateTime?
+  allDay             Boolean                    @default(false)
+  visibilityMode     String                     @default("ALL_MANAGERS")
+  meetingId          String?                    @unique
+  meeting            KontorMeeting?             @relation(fields: [meetingId], references: [id], onDelete: SetNull)
+  visibleMembers     KontorCalendarEventMember[]
+  visibleGroups      KontorCalendarEventGroup[]
+  invitationDispatches KontorDispatch[]
+  createdByAccountId String?
+  createdAt          DateTime                   @default(now())
+  updatedAt          DateTime                   @updatedAt
+
+  @@index([startsAt])
+  @@index([visibilityMode])
+}
+
+model KontorCalendarEventMember {
+  id        String              @id @default(cuid())
+  eventId   String
+  event     KontorCalendarEvent @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  memberId  String
+  createdAt DateTime            @default(now())
+
+  @@unique([eventId, memberId])
+  @@index([memberId])
+}
+
+model KontorCalendarEventGroup {
+  id        String              @id @default(cuid())
+  eventId   String
+  event     KontorCalendarEvent @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  groupId   String
+  group     KontorMemberGroup   @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  createdAt DateTime            @default(now())
+
+  @@unique([eventId, groupId])
+  @@index([groupId])
+}
+
+model KontorMemberTab {
+  id          String                        @id @default(cuid())
+  key         String                        @unique
+  label       String
+  description String?
+  sortOrder   Int                           @default(100)
+  active      Boolean                       @default(true)
+  fields      KontorMemberFieldDefinition[]
+  createdAt   DateTime                      @default(now())
+  updatedAt   DateTime                      @updatedAt
+
+  @@index([active, sortOrder])
+}
+
+model KontorMemberFieldDefinition {
+  id           String                    @id @default(cuid())
+  tabId        String
+  tab          KontorMemberTab           @relation(fields: [tabId], references: [id], onDelete: Cascade)
+  key          String                    @unique
+  label        String
+  dataType     String
+  required     Boolean                   @default(false)
+  defaultValue Json?
+  options      Json                      @default("[]")
+  sortOrder    Int                       @default(100)
+  active       Boolean                   @default(true)
+  values       KontorMemberCustomValue[]
+  createdAt    DateTime                  @default(now())
+  updatedAt    DateTime                  @updatedAt
+
+  @@index([tabId, active, sortOrder])
+}
+
+model KontorMemberCustomValue {
+  id              String                       @id @default(cuid())
+  memberProfileId String
+  memberProfile   KontorMemberProfile          @relation(fields: [memberProfileId], references: [id], onDelete: Cascade)
+  fieldId         String
+  field           KontorMemberFieldDefinition @relation(fields: [fieldId], references: [id], onDelete: Cascade)
+  value           Json?
+  createdAt       DateTime                     @default(now())
+  updatedAt       DateTime                     @updatedAt
+
+  @@unique([memberProfileId, fieldId])
+  @@index([fieldId])
+}
+
+model KontorMemberDocument {
+  id                  String              @id @default(cuid())
+  memberProfileId     String
+  memberProfile       KontorMemberProfile @relation(fields: [memberProfileId], references: [id], onDelete: Cascade)
+  category            String
+  title               String
+  validFrom            DateTime?
+  validUntil           DateTime?
+  archivedAt          DateTime?
+  fileName             String
+  mimeType             String
+  sizeInBytes          Int
+  checksum             String
+  data                 Bytes
+  uploadedByAccountId  String?
+  createdAt            DateTime            @default(now())
+  updatedAt            DateTime            @updatedAt
+
+  @@index([memberProfileId, archivedAt])
+  @@index([checksum])
+}
+
+model KontorMeeting {
+  id          String   @id @default(cuid())
+  title       String
+  scheduledFor DateTime
+  location    String?
+  agendaText  String?
+  protocolText String?
+  createdById String?
+  calendarEvent KontorCalendarEvent?
+  protocolFile KontorMeetingProtocolFile?
+  attendance   KontorMeetingAttendance[]
+  procurementAgendaItems KontorProcurementAgendaItem[]
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@index([scheduledFor])
+}
+
+model KontorMeetingProtocolFile {
+  id          String        @id @default(cuid())
+  meetingId   String        @unique
+  meeting     KontorMeeting @relation(fields: [meetingId], references: [id], onDelete: Cascade)
+  revision    Int           @default(1)
+  fileName    String
+  mimeType    String
+  sizeInBytes Int
+  data        Bytes
+  uploadedAt  DateTime      @default(now())
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+}
+
+model KontorMeetingAttendance {
+  id        String        @id @default(cuid())
+  meetingId String
+  meeting   KontorMeeting @relation(fields: [meetingId], references: [id], onDelete: Cascade)
+  memberId  String
+  present   Boolean       @default(false)
+  createdAt DateTime      @default(now())
+  updatedAt DateTime      @updatedAt
+
+  @@unique([meetingId, memberId])
+  @@index([memberId])
+}
+
+model KontorFinanceEntry {
+  id                 String                 @id @default(cuid())
+  sequenceNumber     Int                    @unique
+  bookingNumberYear  Int?
+  bookingNumberPosition Int?
+  bookingDate        DateTime
+  // Phase 4: tax timing is explicit. Missing values are never silently
+  // replaced by the booking date in a VAT report.
+  serviceDate        DateTime?
+  taxPointDate       DateTime?
+  correctionDate     DateTime?
+  entryType          String
+  amount             Decimal                @db.Decimal(14, 2)
+  currency           String                 @default("EUR")
+  description        String
+  category           String?
+  reference          String?
+  paymentMethod      String
+  paymentAccount     String
+  ledgerAccountId    String?
+  ledgerAccount      KontorLedgerAccount?    @relation(fields: [ledgerAccountId], references: [id], onDelete: SetNull)
+  taxRateId           String?
+  taxRate             KontorTaxRate?          @relation(fields: [taxRateId], references: [id], onDelete: SetNull)
+  financialAccountId String?
+  financialAccount   KontorFinancialAccount? @relation(fields: [financialAccountId], references: [id], onDelete: SetNull)
+  subledgerId        String?
+  subledger          KontorSubledger?         @relation(fields: [subledgerId], references: [id], onDelete: SetNull)
+  costCenterCode     String?
+  projectReference   String?
+  memberId           String?
+  status             String                 @default("POSTED")
+  // Phase 2 keeps the legacy summary fields above intact. Explicit journal
+  // lines are additive and only reported as balanced after the server has
+  // verified debit and credit cent-exactly. Legacy rows remain unresolved
+  // instead of receiving an invented counter account.
+  contentRevision    Int                    @default(1)
+  postingState       String                 @default("LEGACY_UNRESOLVED")
+  settlementState    String                 @default("OPEN")
+  underReservation   Boolean                @default(false)
+  source             String                 @default("MANUAL")
+  sourceExternalId   String?
+  reversalOfId       String?
+  reversalOf         KontorFinanceEntry?    @relation("KontorFinanceReversal", fields: [reversalOfId], references: [id], onDelete: SetNull)
+  reversals          KontorFinanceEntry[]    @relation("KontorFinanceReversal")
+  receipt            KontorFinanceReceipt?
+  bankTransaction    KontorAccountTransaction?
+  postingLines       KontorFinancePostingLine[]
+  documentLinks      KontorFinanceEntryDocument[]
+  invoiceLinks       KontorFinanceEntryInvoiceLink[]
+  paymentAllocations KontorFinancePaymentAllocation[]
+  receiptFallback    KontorFinanceReceiptFallback?
+  history            KontorFinanceEntryHistory[]
+  cases              KontorFinanceEntryCase[]
+  taxSnapshots       KontorFinanceTaxSnapshot[]
+  taxPaymentSplits   KontorFinanceTaxPaymentSplit[]
+  subledgerItems     KontorSubledgerItem[]
+  costAssignmentSet  KontorCostAssignmentSet?
+  createdByAccountId String?
+  createdAt          DateTime               @default(now())
+  updatedAt          DateTime               @updatedAt
+
+  @@unique([source, sourceExternalId])
+  @@unique([bookingNumberYear, bookingNumberPosition])
+  @@index([bookingDate, sequenceNumber])
+  @@index([memberId])
+  @@index([ledgerAccountId, bookingDate])
+  @@index([taxRateId, bookingDate])
+  @@index([financialAccountId, bookingDate])
+  @@index([subledgerId, bookingDate])
+  @@index([status])
+}
+
+model KontorFinancePostingLine {
+  id                 String              @id @default(cuid())
+  entryId            String
+  entry              KontorFinanceEntry  @relation(fields: [entryId], references: [id], onDelete: Cascade)
+  position           Int
+  side               String
+  amount             Decimal             @db.Decimal(14, 2)
+  currency           String              @default("EUR")
+  ledgerAccountId    String
+  ledgerAccount      KontorLedgerAccount @relation(fields: [ledgerAccountId], references: [id], onDelete: Restrict)
+  taxRateId          String?
+  taxRate            KontorTaxRate?      @relation(fields: [taxRateId], references: [id], onDelete: SetNull)
+  subledgerId        String?
+  subledger          KontorSubledger?    @relation(fields: [subledgerId], references: [id], onDelete: SetNull)
+  costCenterCode     String?
+  projectReference   String?
+  description        String?
+  assignmentStatus   String              @default("CONFIRMED")
+  createdByAccountId String?
+  createdAt          DateTime             @default(now())
+  costAssignmentLines KontorCostAssignmentLine[]
+
+  @@unique([entryId, position])
+  @@index([ledgerAccountId])
+  @@index([subledgerId])
+}
+
+// A document is never overwritten or deleted by the booking workflow. Links
+// can be superseded/removed while the original receipt blob remains intact.
+model KontorFinanceEntryDocument {
+  id                 String               @id @default(cuid())
+  entryId            String
+  entry              KontorFinanceEntry   @relation(fields: [entryId], references: [id], onDelete: Cascade)
+  receiptId          String
+  receipt            KontorFinanceReceipt @relation(fields: [receiptId], references: [id], onDelete: Restrict)
+  role               String               @default("SUPPORTING_DOCUMENT")
+  assignmentStatus   String               @default("CONFIRMED")
+  note               String?
+  removedAt          DateTime?
+  removedByAccountId String?
+  createdByAccountId String?
+  createdAt          DateTime              @default(now())
+
+  @@unique([entryId, receiptId])
+  @@index([entryId, removedAt])
+  @@index([receiptId])
+}
+
+model KontorFinanceEntryInvoiceLink {
+  id                 String              @id @default(cuid())
+  entryId            String
+  entry              KontorFinanceEntry  @relation(fields: [entryId], references: [id], onDelete: Cascade)
+  invoiceType        String
+  invoiceId          String
+  assignmentStatus   String              @default("CONFIRMED")
+  note               String?
+  removedAt          DateTime?
+  removedByAccountId String?
+  createdByAccountId String?
+  createdAt          DateTime             @default(now())
+
+  @@unique([entryId, invoiceType, invoiceId])
+  @@index([invoiceType, invoiceId, removedAt])
+}
+
+// N:M allocation supports partial and collective payments. The legacy
+// financeEntryId on a bank transaction remains available as a compatibility
+// projection for old integrations.
+model KontorFinancePaymentAllocation {
+  id                 String                    @id @default(cuid())
+  entryId            String
+  entry              KontorFinanceEntry        @relation(fields: [entryId], references: [id], onDelete: Cascade)
+  bankTransactionId  String?
+  bankTransaction    KontorAccountTransaction? @relation(fields: [bankTransactionId], references: [id], onDelete: Restrict)
+  invoiceReceiptId   String?
+  invoiceReceipt     KontorFinanceReceipt?     @relation(fields: [invoiceReceiptId], references: [id], onDelete: SetNull)
+  financialAccountId String?
+  financialAccount   KontorFinancialAccount?   @relation(fields: [financialAccountId], references: [id], onDelete: SetNull)
+  paymentId          String?
+  payment            KontorPayment?            @relation(fields: [paymentId], references: [id], onDelete: SetNull)
+  paidAt             DateTime                  @default(now())
+  reference          String?
+  kind               String                    @default("PAYMENT")
+  amount             Decimal                   @db.Decimal(14, 2)
+  currency           String                    @default("EUR")
+  assignmentStatus   String                    @default("CONFIRMED")
+  underReservation   Boolean                   @default(false)
+  note               String?
+  createdByAccountId String?
+  createdAt          DateTime                  @default(now())
+  updatedAt          DateTime                  @updatedAt
+  contentRevision    Int                       @default(1)
+  taxPaymentSplits   KontorFinanceTaxPaymentSplit[]
+
+  @@index([entryId, assignmentStatus])
+  @@index([bankTransactionId, assignmentStatus])
+  @@index([invoiceReceiptId])
+  @@index([financialAccountId, paidAt])
+  @@index([paymentId])
+}
+
+model KontorFinanceReceiptFallback {
+  id                         String               @id @default(cuid())
+  entryId                    String               @unique
+  entry                      KontorFinanceEntry   @relation(fields: [entryId], references: [id], onDelete: Cascade)
+  status                     String               @default("SEARCHING")
+  reason                     String
+  searchNote                 String?
+  requestedFallback          String?
+  substituteReceiptId        String?
+  substituteReceipt          KontorFinanceReceipt? @relation(fields: [substituteReceiptId], references: [id], onDelete: SetNull)
+  approved                   Boolean              @default(false)
+  approvedByAccountId        String?
+  approvedAt                 DateTime?
+  createdByAccountId         String?
+  createdAt                  DateTime             @default(now())
+  updatedAt                  DateTime             @updatedAt
+
+  @@index([status, approved])
+}
+
+model KontorFinanceEntryHistory {
+  id                 String              @id @default(cuid())
+  entryId            String
+  entry              KontorFinanceEntry  @relation(fields: [entryId], references: [id], onDelete: Cascade)
+  revision           Int
+  event              String
+  actorAccountId     String?
+  actorLabel         String?
+  note               String?
+  beforeState        Json?
+  afterState         Json?
+  createdAt          DateTime            @default(now())
+
+  @@index([entryId, revision, createdAt])
+}
+
+model KontorFinanceEntryCase {
+  id                  String             @id @default(cuid())
+  entryId             String
+  entry               KontorFinanceEntry @relation(fields: [entryId], references: [id], onDelete: Cascade)
+  type                String
+  status              String             @default("OPEN")
+  amount              Decimal?           @db.Decimal(14, 2)
+  dueAt               DateTime?
+  reason              String?
+  note                String?
+  openedByAccountId   String?
+  resolvedByAccountId String?
+  openedAt            DateTime           @default(now())
+  resolvedAt          DateTime?
+  createdAt           DateTime           @default(now())
+  updatedAt           DateTime           @updatedAt
+
+  @@index([entryId, status, openedAt])
+}
+
+// Sammel-Nebenbuch zwischen prüfbaren Einzelvorgängen (Hilfsbuch) und
+// dem verknüpften Sachkonto im Hauptbuch. Technische Herkunftswerte wie
+// `kind` bleiben nur zur Abwärtskompatibilität bestehen und sind keine
+// fachlichen Kategorien in der Bedienoberfläche.
+model KontorSubledger {
+  id                      String                 @id @default(cuid())
+  key                     String                 @unique
+  name                    String
+  kind                    String                 @default("APP")
+  description             String?
+  sourceModuleKey         String?
+  costCenterCode          String?
+  costObjectCode          String?
+  clearingLedgerAccountId String?
+  clearingLedgerAccount   KontorLedgerAccount?  @relation("KontorSubledgerClearingAccount", fields: [clearingLedgerAccountId], references: [id], onDelete: SetNull)
+  active                  Boolean                @default(true)
+  systemDefault           Boolean                @default(false)
+  entries                 KontorFinanceEntry[]
+  postingLines            KontorFinancePostingLine[]
+  items                   KontorSubledgerItem[]
+  createdByAccountId      String?
+  createdAt               DateTime               @default(now())
+  updatedAt               DateTime               @updatedAt
+
+  @@index([kind, active, name])
+  @@index([sourceModuleKey])
+  @@index([clearingLedgerAccountId])
+}
+
+// Einzelbewegungen aus einer Quell-App oder einem internen Kostenobjekt.
+// Mehrere Items dürfen in einer einzigen Hauptbuchung verdichtet werden;
+// der Drill-down bleibt dadurch nachvollziehbar erhalten.
+model KontorSubledgerItem {
+  id                 String              @id @default(cuid())
+  subledgerId        String
+  subledger          KontorSubledger     @relation(fields: [subledgerId], references: [id], onDelete: Cascade)
+  occurredAt         DateTime
+  movementType       String
+  amount             Decimal             @db.Decimal(14, 2)
+  currency           String              @default("EUR")
+  description        String
+  reference          String?
+  receiptReference   String?
+  sourceModuleKey    String?
+  sourceExternalId   String?
+  memberId           String?
+  counterpartyDirection String?
+  status             String              @default("OPEN")
+  closedAt           DateTime?
+  closedByAccountId  String?
+  financeEntryId     String?
+  financeEntry       KontorFinanceEntry? @relation(fields: [financeEntryId], references: [id], onDelete: SetNull)
+  details            Json                @default("{}")
+  createdByAccountId String?
+  createdAt          DateTime            @default(now())
+  updatedAt          DateTime            @updatedAt
+
+  @@unique([subledgerId, sourceModuleKey, sourceExternalId])
+  @@index([subledgerId, occurredAt])
+  @@index([subledgerId, status])
+  @@index([memberId, occurredAt])
+  @@index([memberId, status])
+  @@index([financeEntryId])
+}
+
+model KontorFinanceReceipt {
+  id                  String             @id @default(cuid())
+  entryId             String?            @unique
+  entry               KontorFinanceEntry? @relation(fields: [entryId], references: [id], onDelete: SetNull)
+  receiptType         String             @default("RECEIPT")
+  supplierName        String?
+  description         String?
+  amount              Decimal?           @db.Decimal(14, 2)
+  currency            String             @default("EUR")
+  receivedAt          DateTime?
+  dueDate              DateTime?
+  status               String             @default("ASSIGNED")
+  fileName            String
+  mimeType            String
+  sizeInBytes         Int
+  checksum            String
+  data                Bytes
+  invoiceNumber       String?
+  issuedAt            DateTime?
+  uploadedByAccountId String?
+  // Phase 3: Ort und Bearbeitungszustand sind absichtlich getrennt. Die
+  // Projektion hier macht Listen schnell; KontorInvoiceWorkflowEvent bleibt
+  // die unveraenderliche fachliche Historie.
+  workflowStatus      String             @default("RECEIVED")
+  workflowRevision    Int                @default(0)
+  currentLocationId   String?
+  currentLocation     KontorInvoiceWorkflowLocation? @relation("KontorInvoiceCurrentLocation", fields: [currentLocationId], references: [id], onDelete: SetNull)
+  previousLocationId  String?
+  previousLocation    KontorInvoiceWorkflowLocation? @relation("KontorInvoicePreviousLocation", fields: [previousLocationId], references: [id], onDelete: SetNull)
+  sourceKind          String             @default("MANUAL")
+  reviewRequired      Boolean            @default(false)
+  reviewStatus        String             @default("NOT_REQUIRED")
+  reviewedAt          DateTime?
+  reviewedByAccountId String?
+  securityStatus      String             @default("CLEAR")
+  workflowEvents      KontorInvoiceWorkflowEvent[]
+  inboxMessage        KontorInvoiceInboxMessage?
+  entryDocumentLinks  KontorFinanceEntryDocument[]
+  paymentAllocations  KontorFinancePaymentAllocation[]
+  receiptFallbacks    KontorFinanceReceiptFallback[]
+  archivedAt          DateTime?
+  createdAt           DateTime           @default(now())
+  updatedAt           DateTime           @updatedAt
+
+  @@index([checksum])
+  @@index([status, dueDate])
+  @@index([supplierName, issuedAt])
+  @@index([workflowStatus, currentLocationId])
+  @@index([reviewRequired, reviewStatus, securityStatus])
+}
+
+// Wiederverwendbare Orte fuer physische Ablagen, Rollen, Personen und
+// digitale Postkoerbe. Personen bleiben absichtsvoll opaque Core-IDs.
+model KontorInvoiceWorkflowLocation {
+  id                     String                         @id @default(cuid())
+  key                    String                         @unique
+  label                  String
+  kind                   String                         @default("PHYSICAL")
+  referenceId            String?
+  active                 Boolean                        @default(true)
+  sortOrder              Int                            @default(0)
+  currentReceipts        KontorFinanceReceipt[]         @relation("KontorInvoiceCurrentLocation")
+  previousReceipts       KontorFinanceReceipt[]         @relation("KontorInvoicePreviousLocation")
+  fromEvents             KontorInvoiceWorkflowEvent[]   @relation("KontorInvoiceWorkflowFromLocation")
+  toEvents               KontorInvoiceWorkflowEvent[]   @relation("KontorInvoiceWorkflowToLocation")
+  createdByAccountId     String?
+  createdAt              DateTime                       @default(now())
+  updatedAt              DateTime                       @updatedAt
+
+  @@index([active, kind, sortOrder, label])
+}
+
+// Organisationseigene Zwischenschritte ergaenzen die festen Systemzustaende.
+model KontorInvoiceWorkflowState {
+  id                 String   @id @default(cuid())
+  key                String   @unique
+  label              String
+  color              String   @default("YELLOW")
+  active             Boolean  @default(true)
+  sortOrder          Int      @default(0)
+  createdByAccountId String?
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  @@index([active, sortOrder, label])
+}
+
+// Append-only. Es gibt absichtlich keine updatedAt-Spalte und keine Route zum
+// Aendern/Loeschen eines Ereignisses.
+model KontorInvoiceWorkflowEvent {
+  id                     String                         @id @default(cuid())
+  receiptId              String
+  receipt                KontorFinanceReceipt           @relation(fields: [receiptId], references: [id], onDelete: Restrict)
+  revision               Int
+  eventType              String
+  fromStatus             String?
+  toStatus               String?
+  fromStatusLabel        String?
+  toStatusLabel          String?
+  fromLocationId         String?
+  fromLocation           KontorInvoiceWorkflowLocation? @relation("KontorInvoiceWorkflowFromLocation", fields: [fromLocationId], references: [id], onDelete: SetNull)
+  toLocationId           String?
+  toLocation             KontorInvoiceWorkflowLocation? @relation("KontorInvoiceWorkflowToLocation", fields: [toLocationId], references: [id], onDelete: SetNull)
+  fromLocationLabel      String?
+  toLocationLabel        String?
+  fromLocationKind       String?
+  toLocationKind         String?
+  note                   String?
+  actorAccountId         String?
+  actorLabel             String?
+  metadata               Json?
+  createdAt              DateTime                       @default(now())
+
+  @@unique([receiptId, revision])
+  @@index([receiptId, createdAt])
+  @@index([eventType, createdAt])
+}
+
+model KontorInvoiceInboxConfig {
+  id                     String   @id @default("default")
+  aliasLocalPart         String   @default("rechnung")
+  aliasDomain            String?
+  transportStatus        String   @default("PREPARED_NOT_CONNECTED")
+  providerKey            String?
+  mailboxVerified        Boolean  @default(false)
+  transportHealthy       Boolean  @default(false)
+  verifiedAt             DateTime?
+  lastHealthAt           DateTime?
+  scannerProvider        String?
+  scannerProviderKey     String?
+  scannerHealthy         Boolean  @default(false)
+  scannerVerifiedAt      DateTime?
+  scannerHealthProof     String?
+  // Signierter Nachweis des externen Adapters. Der geheime HMAC-Schluessel
+  // bleibt ausschliesslich in der Laufzeitumgebung; ohne gueltigen Nachweis
+  // darf eine manuell manipulierte DB-Zeile niemals CONNECTED anzeigen.
+  healthProof            String?
+  expectedRecipientNames Json     @default("[]")
+  revision               Int      @default(0)
+  maxAttachmentBytes     Int      @default(15728640)
+  updatedByAccountId     String?
+  createdAt              DateTime @default(now())
+  updatedAt              DateTime @updatedAt
+}
+
+// Originalnachricht, Header und Anhaenge werden unveraendert und mit Hash
+// aufbewahrt. Der Fachbeleg wird erst nach Sicherheits- und Menschenpruefung
+// fuer weitere Aktionen freigegeben.
+model KontorInvoiceInboxMessage {
+  id                     String                           @id @default(cuid())
+  externalMessageId      String?
+  providerKey            String?
+  domainMessageId        String?                          @unique
+  correlationId          String?
+  idempotencyKey         String                           @unique
+  payloadHash            String
+  sourceRecordId         String?
+  rfcMessageId           String?
+  sender                 String?
+  recipients             Json                             @default("[]")
+  subject                String?
+  receivedAt             DateTime                         @default(now())
+  headers                Json                             @default("{}")
+  originalFileName       String?
+  originalMimeType       String?                          @default("message/rfc822")
+  originalSizeInBytes    Int?
+  originalChecksum       String?
+  originalData           Bytes?
+  sourceKind             String                           @default("MANUAL_IMPORT")
+  processingStatus       String                           @default("RECEIVED")
+  securityStatus         String                           @default("QUARANTINED")
+  spamStatus             String                           @default("PENDING")
+  malwareStatus          String                           @default("PENDING")
+  authentication         Json                             @default("{}")
+  quarantineReason       String?
+  warningCodes           Json                             @default("[]")
+  scannerLeaseId         String?
+  scannerLeaseRequestId  String?                          @unique
+  scannerLeaseUntil      DateTime?
+  scannerDeliveryAttempts Int                             @default(0)
+  revision               Int                              @default(1)
+  receiptId              String?                          @unique
+  receipt                KontorFinanceReceipt?            @relation(fields: [receiptId], references: [id], onDelete: SetNull)
+  attachments            KontorInvoiceInboxAttachment[]
+  extractionRuns         KontorInvoiceExtractionRun[]
+  scans                  KontorInvoiceInboxScan[]
+  securityDecisions      KontorInvoiceInboxSecurityDecision[]
+  createdByAccountId     String?
+  createdAt              DateTime                         @default(now())
+
+  @@index([processingStatus, securityStatus, receivedAt])
+  @@index([securityStatus, scannerLeaseUntil, receivedAt])
+  @@index([sender, receivedAt])
+  @@index([originalChecksum])
+  @@unique([providerKey, externalMessageId])
+}
+
+model KontorInvoiceInboxAttachment {
+  id                  String                    @id @default(cuid())
+  messageId           String
+  message             KontorInvoiceInboxMessage @relation(fields: [messageId], references: [id], onDelete: Restrict)
+  position            Int
+  partId              String?
+  fileName            String
+  mimeType            String
+  sizeInBytes         Int
+  checksum            String
+  data                Bytes
+  contentDisposition  String?
+  securityStatus      String                    @default("QUARANTINED")
+  scans               KontorInvoiceInboxScan[]
+  createdAt           DateTime                  @default(now())
+
+  @@unique([messageId, position])
+  @@index([checksum])
+}
+
+model KontorInvoiceExtractionRun {
+  id                  String                    @id @default(cuid())
+  messageId           String
+  message             KontorInvoiceInboxMessage @relation(fields: [messageId], references: [id], onDelete: Restrict)
+  receiptId           String?
+  runNumber           Int
+  parser              String
+  parserVersion       String?
+  status              String
+  overallConfidence   Decimal?                  @db.Decimal(5, 4)
+  warnings            Json                      @default("[]")
+  raw                 Json                      @default("{}")
+  fields              KontorInvoiceExtractedField[]
+  createdAt           DateTime                  @default(now())
+
+  @@unique([messageId, runNumber])
+  @@index([receiptId, createdAt])
+}
+
+model KontorInvoiceExtractedField {
+  id                  String                    @id @default(cuid())
+  extractionRunId     String
+  extractionRun       KontorInvoiceExtractionRun @relation(fields: [extractionRunId], references: [id], onDelete: Restrict)
+  fieldKey            String
+  label               String?
+  value                Json
+  displayValue         String?
+  confidence           Decimal                   @db.Decimal(5, 4)
+  sourceType           String
+  sourceReference      String?
+  extractor            String?
+  createdAt            DateTime                  @default(now())
+
+  @@index([extractionRunId, fieldKey])
+}
+
+model KontorInvoiceInboxScan {
+  id                   String                            @id @default(cuid())
+  messageId            String
+  message              KontorInvoiceInboxMessage        @relation(fields: [messageId], references: [id], onDelete: Restrict)
+  attachmentId         String?
+  attachment           KontorInvoiceInboxAttachment?    @relation(fields: [attachmentId], references: [id], onDelete: Restrict)
+  // targetKey ist immer MESSAGE oder ATTACHMENT:<ID>. Anders als eine
+  // optionale attachmentId ist es auch fuer Nachrichtenscans eindeutig.
+  targetKey            String
+  attempt              Int
+  providerKey          String
+  engineVersion        String?
+  trustedAdapterDomain String
+  payloadHash          String
+  contentChecksum      String
+  verdict              String                            @default("PENDING")
+  signatureSet         String?
+  resultHash           String
+  details              Json                              @default("{}")
+  scannedAt            DateTime                          @default(now())
+
+  @@unique([messageId, targetKey, attempt])
+  @@index([messageId, scannedAt])
+  @@index([contentChecksum])
+}
+
+model KontorInvoiceInboxSecurityDecision {
+  id                String                    @id @default(cuid())
+  messageId         String
+  message           KontorInvoiceInboxMessage @relation(fields: [messageId], references: [id], onDelete: Restrict)
+  revision          Int
+  decision          String
+  previousStatus    String
+  newStatus         String
+  scanId            String?
+  actorAccountId    String?
+  actorLabel        String?
+  reason            String?
+  metadata          Json?
+  createdAt         DateTime                  @default(now())
+
+  @@unique([messageId, revision])
+  @@index([messageId, createdAt])
+}
+
+model KontorLedgerAccount {
+  id            String               @id @default(cuid())
+  code          String               @unique
+  name          String
+  accountType   String
+  section       String?
+  description   String?
+  reportingPosition String?
+  parentId      String?
+  parent        KontorLedgerAccount? @relation("KontorLedgerTree", fields: [parentId], references: [id], onDelete: SetNull)
+  children      KontorLedgerAccount[] @relation("KontorLedgerTree")
+  active        Boolean              @default(true)
+  systemDefault Boolean              @default(false)
+  sortOrder     Int                  @default(0)
+  financeEntries KontorFinanceEntry[]
+  postingLines   KontorFinancePostingLine[]
+  financialAccounts KontorFinancialAccount[] @relation("KontorFinancialAccountLedger")
+  clearingSubledgers KontorSubledger[] @relation("KontorSubledgerClearingAccount")
+  budgetLines   KontorBudgetLine[]
+  costBudgetLines KontorCostBudgetLine[]
+  costAllocationRules KontorCostAllocationRule[]
+  openingBalances KontorLedgerOpeningBalance[]
+  taxRates      KontorTaxRate[]       @relation("KontorTaxAccount")
+  contributionIncomePostingProfiles       KontorContributionPostingProfileRevision[] @relation("KontorContributionIncomeAccount")
+  contributionReceivablePostingProfiles   KontorContributionPostingProfileRevision[] @relation("KontorContributionReceivableAccount")
+  contributionOverpaymentPostingProfiles  KontorContributionPostingProfileRevision[] @relation("KontorContributionOverpaymentAccount")
+  contributionBankFeePostingProfiles      KontorContributionPostingProfileRevision[] @relation("KontorContributionBankFeeAccount")
+  contributionFeeIncomePostingProfiles    KontorContributionPostingProfileRevision[] @relation("KontorContributionFeeIncomeAccount")
+  createdAt     DateTime             @default(now())
+  updatedAt     DateTime             @updatedAt
+
+  @@index([accountType, active, sortOrder])
+  @@index([parentId])
+}
+
+model KontorTaxRate {
+  id            String               @id @default(cuid())
+  key           String?              @unique
+  name          String
+  rate          Decimal              @db.Decimal(5, 2)
+  taxType       String
+  datevCode     String?
+  taxAccountId  String?
+  taxAccount    KontorLedgerAccount? @relation("KontorTaxAccount", fields: [taxAccountId], references: [id], onDelete: SetNull)
+  active        Boolean              @default(true)
+  systemDefault Boolean              @default(false)
+  validFrom     DateTime?
+  validUntil    DateTime?
+  financeEntries KontorFinanceEntry[]
+  postingLines   KontorFinancePostingLine[]
+  contributionPostingProfiles KontorContributionPostingProfileRevision[] @relation("KontorContributionNonTaxableRate")
+  contributionFeePostingProfiles KontorContributionPostingProfileRevision[] @relation("KontorContributionFeeTaxRate")
+  createdAt     DateTime             @default(now())
+  updatedAt     DateTime             @updatedAt
+
+  @@index([active, taxType, rate])
+  @@index([taxAccountId])
+}
+
+// A single explicit organization-level VAT choice. NOT_CONFIGURED is
+// fail-neutral and has no implicit ACCRUAL/CASH default.
+model KontorTaxSettings {
+  id                 String   @id
+  revision           Int      @default(1)
+  vatStatus          String   @default("NOT_CONFIGURED")
+  taxationMethod     String   @default("NOT_CONFIGURED")
+  taxationMethodAuthority String?
+  taxationMethodReference String?
+  effectiveFrom      DateTime
+  updatedByAccountId String?
+  revisions          KontorTaxSettingsRevision[]
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+}
+
+model KontorTaxSettingsRevision {
+  id                 String            @id @default(cuid())
+  settingsId         String
+  settings           KontorTaxSettings @relation(fields: [settingsId], references: [id], onDelete: Restrict)
+  revision           Int
+  vatStatus          String
+  taxationMethod     String
+  taxationMethodAuthority String?
+  taxationMethodReference String?
+  effectiveFrom      DateTime
+  supersededAt       DateTime?
+  createdByAccountId String?
+  createdAt          DateTime          @default(now())
+
+  @@unique([settingsId, revision])
+  @@index([settingsId, effectiveFrom, revision])
+}
+
+// Tax truth is append-only and independent of replaceable posting lines.
+// Only the latest non-superseded revision is active for operational reports;
+// old exports retain the exact revision in their dependency snapshot.
+model KontorFinanceTaxSnapshot {
+  id                   String             @id @default(cuid())
+  entryId              String
+  entry                KontorFinanceEntry @relation(fields: [entryId], references: [id], onDelete: Restrict)
+  revision             Int
+  lineKey              String
+  postingLinePosition  Int?
+  taxRateIdSnapshot    String?
+  taxRateName          String
+  taxType              String
+  taxCategory          String
+  ratePercent          Decimal            @db.Decimal(7, 4)
+  taxRateValidFrom     DateTime?
+  taxRateValidUntil    DateTime?
+  amountBasis          String
+  netAmountEur         Decimal            @db.Decimal(14, 2)
+  recordedTaxAmountEur Decimal            @db.Decimal(14, 2)
+  deductiblePercent    Decimal?           @db.Decimal(7, 4)
+  deductibleTaxAmountEur Decimal          @db.Decimal(14, 2)
+  grossAmountEur       Decimal            @db.Decimal(14, 2)
+  roundingAmountEur    Decimal            @db.Decimal(14, 2)
+  reverseChargeOutputTaxEur Decimal       @db.Decimal(14, 2)
+  reverseChargeInputTaxEur Decimal        @db.Decimal(14, 2)
+  serviceDate          DateTime?
+  taxPointDate         DateTime?
+  taxPointSource       String?
+  correctionDate       DateTime?
+  correctionType       String             @default("NONE")
+  correctionReason     String?
+  correctionOfId       String?
+  correctionOf         KontorFinanceTaxSnapshot? @relation("KontorTaxSnapshotCorrection", fields: [correctionOfId], references: [id], onDelete: Restrict)
+  corrections          KontorFinanceTaxSnapshot[] @relation("KontorTaxSnapshotCorrection")
+  evidenceStatus       String
+  originalCurrency     String
+  originalNetAmount    Decimal?
+  originalTaxAmount    Decimal?
+  originalGrossAmount  Decimal?
+  eurExchangeRate      Decimal?           @db.Decimal(24, 10)
+  eurExchangeRateDate  DateTime?
+  eurExchangeRateSource String?
+  fxQuoteDirection     String?
+  sourceEntryRevision  Int
+  supersededAt         DateTime?
+  supersededByRevision Int?
+  createdByAccountId   String?
+  createdAt            DateTime           @default(now())
+  paymentSplits        KontorFinanceTaxPaymentSplit[]
+
+  @@unique([entryId, revision, lineKey])
+  @@index([entryId, supersededAt, revision])
+  @@index([taxPointDate, taxType])
+  @@index([correctionOfId, correctionDate])
+}
+
+model KontorFinanceTaxPaymentSplit {
+  id                 String                   @id @default(cuid())
+  entryId            String
+  entry              KontorFinanceEntry       @relation(fields: [entryId], references: [id], onDelete: Restrict)
+  taxSnapshotId      String
+  taxSnapshot        KontorFinanceTaxSnapshot @relation(fields: [taxSnapshotId], references: [id], onDelete: Restrict)
+  paymentAllocationId String
+  paymentAllocation  KontorFinancePaymentAllocation @relation(fields: [paymentAllocationId], references: [id], onDelete: Restrict)
+  netAmountEur       Decimal                  @db.Decimal(14, 2)
+  recordedTaxAmountEur Decimal                @db.Decimal(14, 2)
+  deductibleTaxAmountEur Decimal              @db.Decimal(14, 2)
+  grossAmountEur     Decimal                  @db.Decimal(14, 2)
+  roundingAmountEur  Decimal                  @db.Decimal(14, 2)
+  reverseChargeOutputTaxEur Decimal           @db.Decimal(14, 2)
+  reverseChargeInputTaxEur Decimal            @db.Decimal(14, 2)
+  kind               String
+  taxPointKind       String                   @default("SETTLEMENT")
+  occurredAt         DateTime
+  originalCurrency   String
+  originalNetAmount  Decimal?                 @db.Decimal(14, 2)
+  originalTaxAmount  Decimal?                 @db.Decimal(14, 2)
+  originalGrossAmount Decimal?                 @db.Decimal(14, 2)
+  eurExchangeRate    Decimal?                  @db.Decimal(24, 10)
+  eurExchangeRateDate DateTime?
+  eurExchangeRateSource String?
+  fxQuoteDirection   String?
+  originalPaymentSplitId String?
+  originalPaymentSplit KontorFinanceTaxPaymentSplit? @relation("KontorTaxPaymentSplitRefund", fields: [originalPaymentSplitId], references: [id], onDelete: Restrict)
+  refundSplits       KontorFinanceTaxPaymentSplit[] @relation("KontorTaxPaymentSplitRefund")
+  allocationPartKey  String                   @default("PRIMARY")
+  allocationRevision Int
+  supersededAt       DateTime?
+  createdByAccountId String?
+  createdAt          DateTime                 @default(now())
+
+  // A refund allocation may explicitly reference more than one earlier
+  // partial-payment split of the same tax line. PAYMENT rows use PRIMARY;
+  // REFUND rows use the immutable origin split id as allocationPartKey.
+  @@unique([taxSnapshotId, paymentAllocationId, allocationRevision, allocationPartKey])
+  @@index([entryId, occurredAt, supersededAt])
+  @@index([originalPaymentSplitId])
+}
+
+// Every generated file is reproducible from the normalized server-side
+// selection and its data revision. The file itself is returned to the caller;
+// only its cryptographic proof and selection snapshot are retained here.
+model KontorAccountingExport {
+  id                 String   @id @default(cuid())
+  idempotencyKey     String?  @unique
+  requestHash        String?
+  exportType         String
+  format             String
+  scope              String
+  normalizedFilter   Json
+  entryIds           Json
+  dataRevision       String
+  exportVersion      String
+  fileName           String
+  fileHash           String
+  sizeInBytes        Int
+  dependencySnapshot Json
+  reportSnapshot     Json?
+  artifactData       Bytes?
+  artifactRetainUntil DateTime?
+  createdByAccountId String?
+  createdAt          DateTime @default(now())
+
+  @@index([exportType, createdAt])
+  @@index([createdByAccountId, createdAt])
+}
+
+// DATEV master data is revisioned because changing consultant/client routing
+// must never rewrite the dependency snapshot of an older EXTF export.
+model KontorDatevSettings {
+  id                 String   @id
+  revision           Int      @default(1)
+  consultantNumber   String
+  clientNumber       String
+  fiscalYearStart    DateTime
+  accountingNumber   String
+  ledgerAccountLength Int
+  effectiveFrom      DateTime
+  updatedByAccountId String?
+  revisions          KontorDatevSettingsRevision[]
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+}
+
+model KontorDatevSettingsRevision {
+  id                 String              @id @default(cuid())
+  settingsId         String
+  settings           KontorDatevSettings @relation(fields: [settingsId], references: [id], onDelete: Restrict)
+  revision           Int
+  consultantNumber   String
+  clientNumber       String
+  fiscalYearStart    DateTime
+  accountingNumber   String
+  ledgerAccountLength Int
+  effectiveFrom      DateTime
+  supersededAt       DateTime?
+  createdByAccountId String?
+  createdAt          DateTime            @default(now())
+
+  @@unique([settingsId, revision])
+  @@index([settingsId, effectiveFrom, revision])
+}
+
+// Generated Phase-10 artifacts live encrypted in the Bonni Core organization
+// document store. Kontor persists only immutable fachmetadata and the Core
+// document reference; no new archive bytes are stored in the app schema.
+model KontorYearEndArtifact {
+  id                    String   @id @default(cuid())
+  year                  Int
+  kind                  String
+  status                String   @default("PROCESSING")
+  closingId             String
+  closingRevision       Int
+  datevSettingsRevision Int
+  dataRevision          String
+  requestHash           String
+  fileName              String
+  mimeType              String
+  checksum              String?
+  sizeInBytes           Int?
+  coreDocumentId        String?  @unique
+  sourceReference       String   @unique
+  manifest              Json?
+  dependencySnapshot    Json
+  createdByAccountId    String?
+  completedAt           DateTime?
+  createdAt             DateTime @default(now())
+
+  @@index([year, kind, createdAt])
+  @@index([closingId, closingRevision])
+  @@index([status, createdAt])
+}
+
+model KontorYearEndIdempotency {
+  id                 String   @id @default(cuid())
+  operation          String
+  actorAccountId     String
+  idempotencyKey     String
+  requestHash        String
+  state              String   @default("PROCESSING")
+  responseStatus     Int?
+  responseBody       Json?
+  targetArtifactId   String?
+  createdAt          DateTime @default(now())
+  completedAt        DateTime?
+  expiresAt          DateTime
+
+  @@unique([operation, actorAccountId, idempotencyKey])
+  @@index([state, createdAt])
+}
+
+model KontorLedgerOpeningBalance {
+  id              String              @id @default(cuid())
+  year            Int
+  ledgerAccountId String
+  ledgerAccount   KontorLedgerAccount @relation(fields: [ledgerAccountId], references: [id], onDelete: Cascade)
+  amount          Decimal             @default(0) @db.Decimal(14, 2)
+  createdAt       DateTime            @default(now())
+  updatedAt       DateTime            @updatedAt
+
+  @@unique([year, ledgerAccountId])
+  @@index([year])
+  @@index([ledgerAccountId])
+}
+
+model KontorAccountingPeriod {
+  id                        String   @id @default(cuid())
+  year                      Int      @unique
+  name                      String
+  startsAt                  DateTime
+  endsAt                    DateTime
+  status                    String   @default("OPEN")
+  revision                  Int      @default(1)
+  nonprofitSpheresEnabled   Boolean  @default(true)
+  createdAt                 DateTime @default(now())
+  updatedAt                 DateTime @updatedAt
+
+  @@index([status, startsAt, endsAt])
+}
+
+model KontorBudgetPeriod {
+  id        String             @id @default(cuid())
+  year      Int                @unique
+  name      String
+  startsAt  DateTime
+  endsAt    DateTime
+  status    String             @default("OPEN")
+  lines     KontorBudgetLine[]
+  costLines KontorCostBudgetLine[]
+  createdAt DateTime           @default(now())
+  updatedAt DateTime           @updatedAt
+
+  @@index([status, year])
+}
+
+model KontorBudgetLine {
+  id              String             @id @default(cuid())
+  periodId        String
+  period          KontorBudgetPeriod @relation(fields: [periodId], references: [id], onDelete: Cascade)
+  ledgerAccountId String
+  ledgerAccount   KontorLedgerAccount @relation(fields: [ledgerAccountId], references: [id], onDelete: Restrict)
+  plannedAmount   Decimal            @default(0) @db.Decimal(14, 2)
+  note            String?
+  costAllocations KontorCostBudgetLine[]
+  createdAt       DateTime           @default(now())
+  updatedAt       DateTime           @updatedAt
+
+  @@unique([periodId, ledgerAccountId])
+  @@index([ledgerAccountId])
+}
+
+// Phase 11: Kosten- und Leistungsrechnung. Die folgenden Modelle bilden eine
+// eigenstaendige interne Rechnungsschicht. Weder Zuordnungen noch Umlagen
+// veraendern KontorFinanceEntry oder KontorFinancePostingLine.
+model KontorCostCenter {
+  id                   String                       @id @default(cuid())
+  code                 String                       @unique
+  name                 String
+  description          String?
+  responsibleAccountId String?
+  parentId             String?
+  parent               KontorCostCenter?            @relation("KontorCostCenterTree", fields: [parentId], references: [id], onDelete: Restrict)
+  children             KontorCostCenter[]           @relation("KontorCostCenterTree")
+  active               Boolean                      @default(true)
+  validFrom            DateTime?
+  validUntil           DateTime?
+  revision             Int                          @default(1)
+  createdByAccountId   String?
+  updatedByAccountId   String?
+  assignments          KontorCostAssignmentLine[]
+  ownedCostObjects     KontorCostObject[]            @relation("KontorCostObjectOwner")
+  metricValues         KontorCostMetricValue[]
+  sourceAllocationRules KontorCostAllocationRule[]   @relation("KontorCostAllocationRuleSource")
+  allocationRuleTargets KontorCostAllocationRuleTarget[]
+  allocationLinesOut   KontorCostAllocationLine[]    @relation("KontorCostAllocationLineSource")
+  allocationLinesIn    KontorCostAllocationLine[]    @relation("KontorCostAllocationLineTarget")
+  budgetLines          KontorCostBudgetLine[]
+  createdAt            DateTime                      @default(now())
+  updatedAt            DateTime                      @updatedAt
+
+  @@index([active, code])
+  @@index([parentId])
+  @@index([validFrom, validUntil])
+}
+
+model KontorCostObject {
+  id                   String                       @id @default(cuid())
+  code                 String                       @unique
+  name                 String
+  objectType           String                       @default("PROJECT")
+  description          String?
+  owningCostCenterId   String
+  owningCostCenter     KontorCostCenter             @relation("KontorCostObjectOwner", fields: [owningCostCenterId], references: [id], onDelete: Restrict)
+  active               Boolean                      @default(true)
+  validFrom            DateTime?
+  validUntil           DateTime?
+  revision             Int                          @default(1)
+  createdByAccountId   String?
+  updatedByAccountId   String?
+  assignments          KontorCostAssignmentLine[]
+  metricValues         KontorCostMetricValue[]
+  allocationRuleTargets KontorCostAllocationRuleTarget[]
+  allocationLines      KontorCostAllocationLine[]
+  createdAt            DateTime                     @default(now())
+  updatedAt            DateTime                     @updatedAt
+
+  @@index([active, objectType, code])
+  @@index([owningCostCenterId])
+  @@index([validFrom, validUntil])
+}
+
+// Aktueller CAS-Kopf je Hauptbuchbuchung. Die Inhalte jeder Revision bleiben
+// in Revision + Line append-only erhalten.
+model KontorCostAssignmentSet {
+  id                   String                         @id @default(cuid())
+  entryId              String                         @unique
+  entry                KontorFinanceEntry             @relation(fields: [entryId], references: [id], onDelete: Restrict)
+  sourceEntryContentRevision Int
+  sourceHash           String
+  revision             Int                            @default(0)
+  contentHash          String?
+  complete             Boolean                        @default(false)
+  assignedAmount       Decimal                        @default(0) @db.Decimal(14, 2)
+  assignableAmount     Decimal                        @default(0) @db.Decimal(14, 2)
+  updatedByAccountId   String?
+  revisions            KontorCostAssignmentRevision[] @relation("KontorCostAssignmentRevisionHistory")
+  currentRevision      KontorCostAssignmentRevision?  @relation("KontorCostCurrentAssignmentRevision")
+  createdAt            DateTime                       @default(now())
+  updatedAt            DateTime                       @updatedAt
+
+  @@index([complete, updatedAt])
+}
+
+model KontorCostAssignmentRevision {
+  id                   String                      @id @default(cuid())
+  assignmentSetId      String
+  assignmentSet        KontorCostAssignmentSet     @relation("KontorCostAssignmentRevisionHistory", fields: [assignmentSetId], references: [id], onDelete: Restrict)
+  currentForSetId      String?                     @unique
+  currentForSet        KontorCostAssignmentSet?    @relation("KontorCostCurrentAssignmentRevision", fields: [currentForSetId], references: [id], onDelete: Restrict)
+  revision             Int
+  previousContentHash  String?
+  contentHash          String
+  complete             Boolean
+  assignedAmount       Decimal                     @db.Decimal(14, 2)
+  assignableAmount     Decimal                     @db.Decimal(14, 2)
+  reason               String
+  createdByAccountId   String
+  lines                KontorCostAssignmentLine[]
+  createdAt            DateTime                    @default(now())
+
+  @@unique([assignmentSetId, revision])
+  @@index([createdAt])
+}
+
+model KontorCostAssignmentLine {
+  id                   String                         @id @default(cuid())
+  assignmentRevisionId String
+  assignmentRevision   KontorCostAssignmentRevision   @relation(fields: [assignmentRevisionId], references: [id], onDelete: Restrict)
+  entryId              String
+  entryContentRevision Int
+  postingLineId        String?
+  postingLine          KontorFinancePostingLine?      @relation(fields: [postingLineId], references: [id], onDelete: SetNull)
+  postingLineIdSnapshot String
+  postingLinePosition  Int
+  postingLineSide      String
+  postingLineAmount    Decimal                        @db.Decimal(14, 2)
+  ledgerAccountIdSnapshot String
+  ledgerAccountCodeSnapshot String
+  ledgerAccountNameSnapshot String
+  ledgerAccountTypeSnapshot String
+  scopeKey             String
+  costCenterId         String
+  costCenter           KontorCostCenter               @relation(fields: [costCenterId], references: [id], onDelete: Restrict)
+  costCenterSnapshot   Json
+  costObjectId         String?
+  costObject           KontorCostObject?              @relation(fields: [costObjectId], references: [id], onDelete: Restrict)
+  costObjectSnapshot   Json?
+  amount               Decimal                        @db.Decimal(14, 2)
+  allocationSources    KontorCostAllocationSource[]
+  allocationTraces     KontorCostAllocationTrace[]
+  createdAt            DateTime                       @default(now())
+
+  @@unique([assignmentRevisionId, postingLineIdSnapshot, scopeKey])
+  @@index([postingLineId])
+  @@index([entryId, entryContentRevision])
+  @@index([costCenterId, createdAt])
+  @@index([costObjectId, createdAt])
+}
+
+model KontorCostMetric {
+  id                   String                       @id @default(cuid())
+  code                 String                       @unique
+  name                 String
+  description          String?
+  unit                 String
+  aggregation          String                       @default("SUM")
+  active               Boolean                      @default(true)
+  revision             Int                          @default(1)
+  createdByAccountId   String?
+  updatedByAccountId   String?
+  values               KontorCostMetricValue[]
+  valueRevisions       KontorCostMetricValueRevision[]
+  allocationRules      KontorCostAllocationRule[]
+  createdAt            DateTime                     @default(now())
+  updatedAt            DateTime                     @updatedAt
+
+  @@index([active, code])
+}
+
+model KontorCostMetricValue {
+  id                   String                         @id @default(cuid())
+  metricId             String
+  metric               KontorCostMetric               @relation(fields: [metricId], references: [id], onDelete: Restrict)
+  periodKey            String
+  costCenterId         String
+  costCenter           KontorCostCenter               @relation(fields: [costCenterId], references: [id], onDelete: Restrict)
+  costObjectId         String?
+  costObject           KontorCostObject?              @relation(fields: [costObjectId], references: [id], onDelete: Restrict)
+  scopeKey             String
+  value                Decimal                        @db.Decimal(18, 4)
+  revision             Int                            @default(1)
+  contentHash          String
+  updatedByAccountId   String?
+  revisions            KontorCostMetricValueRevision[]
+  createdAt            DateTime                       @default(now())
+  updatedAt            DateTime                       @updatedAt
+
+  @@unique([metricId, periodKey, scopeKey])
+  @@index([periodKey, costCenterId])
+  @@index([costObjectId, periodKey])
+}
+
+model KontorCostMetricValueRevision {
+  id                   String                       @id @default(cuid())
+  metricValueId        String
+  metricValue          KontorCostMetricValue        @relation(fields: [metricValueId], references: [id], onDelete: Restrict)
+  metricId             String
+  metric               KontorCostMetric             @relation(fields: [metricId], references: [id], onDelete: Restrict)
+  periodKey            String
+  scopeKey             String
+  value                Decimal                      @db.Decimal(18, 4)
+  revision             Int
+  previousContentHash  String?
+  contentHash          String
+  reason               String
+  createdByAccountId   String
+  createdAt            DateTime                     @default(now())
+
+  @@unique([metricValueId, revision])
+  @@index([metricId, periodKey, scopeKey])
+}
+
+model KontorCostAllocationRule {
+  id                   String                       @id @default(cuid())
+  code                 String                       @unique
+  name                 String
+  description          String?
+  sourceCostCenterId   String
+  sourceCostCenter     KontorCostCenter             @relation("KontorCostAllocationRuleSource", fields: [sourceCostCenterId], references: [id], onDelete: Restrict)
+  sourceLedgerAccountId String?
+  sourceLedgerAccount  KontorLedgerAccount?         @relation(fields: [sourceLedgerAccountId], references: [id], onDelete: Restrict)
+  driverType           String
+  metricId             String?
+  metric               KontorCostMetric?            @relation(fields: [metricId], references: [id], onDelete: Restrict)
+  targets              Json
+  active               Boolean                      @default(true)
+  validFrom            DateTime?
+  validUntil           DateTime?
+  revision             Int                          @default(1)
+  contentHash          String
+  createdByAccountId   String?
+  updatedByAccountId   String?
+  revisions            KontorCostAllocationRuleRevision[]
+  targetRows           KontorCostAllocationRuleTarget[]
+  runLines             KontorCostAllocationLine[]
+  createdAt            DateTime                     @default(now())
+  updatedAt            DateTime                     @updatedAt
+
+  @@index([active, sourceCostCenterId])
+  @@index([sourceLedgerAccountId])
+  @@index([metricId])
+  @@index([validFrom, validUntil])
+}
+
+model KontorCostAllocationRuleTarget {
+  id                   String                       @id @default(cuid())
+  ruleId               String
+  rule                 KontorCostAllocationRule     @relation(fields: [ruleId], references: [id], onDelete: Cascade)
+  targetKey            String
+  costCenterId         String
+  costCenter           KontorCostCenter             @relation(fields: [costCenterId], references: [id], onDelete: Restrict)
+  costObjectId         String?
+  costObject           KontorCostObject?            @relation(fields: [costObjectId], references: [id], onDelete: Restrict)
+  sharePercent         Decimal?                     @db.Decimal(9, 4)
+  costCenterSnapshot   Json
+  costObjectSnapshot   Json?
+  createdAt            DateTime                     @default(now())
+
+  @@unique([ruleId, targetKey])
+  @@index([costCenterId])
+  @@index([costObjectId])
+}
+
+model KontorCostAllocationRuleRevision {
+  id                   String                       @id @default(cuid())
+  ruleId               String
+  rule                 KontorCostAllocationRule     @relation(fields: [ruleId], references: [id], onDelete: Restrict)
+  revision             Int
+  previousContentHash  String?
+  contentHash          String
+  snapshot             Json
+  reason               String
+  createdByAccountId   String
+  createdAt            DateTime                     @default(now())
+
+  @@unique([ruleId, revision])
+  @@index([createdAt])
+}
+
+model KontorCostAllocationRun {
+  id                   String                       @id @default(cuid())
+  year                 Int
+  periodStart          DateTime
+  periodEnd            DateTime
+  status               String                       @default("FINALIZED")
+  runKind              String                       @default("ORIGINAL")
+  revision             Int                          @default(1)
+  previewHash          String                       @unique
+  dependencyHash       String
+  requestHash          String
+  sourceTotal          Decimal                      @db.Decimal(14, 2)
+  allocatedTotal       Decimal                      @db.Decimal(14, 2)
+  roundingDifference   Decimal                      @db.Decimal(14, 2)
+  ruleSnapshots        Json
+  reason               String?
+  reversalOfRunId      String?                      @unique
+  reversalOfRun        KontorCostAllocationRun?     @relation("KontorCostRunReversal", fields: [reversalOfRunId], references: [id], onDelete: Restrict)
+  reversalRun          KontorCostAllocationRun?     @relation("KontorCostRunReversal")
+  supersedesRunId      String?                      @unique
+  supersedesRun        KontorCostAllocationRun?     @relation("KontorCostRunSupersession", fields: [supersedesRunId], references: [id], onDelete: Restrict)
+  supersededByRun      KontorCostAllocationRun?     @relation("KontorCostRunSupersession")
+  reversedAt           DateTime?
+  reversedByAccountId  String?
+  createdByAccountId   String
+  lines                KontorCostAllocationLine[]
+  sources              KontorCostAllocationSource[]
+  traces               KontorCostAllocationTrace[]
+  createdAt            DateTime                     @default(now())
+
+  @@index([year, periodStart, periodEnd])
+  @@index([createdAt])
+}
+
+model KontorCostAllocationLine {
+  id                   String                       @id @default(cuid())
+  runId                String
+  run                  KontorCostAllocationRun      @relation(fields: [runId], references: [id], onDelete: Restrict)
+  ruleId               String
+  rule                 KontorCostAllocationRule     @relation(fields: [ruleId], references: [id], onDelete: Restrict)
+  sourceCostCenterId   String
+  sourceCostCenter     KontorCostCenter             @relation("KontorCostAllocationLineSource", fields: [sourceCostCenterId], references: [id], onDelete: Restrict)
+  targetCostCenterId   String
+  targetCostCenter     KontorCostCenter             @relation("KontorCostAllocationLineTarget", fields: [targetCostCenterId], references: [id], onDelete: Restrict)
+  targetCostObjectId   String?
+  targetCostObject     KontorCostObject?            @relation(fields: [targetCostObjectId], references: [id], onDelete: Restrict)
+  targetKey            String
+  sourceSnapshot       Json
+  targetSnapshot       Json
+  sourceAmount         Decimal                      @db.Decimal(14, 2)
+  driverType           String
+  driverValue          Decimal?                     @db.Decimal(18, 4)
+  driverTotal          Decimal?                     @db.Decimal(18, 4)
+  sharePercent         Decimal                      @db.Decimal(9, 4)
+  allocatedAmount      Decimal                      @db.Decimal(14, 2)
+  lineHash             String
+  traces               KontorCostAllocationTrace[]
+  createdAt            DateTime                     @default(now())
+
+  @@unique([runId, ruleId, targetKey])
+  @@index([sourceCostCenterId, createdAt])
+  @@index([targetCostCenterId, createdAt])
+  @@index([targetCostObjectId, createdAt])
+}
+
+model KontorCostAllocationSource {
+  id                   String                         @id @default(cuid())
+  runId                String
+  run                  KontorCostAllocationRun        @relation(fields: [runId], references: [id], onDelete: Restrict)
+  ruleId               String
+  assignmentLineId     String
+  assignmentLine       KontorCostAssignmentLine       @relation(fields: [assignmentLineId], references: [id], onDelete: Restrict)
+  assignmentRevisionId String
+  entryIdSnapshot      String
+  entryContentRevision Int
+  postingLineIdSnapshot String
+  ledgerAccountIdSnapshot String
+  sourceAmount         Decimal                        @db.Decimal(14, 2)
+  sourceHash           String
+  traces               KontorCostAllocationTrace[]
+  createdAt            DateTime                       @default(now())
+
+  @@unique([runId, ruleId, assignmentLineId])
+  @@index([entryIdSnapshot, postingLineIdSnapshot])
+}
+
+// Centgenaue, append-only Source->Target-Provenienz. Sie ist die belastbare
+// Grundlage fuer Teilperioden-, Sachkonto- und Ziel-Drilldowns.
+model KontorCostAllocationTrace {
+  id                         String                       @id @default(cuid())
+  runId                      String
+  run                        KontorCostAllocationRun      @relation(fields: [runId], references: [id], onDelete: Restrict)
+  allocationSourceId         String
+  allocationSource           KontorCostAllocationSource   @relation(fields: [allocationSourceId], references: [id], onDelete: Restrict)
+  allocationLineId           String
+  allocationLine             KontorCostAllocationLine     @relation(fields: [allocationLineId], references: [id], onDelete: Restrict)
+  ruleId                     String
+  assignmentLineId           String
+  assignmentLine             KontorCostAssignmentLine     @relation(fields: [assignmentLineId], references: [id], onDelete: Restrict)
+  entryIdSnapshot            String
+  entryContentRevision       Int
+  bookingDateSnapshot        DateTime
+  postingLineIdSnapshot      String
+  ledgerAccountIdSnapshot    String
+  sourceCostCenterIdSnapshot String
+  sourceCostObjectIdSnapshot String?
+  targetKey                  String
+  targetCostCenterId         String
+  targetCostObjectId         String?
+  sourceAmountSnapshot       Decimal                      @db.Decimal(14, 2)
+  allocatedAmount            Decimal                      @db.Decimal(14, 2)
+  traceHash                  String
+  createdAt                  DateTime                     @default(now())
+
+  @@unique([runId, allocationSourceId, allocationLineId])
+  @@index([bookingDateSnapshot, id])
+  @@index([ledgerAccountIdSnapshot, bookingDateSnapshot, id])
+  @@index([sourceCostCenterIdSnapshot, bookingDateSnapshot, id])
+  @@index([sourceCostObjectIdSnapshot, bookingDateSnapshot, id])
+  @@index([targetCostCenterId, bookingDateSnapshot, id])
+  @@index([targetCostObjectId, bookingDateSnapshot, id])
+}
+
+model KontorCostBudgetLine {
+  id                   String                       @id @default(cuid())
+  periodId             String
+  period               KontorBudgetPeriod           @relation(fields: [periodId], references: [id], onDelete: Restrict)
+  ledgerAccountId      String
+  ledgerAccount        KontorLedgerAccount           @relation(fields: [ledgerAccountId], references: [id], onDelete: Restrict)
+  globalBudgetLineId   String
+  globalBudgetLine     KontorBudgetLine               @relation(fields: [globalBudgetLineId], references: [id], onDelete: Restrict)
+  costCenterId         String
+  costCenter           KontorCostCenter              @relation(fields: [costCenterId], references: [id], onDelete: Restrict)
+  plannedAmount        Decimal                       @default(0) @db.Decimal(14, 2)
+  note                 String?
+  revision             Int                           @default(1)
+  createdByAccountId   String?
+  updatedByAccountId   String?
+  createdAt            DateTime                      @default(now())
+  updatedAt            DateTime                      @updatedAt
+
+  @@unique([periodId, ledgerAccountId, costCenterId])
+  @@index([globalBudgetLineId])
+  @@index([ledgerAccountId, costCenterId])
+}
+
+model KontorCostAccountingHistory {
+  id                   String                       @id @default(cuid())
+  entityType           String
+  entityId             String
+  revision             Int
+  eventType            String
+  actorAccountId       String
+  reason               String?
+  before               Json?
+  after                Json?
+  createdAt            DateTime                     @default(now())
+
+  @@index([entityType, entityId, revision])
+  @@index([createdAt])
+}
+
+model KontorCostAccountingIdempotency {
+  id                   String                       @id @default(cuid())
+  scopeKey             String                       @unique
+  requestHash          String
+  status               String                       @default("PROCESSING")
+  responseStatus       Int?
+  response             Json?
+  encryptedResponse    String?
+  sensitiveResponseExpiresAt DateTime?
+  targetType           String?
+  targetId             String?
+  createdByAccountId   String
+  expiresAt            DateTime
+  completedAt          DateTime?
+  createdAt            DateTime                     @default(now())
+  updatedAt            DateTime                     @updatedAt
+
+  @@index([expiresAt])
+}
+
+model KontorCostActionChallenge {
+  challengeId          String                       @id
+  action               String
+  targetRunId          String?
+  expectedRevision     Int?
+  previewHash          String?
+  dependencyHash       String
+  actionPayloadHash    String?
+  requestSnapshot      Json?
+  actorAccountId       String
+  expiresAt            DateTime
+  verifiedAt           DateTime?
+  consumedAt           DateTime?
+  createdAt            DateTime                     @default(now())
+
+  @@index([actorAccountId, action, expiresAt])
+  @@index([targetRunId, action])
+}
+
+model KontorFinancialAccount {
+  id                       String                     @id @default(cuid())
+  name                     String
+  accountType              String
+  currency                 String                     @default("EUR")
+  maskedIdentifier         String?
+  bic                      String?
+  transferLimit            Decimal?                   @db.Decimal(14, 2)
+  overdraftLimit           Decimal?                   @db.Decimal(14, 2)
+  // Einrichtungsmetadaten für Bank- und Kartenkonten; Zugangsdaten werden hier niemals gespeichert.
+  institutionKey           String?
+  institutionName          String?
+  cardExpiry               String?
+  importMode               String                     @default("MANUAL")
+  openingBalance           Decimal                    @default(0) @db.Decimal(14, 2)
+  // Verifizierter Endsaldo eines Kontoauszugs. Der Eröffnungssaldo bleibt davon
+  // fachlich getrennt und wird niemals durch einen Import umgedeutet.
+  reportedBalance          Decimal?                   @db.Decimal(14, 2)
+  reportedBalanceAt        DateTime?
+  reportedBalanceImportId  String?
+  reportedBalanceAnchorFingerprint String?
+  active                   Boolean                    @default(true)
+  ledgerAccountId          String?
+  ledgerAccount            KontorLedgerAccount?       @relation("KontorFinancialAccountLedger", fields: [ledgerAccountId], references: [id], onDelete: SetNull)
+  financeEntries           KontorFinanceEntry[]
+  imports                  KontorAccountImport[]
+  transactions             KontorAccountTransaction[]
+  paymentAllocations       KontorFinancePaymentAllocation[]
+  savingsGoals             KontorSavingsGoal[]
+  bankConnections          KontorBankConnection[]
+  cashReconciliations      KontorCashReconciliation[]
+  createdByAccountId       String?
+  createdAt                DateTime                   @default(now())
+  updatedAt                DateTime                   @updatedAt
+
+  @@index([active, name])
+  @@index([ledgerAccountId])
+}
+
+// Prüffähiger Bargeldabgleich für lokale Geldkassen und Wallets. Ein Zählvorgang
+// dokumentiert Stückzahlen und Differenzen, erzeugt aber niemals selbstständig
+// eine Buchung oder verändert den bestehenden Kontosaldo.
+model KontorCashReconciliation {
+  id                 String                         @id @default(cuid())
+  accountId          String
+  account            KontorFinancialAccount         @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  countedAt          DateTime
+  expectedBalance    Decimal                        @db.Decimal(14, 2)
+  countedBalance     Decimal                        @db.Decimal(14, 2)
+  difference         Decimal                        @db.Decimal(14, 2)
+  note               String?
+  createdByAccountId String?
+  createdAt          DateTime                       @default(now())
+  lines              KontorCashReconciliationLine[]
+
+  @@index([accountId, countedAt])
+}
+
+model KontorCashReconciliationLine {
+  id                   String                      @id @default(cuid())
+  reconciliationId     String
+  reconciliation       KontorCashReconciliation    @relation(fields: [reconciliationId], references: [id], onDelete: Cascade)
+  denominationCents    Int
+  quantity             Int
+  amount               Decimal                     @db.Decimal(14, 2)
+
+  @@unique([reconciliationId, denominationCents])
+  @@index([reconciliationId])
+}
+
+// Bankzugänge bleiben bewusst von den eigentlichen Finanzkonten getrennt.
+// Geheimnisse werden ausschließlich über core.private-data verschlüsselt
+// gespeichert. TANs werden ausschließlich für den laufenden Abruf angenommen,
+// im Arbeitsspeicher verarbeitet und niemals persistiert.
+model KontorBankConnection {
+  id                         String                  @id @default(cuid())
+  financialAccountId         String
+  financialAccount           KontorFinancialAccount  @relation(fields: [financialAccountId], references: [id], onDelete: Cascade)
+  name                       String
+  protocol                   String
+  institutionName            String?
+  serverUrl                   String?
+  bankCode                    String?
+  productId                   String?
+  productVersion              String?
+  customerIdEncrypted         String?
+  userIdEncrypted             String?
+  pinEncrypted                String?
+  partnerIdEncrypted          String?
+  hostIdEncrypted             String?
+  bankingInformationEncrypted String?
+  remoteAccountEncrypted      String?
+  tanMediaNameEncrypted       String?
+  selectedTanMethodId         Int?
+  ebicsKeysEncrypted          String?
+  ebicsPassphraseEncrypted    String?
+  ebicsIvEncrypted            String?
+  ebicsPhase                  String?
+  status                     String                  @default("CONFIGURED")
+  active                     Boolean                 @default(true)
+  lastSyncAt                 DateTime?
+  lastSyncStatus             String?
+  lastSyncMessage            String?
+  lastSyncTransactionCount   Int                     @default(0)
+  createdByAccountId         String?
+  createdAt                  DateTime                @default(now())
+  updatedAt                  DateTime                @updatedAt
+
+  @@index([active, protocol, name])
+  @@index([financialAccountId])
+}
+
+model KontorAccountImport {
+  id                  String                     @id @default(cuid())
+  accountId           String
+  account             KontorFinancialAccount     @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  fileName            String
+  mimeType            String
+  checksum            String
+  importedCount       Int                        @default(0)
+  skippedCount        Int                        @default(0)
+  uploadedByAccountId String?
+  transactions        KontorAccountTransaction[]
+  createdAt           DateTime                   @default(now())
+
+  @@unique([accountId, checksum])
+  @@index([accountId, createdAt])
+}
+
+model KontorAccountTransaction {
+  id                 String                  @id @default(cuid())
+  accountId          String
+  account            KontorFinancialAccount  @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  importId           String?
+  accountImport      KontorAccountImport?    @relation(fields: [importId], references: [id], onDelete: SetNull)
+  bookingDate        DateTime
+  valueDate          DateTime?
+  amount             Decimal                 @db.Decimal(14, 2)
+  currency           String                  @default("EUR")
+  sourceAccountName  String?
+  sourceAccountIban  String?
+  sourceAccountBic   String?
+  sourceBankName     String?
+  counterparty       String?
+  counterpartyIban   String?
+  counterpartyBic    String?
+  bookingText        String?
+  purpose            String?
+  reference          String?
+  externalId         String?
+  balanceAfter       Decimal?                @db.Decimal(14, 2)
+  note               String?
+  markedTransaction  Boolean?
+  creditorId         String?
+  mandateId          String?
+  fingerprint        String
+  financeEntryId     String?                 @unique
+  financeEntry       KontorFinanceEntry?     @relation(fields: [financeEntryId], references: [id], onDelete: SetNull)
+  paymentAllocations KontorFinancePaymentAllocation[]
+  createdAt          DateTime                @default(now())
+  updatedAt          DateTime                @updatedAt
+
+  @@unique([accountId, fingerprint])
+  @@index([accountId, bookingDate])
+  @@index([importId])
+}
+
+model KontorSavingsGoal {
+  id                 String                  @id @default(cuid())
+  accountId          String?
+  account            KontorFinancialAccount? @relation(fields: [accountId], references: [id], onDelete: SetNull)
+  name               String
+  description        String?
+  targetAmount       Decimal                 @db.Decimal(14, 2)
+  reservedAmount     Decimal                 @default(0) @db.Decimal(14, 2)
+  targetDate         DateTime?
+  active             Boolean                 @default(true)
+  revision           Int                     @default(1)
+  procurementCase    KontorProcurementCase?
+  createdByAccountId String?
+  createdAt          DateTime                @default(now())
+  updatedAt          DateTime                @updatedAt
+
+  @@index([active, targetDate])
+  @@index([accountId])
+}
+
+model KontorInboundInvoiceRequest {
+  id                    String   @id @default(cuid())
+  correlationId         String   @unique
+  idempotencyKey        String   @unique
+  sourceDomain          String
+  sourceRecordId        String
+  requestMessageId      String   @unique
+  requestPayloadHash    String
+  recipientMemberId     String?
+  amount                Decimal  @db.Decimal(14, 2)
+  currency              String   @default("EUR")
+  purpose               String
+  sourceDocumentHash    String
+  status                String   @default("PENDING")
+  generatedInvoiceId    String?  @unique
+  generatedInvoice      KontorPosInvoice? @relation(fields: [generatedInvoiceId], references: [id])
+  completionMessageId   String?
+  processedByAccountId  String?
+  receivedAt            DateTime @default(now())
+  processedAt           DateTime?
+  rejectedAt            DateTime?
+  rejectionReason       String?
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+
+  @@index([sourceDomain, status, receivedAt])
+  @@index([recipientMemberId])
+  @@index([completionMessageId])
+}
+
+// Von POS angeforderte, eindeutig nummerierte Rechnung. Die Rechnung und die
+// daraus erzeugte Kontor-Buchung bleiben über correlationId und Prüfsumme
+// lückenlos auf den ursprünglichen Stüberl-BAR-Auftrag zurückführbar.
+model KontorPosInvoice {
+  id                 String   @id @default(cuid())
+  invoiceNumber      String   @unique
+  correlationId      String   @unique
+  sourceDomain       String
+  sourceRecordId     String
+  amount             Decimal  @db.Decimal(14, 2)
+  currency           String   @default("EUR")
+  description        String
+  paymentMethod      String   @default("CASH")
+  status             String   @default("BOOKED")
+  financeEntryId     String   @unique
+  sourceDocumentHash String
+  issuedAt           DateTime @default(now())
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+  inboundRequest     KontorInboundInvoiceRequest?
+
+  @@index([status, issuedAt])
+  @@index([sourceDomain, sourceRecordId])
+}
+
+model KontorClosing {
+  id                 String   @id @default(cuid())
+  periodType         String
+  periodStart        DateTime
+  periodEnd          DateTime
+  label              String
+  // Phase 8 uses a three-actor workflow.  The old CLOSED rows remain
+  // readable, while new rows progress PREPARED -> REVIEWED -> CLOSED.
+  status             String   @default("PREPARED")
+  revision           Int      @default(1)
+  workflowVersion    String   @default("kontor.accounting-closing/v2")
+  currency           String   @default("EUR")
+  incomeTotal        Decimal  @db.Decimal(14, 2)
+  expenseTotal       Decimal  @db.Decimal(14, 2)
+  balanceTotal       Decimal  @db.Decimal(14, 2)
+  entryCount         Int
+  source             String   @default("MANUAL")
+  snapshot           Json
+  snapshotHash       String?
+  preparedByAccountId String?
+  preparedByLabel    String?
+  reviewedByAccountId String?
+  reviewedByLabel    String?
+  closedByAccountId  String?
+  closedByLabel      String?
+  reopenedByAccountId String?
+  reopenedByLabel    String?
+  reopenReason       String?
+  preparedAt         DateTime @default(now())
+  reviewedAt         DateTime?
+  finalizedAt        DateTime?
+  reopenedAt         DateTime?
+  reportRevision     Int      @default(0)
+  createdByAccountId String?
+  closedAt           DateTime?
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  @@index([status, periodStart, periodEnd])
+  @@index([periodEnd])
+}
+
+// A period lock is an enforcement boundary, not a second ledger.  Finance
+// entries remain the only source of postings; every writer checks active,
+// overlapping ranges before it mutates an entry.
+model KontorAccountingPeriodLock {
+  id                    String   @id @default(cuid())
+  closingId             String
+  closingRevision       Int
+  periodType            String
+  periodStart           DateTime
+  periodEnd             DateTime
+  status                String   @default("ACTIVE")
+  reason                String
+  lockedByAccountId     String?
+  lockedByLabel         String?
+  lockedAt              DateTime @default(now())
+  releasedByAccountId   String?
+  releasedByLabel       String?
+  releasedAt            DateTime?
+  releaseReason         String?
+  createdAt             DateTime @default(now())
+
+  @@unique([closingId, closingRevision])
+  @@index([status, periodStart, periodEnd])
+  @@index([closingId, createdAt])
+}
+
+model KontorClosingHistory {
+  id                 String   @id @default(cuid())
+  closingId          String
+  revision           Int
+  event              String
+  actorAccountId     String?
+  actorLabel         String?
+  note               String?
+  beforeState        Json?
+  afterState         Json?
+  createdAt          DateTime @default(now())
+
+  @@unique([closingId, revision])
+  @@index([closingId, createdAt])
+}
+
+// Personal notes are deliberately separate from the one effective workflow
+// approval.  Merely ticking a personal review can never close a period.
+model KontorClosingReview {
+  id                 String   @id @default(cuid())
+  closingId          String
+  closingRevision    Int
+  kind               String   @default("PERSONAL_NOTE")
+  decision           String   @default("NOTED")
+  reviewerAccountId  String
+  reviewerLabel      String?
+  note               String?
+  createdAt          DateTime @default(now())
+
+  @@index([closingId, closingRevision, kind, createdAt])
+  @@index([reviewerAccountId, createdAt])
+}
+
+model KontorClosingActionChallenge {
+  challengeId        String   @id
+  closingId          String
+  action             String
+  expectedRevision   Int
+  dependencyHash     String
+  actorAccountId     String
+  actorLabel         String?
+  verifiedAt         DateTime?
+  consumedAt         DateTime?
+  createdAt          DateTime @default(now())
+
+  @@index([closingId, action, actorAccountId, consumedAt])
+}
+
+model KontorClosingIdempotency {
+  id                 String   @id @default(cuid())
+  operation          String
+  actorAccountId     String
+  idempotencyKey     String
+  requestHash        String
+  responseStatus     Int?
+  responseBody       Json?
+  encryptedResponse  String?
+  sensitiveResponseExpiresAt DateTime?
+  state              String   @default("RUNNING")
+  targetClosingId    String?
+  targetRevision     Int?
+  createdAt          DateTime @default(now())
+  completedAt        DateTime?
+  expiresAt          DateTime
+
+  @@unique([operation, actorAccountId, idempotencyKey])
+  @@index([createdAt])
+}
+
+model KontorClosingArtifact {
+  id                 String   @id @default(cuid())
+  closingId          String
+  closingRevision    Int
+  kind               String
+  fileName           String
+  mimeType           String
+  checksum           String
+  sizeInBytes        Int
+  data               Bytes
+  createdByAccountId String?
+  createdAt          DateTime @default(now())
+
+  @@unique([closingId, closingRevision, kind])
+  @@index([closingId, createdAt])
+}
+
+model KontorContributionRule {
+  id               String                            @id @default(cuid())
+  name             String
+  amount           Decimal                           @db.Decimal(14, 2)
+  currency         String                            @default("EUR")
+  interval         String                            @default("YEARLY")
+  dueDay           Int                               @default(1)
+  dueMonth         Int?
+  memberStatuses   Json                              @default("[]")
+  memberGroups     Json                              @default("[]")
+  active           Boolean                           @default(true)
+  validFrom        DateTime?
+  validUntil       DateTime?
+  contentRevision  Int                               @default(0)
+  activeRevisionId String?                           @unique
+  activeRevision   KontorContributionRuleRevision?   @relation("ActiveContributionRuleRevision", fields: [activeRevisionId], references: [id], onDelete: Restrict)
+  revisions        KontorContributionRuleRevision[]  @relation("ContributionRuleRevisions")
+  createdAt        DateTime                          @default(now())
+  updatedAt        DateTime                          @updatedAt
+
+  @@index([active])
+}
+
+// Rule meaning is append-only. The mutable rule row above is only a current
+// projection; existing pre-Phase-9 rows remain revision 0 until an explicit
+// exact baseline is initialized by a manager.
+model KontorContributionRuleRevision {
+  id                   String                              @id @default(cuid())
+  ruleId               String
+  rule                 KontorContributionRule              @relation("ContributionRuleRevisions", fields: [ruleId], references: [id], onDelete: Restrict)
+  activeForRule        KontorContributionRule?             @relation("ActiveContributionRuleRevision")
+  revision             Int
+  name                 String
+  amount               Decimal                             @db.Decimal(14, 2)
+  currency             String                              @default("EUR")
+  interval             String
+  dueDay               Int
+  dueMonth             Int?
+  memberStatuses       Json                                @default("[]")
+  memberGroupIds       Json                                @default("[]")
+  legacyMemberGroups   Json                                @default("[]")
+  active               Boolean                             @default(true)
+  validFrom            DateTime?
+  validUntil           DateTime?
+  supersedesRevisionId String?                             @unique
+  supersedesRevision   KontorContributionRuleRevision?     @relation("ContributionRuleRevisionChain", fields: [supersedesRevisionId], references: [id], onDelete: Restrict)
+  supersededBy         KontorContributionRuleRevision?     @relation("ContributionRuleRevisionChain")
+  reason               String?
+  createdByAccountId   String?
+  adjustments          KontorContributionRuleAdjustment[]
+  runItems             KontorContributionRunItem[]
+  createdAt            DateTime                            @default(now())
+
+  @@unique([ruleId, revision])
+  @@index([ruleId, active, validFrom, validUntil])
+}
+
+// Adjustments are immutable children of a rule revision. Equal-priority
+// adjustments which cannot be composed deterministically are rejected before
+// a preview is persisted.
+model KontorContributionRuleAdjustment {
+  id                 String                           @id @default(cuid())
+  ruleRevisionId     String
+  ruleRevision       KontorContributionRuleRevision   @relation(fields: [ruleRevisionId], references: [id], onDelete: Restrict)
+  scopeType          String
+  scopeId            String
+  kind               String
+  fixedAmount        Decimal?                         @db.Decimal(14, 2)
+  percentBasisPoints Int?
+  priority           Int                              @default(100)
+  validFrom          DateTime?
+  validUntil         DateTime?
+  reason             String
+  createdAt          DateTime                         @default(now())
+
+  @@unique([ruleRevisionId, scopeType, scopeId, kind, priority])
+  @@index([scopeType, scopeId, validFrom, validUntil])
+  @@index([ruleRevisionId, priority])
+}
+
+model KontorContributionRun {
+  id                    String                    @id @default(cuid())
+  periodKey             String
+  runNumber             Int                       @default(1)
+  contentRevision       Int                       @default(1)
+  status                String                    @default("PREVIEWED")
+  itemCount             Int                       @default(0)
+  totalAmount           Decimal                   @db.Decimal(14, 2)
+  currency              String                    @default("EUR")
+  ruleSetHash           String?
+  snapshotHash          String?
+  postingProfileRevisionId String?
+  postingProfileHash    String?
+  accountingMethodSnapshot String?
+  supersedesRunId       String?                   @unique
+  supersedesRun         KontorContributionRun?    @relation("ContributionRunChain", fields: [supersedesRunId], references: [id], onDelete: Restrict)
+  supersededBy          KontorContributionRun?    @relation("ContributionRunChain")
+  previewedAt           DateTime?
+  executedAt            DateTime?
+  completedAt           DateTime?
+  createdByAccountId    String?
+  executedByAccountId   String?
+  items                 KontorContributionRunItem[]
+  createdAt             DateTime                  @default(now())
+  updatedAt             DateTime                  @updatedAt
+
+  @@unique([periodKey, runNumber])
+  @@index([periodKey, status, createdAt])
+  @@index([createdAt])
+}
+
+model KontorContributionRunItem {
+  id                    String                            @id @default(cuid())
+  runId                 String
+  run                   KontorContributionRun             @relation(fields: [runId], references: [id], onDelete: Restrict)
+  ruleId                String
+  ruleRevisionId        String?
+  ruleRevision          KontorContributionRuleRevision?   @relation(fields: [ruleRevisionId], references: [id], onDelete: Restrict)
+  memberId              String
+  memberNumberSnapshot  String?
+  memberDisplayNameSnapshot String?
+  memberStatusSnapshot  String?
+  memberGroupsSnapshot  Json                              @default("[]")
+  ruleNameSnapshot      String?
+  baseAmount            Decimal?                          @db.Decimal(14, 2)
+  adjustmentSnapshot    Json                              @default("[]")
+  amount                Decimal                           @db.Decimal(14, 2)
+  currency              String                            @default("EUR")
+  dueDateSnapshot       DateTime?
+  descriptionSnapshot   String?
+  snapshotHash          String?
+  status                String                            @default("PREVIEWED")
+  claimId               String?                           @unique
+  claim                 KontorClaim?                      @relation("ContributionRunItemClaim", fields: [claimId], references: [id], onDelete: Restrict)
+  createdAt             DateTime                          @default(now())
+
+  @@unique([runId, ruleId, memberId])
+  @@index([runId])
+  @@index([memberId])
+  @@index([ruleRevisionId])
+}
+
+// Organization-wide posting mappings are revisioned. No code or system
+// default is inferred: a run/payment must pin one exact immutable revision.
+model KontorContributionPostingProfile {
+  id                String                                      @id @default("default")
+  revision          Int                                         @default(0)
+  currentRevisionId String?                                     @unique
+  currentRevision   KontorContributionPostingProfileRevision?   @relation("ActiveContributionPostingProfileRevision", fields: [currentRevisionId], references: [id], onDelete: Restrict)
+  revisions         KontorContributionPostingProfileRevision[]  @relation("ContributionPostingProfileRevisions")
+  createdAt         DateTime                                    @default(now())
+  updatedAt         DateTime                                    @updatedAt
+}
+
+model KontorContributionPostingProfileRevision {
+  id                             String                                @id @default(cuid())
+  profileId                      String
+  profile                        KontorContributionPostingProfile      @relation("ContributionPostingProfileRevisions", fields: [profileId], references: [id], onDelete: Restrict)
+  activeForProfile               KontorContributionPostingProfile?     @relation("ActiveContributionPostingProfileRevision")
+  revision                       Int
+  contributionIncomeAccountId    String
+  contributionIncomeAccount      KontorLedgerAccount                   @relation("KontorContributionIncomeAccount", fields: [contributionIncomeAccountId], references: [id], onDelete: Restrict)
+  receivableAccountId            String
+  receivableAccount              KontorLedgerAccount                   @relation("KontorContributionReceivableAccount", fields: [receivableAccountId], references: [id], onDelete: Restrict)
+  overpaymentLiabilityAccountId  String
+  overpaymentLiabilityAccount    KontorLedgerAccount                   @relation("KontorContributionOverpaymentAccount", fields: [overpaymentLiabilityAccountId], references: [id], onDelete: Restrict)
+  bankFeeExpenseAccountId        String
+  bankFeeExpenseAccount          KontorLedgerAccount                   @relation("KontorContributionBankFeeAccount", fields: [bankFeeExpenseAccountId], references: [id], onDelete: Restrict)
+  feeIncomeAccountId             String
+  feeIncomeAccount               KontorLedgerAccount                   @relation("KontorContributionFeeIncomeAccount", fields: [feeIncomeAccountId], references: [id], onDelete: Restrict)
+  nonTaxableTaxRateId            String
+  nonTaxableTaxRate              KontorTaxRate                         @relation("KontorContributionNonTaxableRate", fields: [nonTaxableTaxRateId], references: [id], onDelete: Restrict)
+  feeTaxRateId                   String
+  feeTaxRate                     KontorTaxRate                         @relation("KontorContributionFeeTaxRate", fields: [feeTaxRateId], references: [id], onDelete: Restrict)
+  effectiveFrom                  DateTime
+  supersedesRevisionId           String?                               @unique
+  supersedesRevision             KontorContributionPostingProfileRevision? @relation("ContributionPostingProfileRevisionChain", fields: [supersedesRevisionId], references: [id], onDelete: Restrict)
+  supersededBy                   KontorContributionPostingProfileRevision? @relation("ContributionPostingProfileRevisionChain")
+  reason                         String
+  createdByAccountId             String?
+  createdAt                      DateTime                              @default(now())
+
+  @@unique([profileId, revision])
+  @@index([profileId, effectiveFrom])
+}
+
+// Kontor besitzt nur die fachliche Projektion für Fälligkeiten und Buchungen.
+// Vertragsinhalte und Originaldokumente liegen verschlüsselt im geschützten
+// organization-Schema und werden ausschließlich per 2FA-Port gelesen.
+model KontorContract {
+  id                     String                  @id @default(cuid())
+  organizationContractId String                  @unique
+  contractType           String
+  startDate              DateTime?
+  endDate                DateTime?
+  noticeDate             DateTime?
+  nextDueDate            DateTime?
+  status                 String                  @default("ACTIVE")
+  managementRevision     Int                     @default(1)
+  managedByPhase6        Boolean                 @default(false)
+  legacyMutationLeaseId  String?                 @unique
+  legacyMutationOperation String?
+  legacyMutationPayload  Json?
+  legacyMutationStartedAt DateTime?
+  createdByAccountId     String?
+  invoices               KontorContractInvoice[]
+  // Phase 6 takes an existing protected contract over exactly once. The
+  // legacy projection remains the canonical bridge; evidence is never copied.
+  managedCase            KontorContractCase?
+  legacyOperations       KontorContractLegacyOperation[]
+  createdAt              DateTime                @default(now())
+  updatedAt              DateTime                @updatedAt
+
+  @@index([contractType, status])
+  @@index([nextDueDate, status])
+  @@index([managedByPhase6, updatedAt])
+  @@index([legacyMutationLeaseId, managedByPhase6])
+}
+
+model KontorContractInvoice {
+  id                 String         @id @default(cuid())
+  contractId         String
+  contract           KontorContract @relation(fields: [contractId], references: [id], onDelete: Cascade)
+  invoiceNumber      String?
+  description        String
+  dueDate            DateTime
+  amount             Decimal        @db.Decimal(14, 2)
+  currency           String         @default("EUR")
+  status             String         @default("EXPECTED")
+  financeEntryId     String?        @unique
+  fileName           String?
+  mimeType           String?
+  sizeInBytes        Int?
+  checksum           String?
+  data               Bytes?
+  createdByAccountId String?
+  createdAt          DateTime       @default(now())
+  updatedAt          DateTime       @updatedAt
+
+  @@index([contractId, dueDate])
+  @@index([status, dueDate])
+  @@index([checksum])
+}
+
+model KontorClaim {
+  id                 String                         @id @default(cuid())
+  kind               String                         @default("CONTRIBUTION")
+  memberId           String
+  ruleId             String?
+  runId              String?
+  runItem            KontorContributionRunItem?     @relation("ContributionRunItemClaim")
+  description        String
+  amount             Decimal                        @db.Decimal(14, 2)
+  openAmount         Decimal                        @db.Decimal(14, 2)
+  currency           String                         @default("EUR")
+  dueDate            DateTime
+  status             String                         @default("OPEN")
+  collectionState    String                         @default("ACTIVE")
+  collectionStateReason String?
+  collectionStateChangedAt DateTime?
+  collectionStateChangedByAccountId String?
+  cancelledAt        DateTime?
+  cancelledByAccountId String?
+  cancellationReason String?
+  contentRevision    Int                            @default(1)
+  snapshotHash       String?
+  invoice            KontorInvoice?                  @relation("ContributionClaimInvoice")
+  directDebitItems   KontorDirectDebitItem[]          @relation("ContributionClaimDirectDebitItems")
+  dunnings           KontorDunning[]                  @relation("ContributionClaimDunnings")
+  returnDebits       KontorReturnDebit[]               @relation("ContributionClaimReturnDebits")
+  paymentAllocations KontorPaymentClaimAllocation[]
+  returnDebitFee      KontorReturnDebit?              @relation("ReturnDebitFeeClaim")
+  dunningFee          KontorDunning?                  @relation("DunningFeeClaim")
+  createdAt          DateTime                       @default(now())
+  updatedAt          DateTime                       @updatedAt
+
+  @@index([memberId, status])
+  @@index([kind, status])
+  @@index([collectionState, status])
+  @@index([dueDate, status])
+}
+
+model KontorInvoice {
+  id              String                       @id @default(cuid())
+  invoiceNumber   String                       @unique
+  memberId        String
+  claimId         String                       @unique
+  claim           KontorClaim                  @relation("ContributionClaimInvoice", fields: [claimId], references: [id], onDelete: Restrict)
+  description     String
+  amount          Decimal                      @db.Decimal(14, 2)
+  currency        String                       @default("EUR")
+  issuedAt        DateTime                     @default(now())
+  dueDate         DateTime
+  status          String                       @default("OPEN")
+  contentRevision Int                          @default(1)
+  snapshotHash    String?
+  postingProfileRevisionId String?
+  postingProfileHash String?
+  accountingMethodSnapshot String?
+  artifactId      String?                      @unique
+  artifact        KontorContributionArtifact?  @relation("KontorInvoiceArtifact", fields: [artifactId], references: [id], onDelete: Restrict)
+  paymentAllocations KontorPaymentClaimAllocation[]
+  directDebitItems KontorDirectDebitItem[]      @relation("ContributionInvoiceDirectDebitItems")
+  dunnings        KontorDunning[]               @relation("ContributionInvoiceDunnings")
+  createdAt       DateTime                     @default(now())
+  updatedAt       DateTime                     @updatedAt
+
+  @@index([memberId, status])
+}
+
+model KontorDirectDebitBatch {
+  id                       String                          @id @default(cuid())
+  batchReference           String                          @unique
+  collectionDate           DateTime
+  status                   String                          @default("PREVIEW")
+  returnStatus             String                          @default("NONE")
+  revision                 Int                             @default(1)
+  itemCount                Int                             @default(0)
+  totalAmount              Decimal                         @db.Decimal(14, 2)
+  collectionSettingsRevision String?
+  postingProfileRevisionId String?
+  postingProfileHash       String?
+  accountingMethodSnapshot String?
+  snapshotHash             String?
+  approvedAt               DateTime?
+  approvedByAccountId      String?
+  exportedAt               DateTime?
+  exportedByAccountId      String?
+  submittedAt              DateTime?
+  submittedByAccountId     String?
+  submissionReference      String?
+  settledAt                DateTime?
+  returnedAt               DateTime?
+  xmlEncryptedData         String?
+  xmlSha256                String?
+  xmlSizeInBytes           Int?
+  xmlCreatedAt             DateTime?
+  createdByAccountId       String?
+  items                    KontorDirectDebitItem[]
+  history                  KontorDirectDebitBatchHistory[]
+  createdAt                DateTime                        @default(now())
+  updatedAt                DateTime                        @updatedAt
+
+  @@index([collectionDate, status])
+}
+
+model KontorDirectDebitItem {
+  id                        String                   @id @default(cuid())
+  batchId                   String
+  batch                     KontorDirectDebitBatch   @relation(fields: [batchId], references: [id], onDelete: Restrict)
+  claimId                   String
+  claim                     KontorClaim              @relation("ContributionClaimDirectDebitItems", fields: [claimId], references: [id], onDelete: Restrict)
+  invoiceId                 String?
+  invoice                   KontorInvoice?           @relation("ContributionInvoiceDirectDebitItems", fields: [invoiceId], references: [id], onDelete: Restrict)
+  paymentId                 String?                  @unique
+  linkedPayment             KontorPayment?           @relation("PaymentDirectDebitItem")
+  returnDebits              KontorReturnDebit[]      @relation("ContributionDirectDebitItemReturns")
+  memberId                  String
+  memberNumberSnapshot      String?
+  memberDisplayNameSnapshot String?
+  mandateReference          String
+  endToEndId                String?
+  remittanceInformation     String?
+  claimDescriptionSnapshot  String?
+  claimOpenAmountSnapshot   Decimal?                 @db.Decimal(14, 2)
+  invoiceNumberSnapshot     String?
+  snapshotEncryptedData     String?
+  sequenceTypeSnapshot      String?
+  ibanLast4Snapshot         String?
+  postingProfileRevisionId  String?
+  postingProfileHash        String?
+  accountingMethodSnapshot  String?
+  amount                    Decimal                  @db.Decimal(14, 2)
+  currency                  String                   @default("EUR")
+  status                    String                   @default("PREVIEW")
+  returnStatus              String                   @default("NONE")
+  revision                  Int                      @default(1)
+  settledAt                 DateTime?
+  returnedAt                DateTime?
+  returnReason              String?
+  returnFee                 Decimal                  @default(0) @db.Decimal(14, 2)
+  createdAt                 DateTime                 @default(now())
+  updatedAt                 DateTime                 @updatedAt
+
+  @@unique([batchId, claimId])
+  @@unique([batchId, endToEndId])
+  @@index([claimId])
+  @@index([invoiceId])
+  @@index([memberId, status])
+}
+
+model KontorDirectDebitBatchHistory {
+  id                 String                  @id @default(cuid())
+  batchId            String
+  batch              KontorDirectDebitBatch  @relation(fields: [batchId], references: [id], onDelete: Restrict)
+  revision           Int
+  event              String
+  actorAccountId     String?
+  actorLabel         String?
+  beforeState        Json?
+  afterState         Json?
+  createdAt          DateTime                @default(now())
+
+  @@unique([batchId, revision])
+  @@index([batchId, createdAt])
+}
+
+model KontorPayment {
+  id                 String   @id @default(cuid())
+  claimId            String
+  invoiceId          String?
+  memberId           String
+  amount             Decimal  @db.Decimal(14, 2)
+  currency           String   @default("EUR")
+  method             String
+  reference          String?
+  status             String   @default("BOOKED")
+  paidAt             DateTime
+  financeEntryId     String?  @unique
+  directDebitItemId  String?  @unique
+  directDebitItem    KontorDirectDebitItem? @relation("PaymentDirectDebitItem", fields: [directDebitItemId], references: [id], onDelete: Restrict)
+  bankTransactionId  String?
+  manualSourceType   String?
+  manualSourceReference String?
+  manualSourceReason String?
+  idempotencyKey     String?  @unique
+  postingProfileRevisionId String?
+  postingProfileHash String?
+  accountingMethodSnapshot String?
+  allocations        KontorFinancePaymentAllocation[]
+  claimAllocations   KontorPaymentClaimAllocation[]
+  returnDebit        KontorReturnDebit? @relation("ContributionPaymentReturnDebit")
+  createdByAccountId String?
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  @@index([claimId, status])
+  @@index([memberId, paidAt])
+}
+
+model KontorPaymentClaimAllocation {
+  id        String        @id @default(cuid())
+  paymentId String
+  payment   KontorPayment @relation(fields: [paymentId], references: [id], onDelete: Restrict)
+  claimId   String
+  claim     KontorClaim   @relation(fields: [claimId], references: [id], onDelete: Restrict)
+  invoiceId String?
+  invoice   KontorInvoice? @relation(fields: [invoiceId], references: [id], onDelete: Restrict)
+  postingProfileRevisionId String?
+  postingProfileHash String?
+  accountingMethodSnapshot String?
+  amount    Decimal       @db.Decimal(14, 2)
+  createdAt DateTime      @default(now())
+
+  @@unique([paymentId, claimId])
+  @@index([claimId, createdAt])
+  @@index([invoiceId])
+  @@index([postingProfileRevisionId])
+}
+
+model KontorReturnDebit {
+  id                 String   @id @default(cuid())
+  paymentId          String?  @unique
+  payment            KontorPayment? @relation("ContributionPaymentReturnDebit", fields: [paymentId], references: [id], onDelete: Restrict)
+  financeEntryId     String?
+  bankTransactionId  String?
+  directDebitItemId  String?
+  directDebitItem    KontorDirectDebitItem? @relation("ContributionDirectDebitItemReturns", fields: [directDebitItemId], references: [id], onDelete: Restrict)
+  claimId            String
+  claim              KontorClaim @relation("ContributionClaimReturnDebits", fields: [claimId], references: [id], onDelete: Restrict)
+  memberId           String
+  amount             Decimal  @db.Decimal(14, 2)
+  feeAmount          Decimal  @db.Decimal(14, 2)
+  feeTreatment       String?
+  feeClaimId         String?  @unique
+  feeClaim           KontorClaim? @relation("ReturnDebitFeeClaim", fields: [feeClaimId], references: [id], onDelete: Restrict)
+  reason             String?
+  status             String   @default("OPEN")
+  occurredAt         DateTime @default(now())
+  createdByAccountId String?
+  idempotencyKey     String?  @unique
+  postingProfileRevisionId String?
+  postingProfileHash String?
+  accountingMethodSnapshot String?
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  @@index([claimId, status])
+  @@index([financeEntryId])
+  @@index([bankTransactionId])
+  @@index([directDebitItemId])
+}
+
+model KontorDunning {
+  id                 String   @id @default(cuid())
+  claimId            String
+  claim              KontorClaim @relation("ContributionClaimDunnings", fields: [claimId], references: [id], onDelete: Restrict)
+  invoiceId          String?
+  invoice            KontorInvoice? @relation("ContributionInvoiceDunnings", fields: [invoiceId], references: [id], onDelete: Restrict)
+  memberId           String
+  level              Int      @default(1)
+  reason             String?
+  feeAmount          Decimal  @db.Decimal(14, 2)
+  feeClaimId         String?  @unique
+  feeClaim           KontorClaim? @relation("DunningFeeClaim", fields: [feeClaimId], references: [id], onDelete: Restrict)
+  issuedAt           DateTime @default(now())
+  dueDate             DateTime
+  status              String   @default("OPEN")
+  contentRevision     Int      @default(1)
+  snapshotHash        String?
+  claimOpenAmountSnapshot Decimal? @db.Decimal(14, 2)
+  totalDueSnapshot    Decimal? @db.Decimal(14, 2)
+  artifactId          String?  @unique
+  artifact            KontorContributionArtifact? @relation("KontorDunningArtifact", fields: [artifactId], references: [id], onDelete: Restrict)
+  createdByAccountId String?
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  @@unique([claimId, level])
+  @@index([memberId, status])
+}
+
+// Generated invoices and dunnings keep immutable metadata here while their
+// only original bytes live encrypted in the canonical Phase-7 document store.
+// Both hashes must match before a replay may return the result.
+model KontorContributionArtifact {
+  id                 String                @id @default(cuid())
+  targetType         String
+  targetId           String
+  revision           Int                   @default(1)
+  fileName           String
+  mimeType           String                @default("application/pdf")
+  checksum           String
+  sizeInBytes        Int
+  snapshotHash       String
+  storedDocumentId   String                @unique
+  storedDocument     KontorStoredDocument  @relation(fields: [storedDocumentId], references: [id], onDelete: Restrict)
+  invoice            KontorInvoice?        @relation("KontorInvoiceArtifact")
+  dunning            KontorDunning?        @relation("KontorDunningArtifact")
+  documentLinks      KontorContributionDocumentLink[]
+  createdByAccountId String?
+  createdAt          DateTime              @default(now())
+
+  @@unique([targetType, targetId, revision])
+  @@index([checksum])
+}
+
+model KontorContributionDocumentLink {
+  id                       String                           @id @default(cuid())
+  targetType               String
+  targetId                 String
+  revision                 Int
+  state                    String                           @default("ACTIVE")
+  artifactId               String
+  artifact                 KontorContributionArtifact       @relation(fields: [artifactId], references: [id], onDelete: Restrict)
+  storedDocumentId         String
+  storedDocument           KontorStoredDocument             @relation(fields: [storedDocumentId], references: [id], onDelete: Restrict)
+  documentRevisionSnapshot Int
+  checksumSnapshot         String
+  sizeInBytesSnapshot      Int
+  fileNameSnapshot         String
+  mimeTypeSnapshot         String
+  supersedesLinkId         String?                          @unique
+  supersedesLink           KontorContributionDocumentLink?  @relation("ContributionDocumentLinkChain", fields: [supersedesLinkId], references: [id], onDelete: Restrict)
+  supersededBy             KontorContributionDocumentLink?  @relation("ContributionDocumentLinkChain")
+  createdByAccountId       String?
+  createdAt                DateTime                         @default(now())
+
+  @@unique([targetType, targetId, revision])
+  @@index([storedDocumentId, createdAt])
+}
+
+model KontorContributionDispatchLink {
+  id                       String                           @id @default(cuid())
+  targetType               String
+  targetId                 String
+  revision                 Int
+  state                    String                           @default("ACTIVE")
+  dispatchId               String
+  dispatch                 KontorDispatch                   @relation(fields: [dispatchId], references: [id], onDelete: Restrict)
+  channelSnapshot          String
+  subjectSnapshot          String?
+  bodyHashSnapshot         String
+  recipientCountSnapshot   Int
+  recipientSnapshotHash    String?
+  supersedesLinkId         String?                          @unique
+  supersedesLink           KontorContributionDispatchLink?  @relation("ContributionDispatchLinkChain", fields: [supersedesLinkId], references: [id], onDelete: Restrict)
+  supersededBy             KontorContributionDispatchLink?  @relation("ContributionDispatchLinkChain")
+  createdByAccountId       String?
+  createdAt                DateTime                         @default(now())
+
+  @@unique([targetType, targetId, revision])
+  @@index([dispatchId, createdAt])
+}
+
+model KontorContributionHistory {
+  id                 String   @id @default(cuid())
+  targetType         String
+  targetId           String
+  sequence           Int
+  targetRevision     Int
+  event              String
+  actorAccountId     String?
+  actorLabelSnapshot String?
+  actorRolesSnapshot Json     @default("[]")
+  note               String?
+  beforeState        Json?
+  afterState         Json?
+  createdAt          DateTime @default(now())
+
+  @@unique([targetType, targetId, sequence])
+  @@index([targetType, targetId, createdAt])
+  @@index([event, createdAt])
+}
+
+model KontorContributionActionChallenge {
+  challengeId      String   @id
+  targetType       String
+  targetId         String
+  action           String
+  expectedRevision Int
+  dependencyHash   String
+  actorAccountId   String
+  verifiedAt       DateTime?
+  consumedAt       DateTime?
+  expiresAt        DateTime
+  createdAt        DateTime @default(now())
+
+  @@index([targetType, targetId, action, createdAt])
+  @@index([actorAccountId, consumedAt, expiresAt])
+}
+
+model KontorContributionIdempotency {
+  scopeKey       String   @id
+  operation      String
+  actorAccountId String
+  resourceKey    String
+  idempotencyKey String
+  requestHash    String
+  status         String   @default("PROCESSING")
+  responseStatus Int?
+  responseBody   Json?
+  encryptedResponse String?
+  sensitiveResponseExpiresAt DateTime?
+  resultType     String?
+  resultId       String?
+  resultRevision Int?
+  createdAt      DateTime @default(now())
+  completedAt    DateTime?
+  expiresAt      DateTime
+
+  @@index([actorAccountId, operation, resourceKey, createdAt])
+  @@index([status, expiresAt])
+}
+
+model KontorAuditReview {
+  id                String   @id @default(cuid())
+  targetType        String
+  targetId          String
+  reviewerAccountId String
+  status            String
+  note              String?
+  targetUpdatedAt   DateTime?
+  targetRevision    Int?
+  reviewedAt        DateTime @default(now())
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  @@index([targetType, targetId, reviewerAccountId, reviewedAt])
+  @@index([targetType, targetId])
+}
+
+model KontorAuditEntry {
+  id        String   @id @default(cuid())
+  event     String
+  targetType String
+  targetId  String?
+  accountId String?
+  metadata  Json?
+  actorLabel String?
+  targetRevision Int?
+  beforeState Json?
+  afterState Json?
+  createdAt DateTime @default(now())
+
+  @@index([targetType, targetId])
+  @@index([createdAt])
+}
+
+model KontorMessageTemplate {
+  id                 String           @id @default(cuid())
+  name               String
+  templateType       String
+  subject            String?
+  body               String
+  description        String?
+  outputFormat       String
+  placeholders       Json             @default("[]")
+  active             Boolean          @default(true)
+  createdByAccountId String?
+  dispatches         KontorDispatch[]
+  createdAt          DateTime          @default(now())
+  updatedAt          DateTime          @updatedAt
+
+  @@index([active, name])
+}
+
+model KontorDispatch {
+  id                 String                    @id @default(cuid())
+  templateId         String?
+  template           KontorMessageTemplate?   @relation(fields: [templateId], references: [id], onDelete: SetNull)
+  channel            String
+  purpose            String?
+  subjectSnapshot    String?
+  bodySnapshot       String
+  status             String                    @default("DRAFT")
+  meetingId          String?
+  calendarEventId    String?
+  calendarEvent      KontorCalendarEvent?      @relation(fields: [calendarEventId], references: [id], onDelete: SetNull)
+  createdByAccountId String?
+  recipients         KontorDispatchRecipient[]
+  contributionLinks  KontorContributionDispatchLink[]
+  createdAt          DateTime                  @default(now())
+  updatedAt          DateTime                  @updatedAt
+
+  @@index([createdAt])
+  @@index([meetingId])
+  @@index([calendarEventId])
+}
+
+model KontorDispatchRecipient {
+  id                  String         @id @default(cuid())
+  dispatchId          String
+  dispatch            KontorDispatch @relation(fields: [dispatchId], references: [id], onDelete: Cascade)
+  memberId            String
+  addressSnapshot     String?
+  displayNameSnapshot String?
+  status              String         @default("PENDING")
+  createdAt           DateTime       @default(now())
+  updatedAt           DateTime       @updatedAt
+
+  @@index([dispatchId])
+  @@index([memberId])
+}
+
+// Phase 5 – das wirksame Beschaffungsregelwerk wird niemals in-place
+// umgedeutet. Jede Änderung erzeugt eine neue, datierte Revision; bestehende
+// Anschaffungsakten halten die bei Anlage wirksame Revision fest.
+model KontorProcurementRuleSet {
+  id                 String                         @id @default("default")
+  revision           Int                            @default(0)
+  activeRevisionId   String?                        @unique
+  activeRevision     KontorProcurementRuleRevision? @relation("ActiveProcurementRule", fields: [activeRevisionId], references: [id], onDelete: SetNull)
+  revisions          KontorProcurementRuleRevision[] @relation("ProcurementRuleSetRevisions")
+  createdAt          DateTime                       @default(now())
+  updatedAt          DateTime                       @updatedAt
+}
+
+model KontorProcurementRuleRevision {
+  id                       String                   @id @default(cuid())
+  ruleSetId                String
+  ruleSet                  KontorProcurementRuleSet @relation("ProcurementRuleSetRevisions", fields: [ruleSetId], references: [id], onDelete: Restrict)
+  activeFor                KontorProcurementRuleSet? @relation("ActiveProcurementRule")
+  revision                 Int
+  effectiveFrom            DateTime
+  effectiveUntil           DateTime?
+  conditions               Json                     @default("[]")
+  requiredRoles            Json                     @default("[]")
+  requiredResolutionTypes  Json                     @default("[]")
+  allowOverride            Boolean                  @default(false)
+  overrideRoles            Json                     @default("[]")
+  note                     String?
+  createdByAccountId       String?
+  createdAt                DateTime                  @default(now())
+  cases                    KontorProcurementCase[]
+
+  @@unique([ruleSetId, revision])
+  @@index([ruleSetId, effectiveFrom, effectiveUntil])
+}
+
+model KontorProcurementCase {
+  id                       String                            @id @default(cuid())
+  caseNumber               String                            @unique
+  title                    String
+  description              String?
+  status                   String                            @default("DRAFT")
+  revision                 Int                               @default(1)
+  ownerAccountId           String?
+  ownerLabel               String?
+  ownerRole                String?
+  estimatedAmount          Decimal                           @db.Decimal(14, 2)
+  approvedCeiling          Decimal?                          @db.Decimal(14, 2)
+  targetDate               DateTime?
+  currency                 String                            @default("EUR")
+  savingsGoalId            String?                           @unique
+  savingsGoal              KontorSavingsGoal?                @relation(fields: [savingsGoalId], references: [id], onDelete: Restrict)
+  approvalScope            String                            @default("FUNCTIONAL")
+  approvalScopeText        String?
+  ruleRevisionId           String?
+  ruleRevision             KontorProcurementRuleRevision?    @relation(fields: [ruleRevisionId], references: [id], onDelete: Restrict)
+  workflowProgress         Int                               @default(0)
+  completionOverrideReason String?
+  completionOverrideBy     String?
+  completedAt              DateTime?
+  completedByAccountId     String?
+  completionSnapshot       Json?
+  completionSnapshotHash   String?
+  fundDisposition          String?
+  settlementState          String                            @default("OPEN_PROTECTED")
+  cancellationReason       String?
+  cancelledAt              DateTime?
+  cancelledByAccountId     String?
+  parts                    KontorProcurementPart[]
+  offers                   KontorProcurementOffer[]
+  offerDecisions           KontorProcurementOfferDecision[]
+  profileRevisions         KontorProcurementCaseProfileRevision[]
+  documents                KontorProcurementDocument[]
+  approvals                KontorProcurementApproval[]
+  agendaItems              KontorProcurementAgendaItem[]
+  savingsMovements         KontorProcurementSavingsMovement[]
+  savingsReservations      KontorProcurementSavingsReservation[]
+  orders                   KontorProcurementOrder[]
+  deliveries               KontorProcurementDelivery[]
+  invoices                 KontorProcurementInvoiceLink[]
+  followUps                KontorProcurementFollowUp[]
+  recurringCosts           KontorProcurementRecurringCost[]
+  assets                   KontorProcurementAsset[]
+  assetEvents              KontorProcurementAssetEvent[]
+  history                  KontorProcurementHistory[]
+  actionChallenges         KontorProcurementActionChallenge[]
+  createdByAccountId       String?
+  createdAt                DateTime                          @default(now())
+  updatedAt                DateTime                          @updatedAt
+
+  @@index([status, targetDate])
+  @@index([ownerAccountId, status])
+  @@index([ruleRevisionId])
+  @@index([savingsGoalId])
+}
+
+// Phase 8 – fachliche Stammdaten werden nicht mehr in-place historisiert.
+// Jede relevante Plan-/Sparzielaenderung erzeugt zusaetzlich einen
+// unveraenderlichen Snapshot. Bestehende Phase-7-Akten ohne Snapshot werden
+// im Service ausdruecklich als Legacy-Prueffall behandelt.
+model KontorProcurementCaseProfileRevision {
+  id                       String                 @id @default(cuid())
+  caseId                   String
+  case                     KontorProcurementCase @relation(fields: [caseId], references: [id], onDelete: Restrict)
+  revision                 Int
+  title                    String
+  description              String?
+  estimatedAmount          Decimal                @db.Decimal(14, 2)
+  approvedCeiling          Decimal?               @db.Decimal(14, 2)
+  targetDate               DateTime?
+  ownerAccountId           String?
+  ownerLabel               String?
+  ownerRole                String?
+  approvalScope            String
+  approvalScopeText        String?
+  savingsStartsAt          DateTime?
+  savingsEndsAt            DateTime?
+  savingsTargetAmount      Decimal?               @db.Decimal(14, 2)
+  legacyBaseline           Boolean                @default(false)
+  changeReason             String?
+  supersedesProfileRevisionId String?                         @unique
+  supersedesProfileRevision   KontorProcurementCaseProfileRevision? @relation("ProcurementProfileRevisionChain", fields: [supersedesProfileRevisionId], references: [id], onDelete: Restrict)
+  supersededBy                KontorProcurementCaseProfileRevision? @relation("ProcurementProfileRevisionChain")
+  actorAccountId           String?
+  actorLabel               String?
+  createdAt                DateTime               @default(now())
+
+  @@unique([caseId, revision])
+  @@index([caseId, createdAt])
+  @@index([supersedesProfileRevisionId])
+}
+
+model KontorProcurementPart {
+  id                 String                 @id @default(cuid())
+  caseId             String
+  case               KontorProcurementCase @relation(fields: [caseId], references: [id], onDelete: Cascade)
+  title              String
+  description        String?
+  targetAmount       Decimal                @db.Decimal(14, 2)
+  allocatedBudget    Decimal                @default(0) @db.Decimal(14, 2)
+  status             String                 @default("PLANNED")
+  sortOrder          Int                    @default(0)
+  supersedesPartId   String?                @unique
+  correctionReason   String?
+  createdByAccountId String?
+  createdAt          DateTime               @default(now())
+
+  @@index([caseId, sortOrder])
+  @@index([supersedesPartId])
+}
+
+model KontorProcurementOffer {
+  id                 String                 @id @default(cuid())
+  caseId             String
+  case               KontorProcurementCase @relation(fields: [caseId], references: [id], onDelete: Cascade)
+  partId             String?
+  supplierName       String
+  model              String?
+  status             String                 @default("RECEIVED")
+  netAmount          Decimal                @db.Decimal(14, 2)
+  taxAmount          Decimal                @db.Decimal(14, 2)
+  grossAmount        Decimal                @db.Decimal(14, 2)
+  ancillaryAmount    Decimal                @default(0) @db.Decimal(14, 2)
+  tcoAmount          Decimal?               @db.Decimal(14, 2)
+  offeredAt          DateTime?
+  receivedAt         DateTime?
+  deliveryDays       Int?
+  validUntil         DateTime?
+  warrantyMonths     Int?
+  paymentTerms       String?
+  deliveryTerms      String?
+  inclusions         Json                   @default("[]")
+  note               String?
+  selected           Boolean                @default(false)
+  selectedKey        String?                @unique
+  supersedesOfferId  String?                @unique
+  correctionReason   String?
+  createdByAccountId String?
+  createdAt          DateTime               @default(now())
+
+  @@index([caseId, createdAt])
+  @@index([partId])
+  @@index([supersedesOfferId])
+}
+
+// Die Angebotsentscheidung ist ein eigener, append-only Fakt. Das alte
+// Offer.selected bleibt ausschliesslich als Phase-7-Lesekompatibilitaet im
+// Schema; neue Entscheidungen werden niemals durch Umschreiben des Angebots
+// abgebildet.
+model KontorProcurementOfferDecision {
+  id                       String                 @id @default(cuid())
+  caseId                   String
+  case                     KontorProcurementCase @relation(fields: [caseId], references: [id], onDelete: Restrict)
+  partId                   String?
+  offerId                  String
+  decision                 String                 @default("SELECTED")
+  reason                   String
+  alternativeReason        String?
+  targetDeviationReason    String?
+  comparisonSnapshot       Json
+  targetSnapshot           Json
+  decisionHash             String
+  legacyReviewRequired     Boolean                @default(false)
+  supersedesDecisionId     String?                @unique
+  actorAccountId           String?
+  actorLabel               String?
+  createdAt                DateTime               @default(now())
+
+  @@index([caseId, partId, createdAt])
+  @@index([offerId])
+  @@index([supersedesDecisionId])
+}
+
+// Originaldaten sind append-only. Neue Versionen verweisen auf den Ursprung;
+// Zuordnungs- und Klassifikationsänderungen erzeugen neue Zeilen.
+model KontorProcurementDocument {
+  id                       String                       @id @default(cuid())
+  caseId                   String
+  case                     KontorProcurementCase       @relation(fields: [caseId], references: [id], onDelete: Restrict)
+  rootDocumentId           String?
+  previousVersionId        String?
+  version                  Int                          @default(1)
+  kind                     String                       @default("OTHER")
+  assignmentType           String?
+  assignmentId             String?
+  classificationState      String                       @default("REVIEW_REQUIRED")
+  classificationSuggestion String?
+  classificationConfidence Decimal?                     @db.Decimal(5, 2)
+  classificationConfirmedBy String?
+  fileName                 String
+  mimeType                 String
+  sizeInBytes              Int
+  checksum                 String
+  encryptedData            String
+  encryptionKeyId          String?
+  securityStatus           String                       @default("QUARANTINED")
+  securityRevision         Int                          @default(1)
+  scannerLeaseId           String?
+  scannerLeaseRequestId    String?                      @unique
+  scannerLeaseUntil        DateTime?
+  scannerDeliveryAttempts  Int                          @default(0)
+  mailMessageId            String?
+  mailFrom                 String?
+  mailTo                   Json                         @default("[]")
+  mailSubject              String?
+  mailSentAt               DateTime?
+  mailHeadersHash          String?
+  uploadedByAccountId      String?
+  createdAt                DateTime                     @default(now())
+  assignments              KontorProcurementDocumentAssignment[]
+  securityScans            KontorProcurementDocumentScan[]
+  securityDecisions        KontorProcurementDocumentSecurityDecision[]
+
+  @@unique([caseId, checksum, version])
+  @@unique([rootDocumentId, version])
+  @@index([caseId, kind, createdAt])
+  @@index([checksum])
+  @@index([securityStatus, scannerLeaseUntil, createdAt])
+}
+
+model KontorProcurementDocumentScan {
+  id                       String                       @id @default(cuid())
+  documentId               String
+  document                 KontorProcurementDocument   @relation(fields: [documentId], references: [id], onDelete: Restrict)
+  attempt                  Int
+  providerKey              String
+  engineVersion            String?
+  trustedAdapterDomain     String
+  payloadHash              String
+  contentChecksum          String
+  verdict                  String
+  signatureSet             String?
+  resultHash               String
+  details                  Json                         @default("{}")
+  scannedAt                DateTime                     @default(now())
+
+  @@unique([documentId, attempt])
+  @@index([contentChecksum])
+}
+
+model KontorProcurementDocumentSecurityDecision {
+  id                       String                       @id @default(cuid())
+  documentId               String
+  document                 KontorProcurementDocument   @relation(fields: [documentId], references: [id], onDelete: Restrict)
+  revision                 Int
+  decision                 String
+  previousStatus           String
+  newStatus                String
+  scanId                   String?
+  actorAccountId           String?
+  actorLabel               String?
+  reason                   String?
+  metadata                 Json?
+  createdAt                DateTime                     @default(now())
+
+  @@unique([documentId, revision])
+  @@index([documentId, createdAt])
+}
+
+model KontorProcurementDocumentAssignment {
+  id                       String                    @id @default(cuid())
+  documentId               String
+  document                 KontorProcurementDocument @relation(fields: [documentId], references: [id], onDelete: Restrict)
+  revision                 Int
+  state                    String                    @default("REVIEW_REQUIRED")
+  assignmentType           String?
+  assignmentId             String?
+  suggestion               String?
+  confidence               Decimal?                 @db.Decimal(5, 2)
+  note                     String?
+  actorAccountId           String?
+  createdAt                DateTime                  @default(now())
+
+  @@unique([documentId, revision])
+  @@index([documentId, createdAt])
+}
+
+model KontorProcurementApproval {
+  id                 String                 @id @default(cuid())
+  caseId             String
+  case               KontorProcurementCase @relation(fields: [caseId], references: [id], onDelete: Cascade)
+  approverType       String
+  approverId         String?
+  approverLabel      String
+  decision           String                 @default("PENDING")
+  scope              String                 @default("FUNCTIONAL")
+  scopeText          String
+  approvedOfferId    String?
+  approvedOfferSnapshot Json?
+  priceCeiling       Decimal?               @db.Decimal(14, 2)
+  conditions         Json                   @default("[]")
+  quorumRequired     Int?
+  quorumPresent      Int?
+  votesFor           Int?
+  votesAgainst       Int?
+  votesAbstain       Int?
+  protocolReference  String?
+  resolutionType     String?
+  supersedesApprovalId String?                 @unique
+  revokedAt          DateTime?
+  decidedAt          DateTime?
+  createdByAccountId String?
+  createdAt          DateTime               @default(now())
+
+  @@index([caseId, decision])
+  @@index([supersedesApprovalId])
+}
+
+model KontorProcurementAgendaItem {
+  id                 String                 @id @default(cuid())
+  caseId             String
+  case               KontorProcurementCase @relation(fields: [caseId], references: [id], onDelete: Cascade)
+  meetingId          String
+  meeting            KontorMeeting          @relation(fields: [meetingId], references: [id], onDelete: Restrict)
+  title              String
+  agendaPosition     String?
+  status             String                 @default("PROPOSED")
+  agendaType         String?
+  resolutionResult   String?
+  resolutionText     String?
+  protocolReference  String?
+  decidedAt          DateTime?
+  parentAgendaItemId String?                   @unique
+  createdByAccountId String?
+  createdAt          DateTime               @default(now())
+
+  @@index([meetingId, status])
+  @@index([parentAgendaItemId])
+}
+
+// Bewegungen verändern den Haupttopf. Teilbudgets/Reservierungen sind nur
+// Zuordnungen und dürfen beim verfügbaren Guthaben nie erneut addiert werden.
+model KontorProcurementSavingsMovement {
+  id                 String                 @id @default(cuid())
+  caseId             String
+  case               KontorProcurementCase @relation(fields: [caseId], references: [id], onDelete: Cascade)
+  kind               String
+  amount             Decimal                @db.Decimal(14, 2)
+  occurredAt         DateTime
+  financeEntryId     String?
+  financeEntrySourceKey String?             @unique
+  paymentAllocationId String?               @unique
+  supersedesSavingsMovementId String?       @unique
+  correctionReason   String?
+  note               String?
+  createdByAccountId String?
+  createdAt          DateTime               @default(now())
+
+  @@index([caseId, occurredAt])
+  @@index([financeEntryId])
+  @@index([supersedesSavingsMovementId])
+}
+
+model KontorProcurementSavingsReservation {
+  id                 String                 @id @default(cuid())
+  caseId             String
+  case               KontorProcurementCase @relation(fields: [caseId], references: [id], onDelete: Cascade)
+  partId             String?
+  amount             Decimal                @db.Decimal(14, 2)
+  status             String                 @default("ACTIVE")
+  revision           Int                    @default(1)
+  orderId            String?
+  paymentAllocationId String?
+  note               String?
+  createdByAccountId String?
+  createdAt          DateTime               @default(now())
+
+  @@index([caseId, status])
+  @@index([partId])
+  @@index([orderId])
+  @@index([paymentAllocationId])
+}
+
+model KontorProcurementOrder {
+  id                 String                 @id @default(cuid())
+  caseId             String
+  case               KontorProcurementCase @relation(fields: [caseId], references: [id], onDelete: Cascade)
+  offerId            String?
+  partId             String?
+  orderNumber        String?
+  supplierName       String
+  quantity           Decimal                @default(1) @db.Decimal(14, 3)
+  grossAmount        Decimal                @db.Decimal(14, 2)
+  orderedAt          DateTime
+  status             String                 @default("ORDERED")
+  supersedesOrderId  String?                @unique
+  correctionNote     String?
+  createdByAccountId String?
+  createdAt          DateTime               @default(now())
+
+  @@index([caseId, orderedAt])
+  @@index([supersedesOrderId])
+}
+
+model KontorProcurementDelivery {
+  id                 String                 @id @default(cuid())
+  caseId             String
+  case               KontorProcurementCase @relation(fields: [caseId], references: [id], onDelete: Cascade)
+  orderId            String?
+  deliveryNoteNumber String?
+  quantity           Decimal                @default(1) @db.Decimal(14, 3)
+  deliveredAt        DateTime
+  accepted           Boolean                @default(false)
+  discrepancyNote    String?
+  correctionNote     String?
+  supersedesDeliveryId String?                 @unique
+  createdByAccountId String?
+  createdAt          DateTime               @default(now())
+
+  @@index([caseId, deliveredAt])
+  @@index([orderId])
+  @@index([supersedesDeliveryId])
+}
+
+model KontorProcurementInvoiceLink {
+  id                 String                 @id @default(cuid())
+  caseId             String
+  case               KontorProcurementCase @relation(fields: [caseId], references: [id], onDelete: Cascade)
+  orderId            String?
+  invoiceReceiptId   String?
+  financeEntryId     String?
+  invoiceFinanceEntryKey String?             @unique
+  invoiceReceiptSourceKey String?            @unique
+  correctionFinanceEntryKey String?          @unique
+  paymentAllocationId String?               @unique
+  kind               String                 @default("INVOICE")
+  originInvoiceLinkId String?
+  supersedesInvoiceLinkId String?            @unique
+  correctionReason     String?
+  invoiceNumber      String?
+  grossAmount        Decimal                @db.Decimal(14, 2)
+  quantity           Decimal                @default(1) @db.Decimal(14, 3)
+  issuedAt           DateTime?
+  dueDate            DateTime?
+  assignmentStatus   String                 @default("CONFIRMED")
+  createdByAccountId String?
+  createdAt          DateTime               @default(now())
+
+  @@index([caseId, createdAt])
+  @@index([financeEntryId])
+  @@index([invoiceReceiptId])
+  @@index([paymentAllocationId])
+  @@index([originInvoiceLinkId])
+  @@index([supersedesInvoiceLinkId])
+}
+
+model KontorProcurementFollowUp {
+  id                 String                 @id @default(cuid())
+  caseId             String
+  case               KontorProcurementCase @relation(fields: [caseId], references: [id], onDelete: Cascade)
+  kind               String
+  title              String
+  note               String?
+  linkedType         String?
+  linkedId           String?
+  status             String                 @default("PLANNED")
+  dueAt              DateTime?
+  createdByAccountId String?
+  createdAt          DateTime               @default(now())
+
+  @@index([caseId, status, dueAt])
+}
+
+model KontorProcurementRecurringCost {
+  id                 String                 @id @default(cuid())
+  caseId             String
+  case               KontorProcurementCase @relation(fields: [caseId], references: [id], onDelete: Cascade)
+  kind               String
+  label              String
+  amount             Decimal                @db.Decimal(14, 2)
+  interval           String
+  startsAt           DateTime?
+  endsAt             DateTime?
+  linkedType         String?
+  linkedId           String?
+  status             String                 @default("ACTIVE")
+  supersedesRecurringCostId String?          @unique
+  correctionReason   String?
+  createdByAccountId String?
+  createdAt          DateTime               @default(now())
+
+  @@index([caseId, kind])
+  @@index([supersedesRecurringCostId])
+}
+
+model KontorProcurementAsset {
+  id                 String                 @id @default(cuid())
+  caseId             String
+  case               KontorProcurementCase @relation(fields: [caseId], references: [id], onDelete: Cascade)
+  assetNumber        String?
+  activeAssetNumberKey String?              @unique
+  label              String
+  location           String?
+  responsibleAccountId String?
+  responsibleLabel     String?
+  acquiredAt         DateTime?
+  acquisitionCost    Decimal?               @db.Decimal(14, 2)
+  warrantyUntil      DateTime?
+  maintenance        Json                   @default("[]")
+  depreciation       Json                   @default("{}")
+  disposal           Json?
+  supersedesAssetId  String?                @unique
+  correctionReason   String?
+  createdByAccountId String?
+  createdAt          DateTime               @default(now())
+  events             KontorProcurementAssetEvent[]
+
+  @@index([caseId])
+  @@index([supersedesAssetId])
+}
+
+model KontorProcurementAssetEvent {
+  id                   String                 @id @default(cuid())
+  caseId               String
+  case                 KontorProcurementCase @relation(fields: [caseId], references: [id], onDelete: Restrict)
+  assetId              String
+  asset                KontorProcurementAsset @relation(fields: [assetId], references: [id], onDelete: Restrict)
+  eventType            String
+  occurredAt           DateTime
+  note                 String?
+  amount               Decimal?              @db.Decimal(14, 2)
+  responsibleAccountId String?
+  responsibleLabel     String?
+  location             String?
+  supersedesAssetEventId String?             @unique
+  correctionReason     String?
+  createdByAccountId   String?
+  createdAt            DateTime               @default(now())
+
+  @@index([caseId, createdAt])
+  @@index([assetId, occurredAt])
+  @@index([supersedesAssetEventId])
+}
+
+model KontorProcurementHistory {
+  id                 String                 @id @default(cuid())
+  caseId             String
+  case               KontorProcurementCase @relation(fields: [caseId], references: [id], onDelete: Cascade)
+  revision           Int
+  event              String
+  actorAccountId     String?
+  actorLabel         String?
+  actorRoles         Json                   @default("[]")
+  note               String?
+  beforeState        Json?
+  afterState         Json?
+  createdAt          DateTime               @default(now())
+
+  @@index([caseId, revision, createdAt])
+}
+
+model KontorProcurementActionChallenge {
+  challengeId       String                 @id
+  caseId            String
+  case              KontorProcurementCase @relation(fields: [caseId], references: [id], onDelete: Cascade)
+  action            String
+  expectedRevision  Int
+  targetOfferId     String?
+  dependencyHash    String?
+  actorAccountId    String
+  actorLabel        String?
+  verifiedAt        DateTime?
+  consumedAt        DateTime?
+  createdAt         DateTime               @default(now())
+
+  @@index([caseId, action, createdAt])
+  @@index([actorAccountId, consumedAt])
+}
+
+model KontorProcurementIdempotency {
+  scopeKey          String   @id
+  accountId         String
+  operation         String
+  idempotencyKey    String
+  requestHash       String
+  status            String   @default("PROCESSING")
+  responseStatus    Int?
+  responseBody      Json?
+  encryptedResponse String?
+  sensitiveResponseExpiresAt DateTime?
+  targetCaseId      String?
+  targetRevision    Int?
+  createdAt         DateTime @default(now())
+  completedAt       DateTime?
+  expiresAt         DateTime
+
+  @@index([accountId, operation, createdAt])
+  @@index([status, createdAt])
+  @@index([expiresAt])
+}
+
+// Phase 6 – Vertrags- und Versicherungsakten.  All child facts are immutable
+// revisions.  Restrict is deliberate: closing an administrative case must
+// never cascade into evidence, claims, financial provenance or documents.
+model KontorContractCase {
+  id                       String                              @id @default(cuid())
+  caseNumber               String                              @unique
+  caseKind                 String
+  contractType             String
+  title                    String
+  description              String?
+  status                   String                              @default("DRAFT")
+  revision                 Int                                 @default(1)
+  legacyContractId         String?                             @unique
+  legacyContract           KontorContract?                     @relation(fields: [legacyContractId], references: [id], onDelete: Restrict)
+  organizationContractId   String?
+  counterpartyId           String?
+  counterpartyLabel        String?
+  riskObjectType           String?
+  riskObjectId             String?
+  riskObjectLabel          String?
+  coverage                 Json                                @default("[]")
+  exclusions               Json                                @default("[]")
+  deductibleAmount         Decimal?                            @db.Decimal(14, 2)
+  premiumAmount            Decimal?                            @db.Decimal(14, 2)
+  billingInterval          String?
+  currency                 String                              @default("EUR")
+  currentTermEnd           DateTime?
+  noticeDeadline           DateTime?
+  nextReminderAt           DateTime?
+  completedAt              DateTime?
+  completedByAccountId     String?
+  cancelledAt              DateTime?
+  cancelledByAccountId     String?
+  cancellationReason       String?
+  sealSnapshot             Json?
+  sealSnapshotHash         String?
+  responsibilities         KontorContractResponsibility[]
+  terms                    KontorContractTermRevision[]
+  options                  KontorContractOption[]
+  documents                KontorContractDocument[]
+  claims                   KontorInsuranceClaim[]
+  financeLinks             KontorContractFinanceLink[]
+  transitions              KontorContractTransition[]
+  tasks                    KontorContractTask[]
+  links                    KontorContractLink[]
+  profileRevisions         KontorContractCaseProfileRevision[]
+  history                  KontorContractHistory[]
+  actionChallenges         KontorContractActionChallenge[]
+  createdByAccountId       String?
+  createdAt                DateTime                            @default(now())
+  updatedAt                DateTime                            @updatedAt
+
+  @@index([caseKind, status, updatedAt])
+  @@index([contractType, status])
+  @@index([organizationContractId])
+  @@index([counterpartyId])
+  @@index([riskObjectType, riskObjectId])
+  @@index([status, nextReminderAt, id])
+}
+
+model KontorContractResponsibility {
+  id                     String             @id @default(cuid())
+  caseId                 String
+  case                   KontorContractCase @relation(fields: [caseId], references: [id], onDelete: Restrict)
+  responsibilityType     String
+  personAccountId        String
+  personLabelSnapshot    String
+  roleLabelSnapshot      String?
+  validFrom              DateTime?
+  validUntil             DateTime?
+  supersedesResponsibilityId String?        @unique
+  correctionReason       String?
+  createdByAccountId     String?
+  createdByLabelSnapshot String?
+  createdAt              DateTime           @default(now())
+
+  @@index([caseId, responsibilityType, createdAt])
+  @@index([personAccountId])
+}
+
+model KontorContractCaseProfileRevision {
+  id                     String             @id @default(cuid())
+  caseId                 String
+  case                   KontorContractCase @relation(fields: [caseId], references: [id], onDelete: Restrict)
+  revision               Int
+  effectiveFrom          DateTime
+  title                  String
+  description            String?
+  counterpartyId         String?
+  counterpartyLabel      String?
+  riskObjectType         String?
+  riskObjectId           String?
+  riskObjectLabel        String?
+  coverage               Json               @default("[]")
+  exclusions             Json               @default("[]")
+  deductibleAmount       Decimal?            @db.Decimal(14, 2)
+  premiumAmount          Decimal?            @db.Decimal(14, 2)
+  billingInterval        String?
+  supersedesProfileId    String?             @unique
+  correctionReason       String?
+  createdByAccountId     String?
+  createdByLabelSnapshot String?
+  createdAt              DateTime            @default(now())
+
+  @@unique([caseId, revision])
+  @@index([caseId, effectiveFrom])
+}
+
+model KontorContractTermRevision {
+  id                     String             @id @default(cuid())
+  caseId                 String
+  case                   KontorContractCase @relation(fields: [caseId], references: [id], onDelete: Restrict)
+  effectiveFrom          DateTime
+  startDate              DateTime
+  minimumTermMonths      Int                @default(0)
+  renewalMonths          Int                @default(0)
+  noticePeriodMonths     Int                @default(0)
+  noticePeriodDays       Int                @default(0)
+  reminderLeadDays       Int                @default(30)
+  fixedEndDate           DateTime?
+  noticeEffectiveDate    DateTime?
+  billingInterval        String?
+  periodicAmount         Decimal?           @db.Decimal(14, 2)
+  supersedesTermId       String?            @unique
+  correctionReason       String?
+  createdByAccountId     String?
+  createdByLabelSnapshot String?
+  createdAt              DateTime           @default(now())
+
+  @@index([caseId, effectiveFrom, createdAt])
+  @@index([supersedesTermId])
+}
+
+model KontorContractOption {
+  id                     String             @id @default(cuid())
+  caseId                 String
+  case                   KontorContractCase @relation(fields: [caseId], references: [id], onDelete: Restrict)
+  providerId             String?
+  providerLabelSnapshot  String
+  tariffName             String
+  services               Json               @default("[]")
+  periodicPrice          Decimal             @db.Decimal(14, 2)
+  billingInterval        String
+  minimumTermMonths      Int                @default(0)
+  oneTimeCost            Decimal             @default(0) @db.Decimal(14, 2)
+  switchingCost          Decimal             @default(0) @db.Decimal(14, 2)
+  currency               String              @default("EUR")
+  decision               String              @default("PENDING")
+  decisionReason         String?
+  decidedAt              DateTime?
+  decidedByAccountId     String?
+  decidedByLabelSnapshot String?
+  supersedesOptionId     String?             @unique
+  correctionReason       String?
+  createdByAccountId     String?
+  createdByLabelSnapshot String?
+  createdAt              DateTime            @default(now())
+  decisions              KontorContractOptionDecision[]
+
+  @@index([caseId, decision, createdAt])
+  @@index([supersedesOptionId])
+}
+
+model KontorContractOptionDecision {
+  id                     String               @id @default(cuid())
+  caseId                 String
+  optionId               String
+  option                 KontorContractOption @relation(fields: [optionId], references: [id], onDelete: Restrict)
+  decision               String
+  reason                 String
+  decidedAt              DateTime             @default(now())
+  decidedByAccountId     String?
+  decidedByLabelSnapshot String?
+  supersedesDecisionId   String?              @unique
+  correctionReason       String?
+  createdAt              DateTime             @default(now())
+
+  @@index([caseId, optionId, decidedAt])
+  @@index([supersedesDecisionId])
+}
+
+model KontorContractDocument {
+  id                       String                              @id @default(cuid())
+  caseId                   String
+  case                     KontorContractCase                  @relation(fields: [caseId], references: [id], onDelete: Restrict)
+  rootDocumentId           String?
+  previousVersionId        String?                             @unique
+  correctionReason         String?
+  version                  Int                                 @default(1)
+  kind                     String                              @default("OTHER")
+  subjectType              String?
+  subjectId                String?
+  fileName                 String
+  mimeType                 String
+  sizeInBytes              Int
+  checksum                 String
+  encryptedData            String
+  encryptionKeyId          String?
+  securityStatus           String                              @default("QUARANTINED")
+  securityRevision         Int                                 @default(1)
+  scannerLeaseId           String?
+  scannerLeaseRequestId    String?                             @unique
+  scannerLeaseUntil        DateTime?
+  scannerDeliveryAttempts  Int                                 @default(0)
+  uploadedByAccountId      String?
+  uploadedByLabelSnapshot  String?
+  createdAt                DateTime                            @default(now())
+  securityScans            KontorContractDocumentScan[]
+  securityDecisions        KontorContractDocumentSecurityDecision[]
+
+  @@unique([caseId, checksum, version])
+  @@unique([rootDocumentId, version])
+  @@index([caseId, kind, createdAt])
+  @@index([checksum])
+  @@index([securityStatus, scannerLeaseUntil, createdAt])
+}
+
+model KontorContractDocumentScan {
+  id                   String                 @id @default(cuid())
+  documentId           String
+  document             KontorContractDocument @relation(fields: [documentId], references: [id], onDelete: Restrict)
+  attempt              Int
+  providerKey          String
+  engineVersion        String?
+  trustedAdapterDomain String
+  payloadHash          String
+  contentChecksum      String
+  verdict              String
+  signatureSet         String?
+  resultHash           String
+  details              Json                   @default("{}")
+  scannedAt            DateTime               @default(now())
+
+  @@unique([documentId, attempt])
+  @@index([contentChecksum])
+}
+
+model KontorContractDocumentSecurityDecision {
+  id            String                 @id @default(cuid())
+  documentId    String
+  document      KontorContractDocument @relation(fields: [documentId], references: [id], onDelete: Restrict)
+  revision      Int
+  decision      String
+  previousStatus String
+  newStatus     String
+  scanId        String?
+  actorAccountId String?
+  actorLabelSnapshot String?
+  reason        String?
+  metadata      Json?
+  createdAt     DateTime               @default(now())
+
+  @@unique([documentId, revision])
+  @@index([documentId, createdAt])
+}
+
+model KontorInsuranceClaim {
+  id                     String             @id @default(cuid())
+  caseId                 String
+  case                   KontorContractCase @relation(fields: [caseId], references: [id], onDelete: Restrict)
+  claimNumber            String?
+  occurredAt             DateTime
+  reportedAt             DateTime?
+  description            String
+  claimedAmount          Decimal            @db.Decimal(14, 2)
+  approvedAmount         Decimal?           @db.Decimal(14, 2)
+  status                 String             @default("OPEN")
+  supersedesClaimId      String?            @unique
+  correctionReason       String?
+  createdByAccountId     String?
+  createdByLabelSnapshot String?
+  createdAt              DateTime           @default(now())
+
+  @@index([caseId, status, occurredAt])
+  @@index([supersedesClaimId])
+}
+
+model KontorContractFinanceLink {
+  id                     String             @id @default(cuid())
+  caseId                 String
+  case                   KontorContractCase @relation(fields: [caseId], references: [id], onDelete: Restrict)
+  subjectType            String
+  subjectId              String?
+  kind                   String
+  amount                 Decimal            @db.Decimal(14, 2)
+  currency               String             @default("EUR")
+  financeEntryId         String
+  financeEntryRevision   Int
+  financeEntrySourceKey  String?             @unique
+  paymentAllocationId    String?
+  paymentAllocationSourceKey String?         @unique
+  paymentAllocationRevision Int?
+  receiptId              String?
+  receiptSourceKey       String?             @unique
+  receiptChecksumSnapshot String?
+  receiptFallbackId      String?
+  receiptFallbackStatusSnapshot String?
+  receiptFallbackUpdatedAtSnapshot DateTime?
+  receiptFallbackApprovedByAccountIdSnapshot String?
+  receiptFallbackApprovedAtSnapshot DateTime?
+  receiptFallbackReasonSnapshot String?
+  receiptFallbackSubstituteReceiptIdSnapshot String?
+  receiptFallbackSubstituteChecksumSnapshot String?
+  originFinanceLinkId    String?
+  supersedesFinanceLinkId String?           @unique
+  correctionReason       String?
+  occurredAt             DateTime
+  createdByAccountId     String?
+  createdByLabelSnapshot String?
+  createdAt              DateTime           @default(now())
+
+  @@index([caseId, subjectType, subjectId, occurredAt])
+  @@index([financeEntryId])
+  @@index([paymentAllocationId])
+  @@index([receiptId])
+  @@index([originFinanceLinkId])
+  @@index([supersedesFinanceLinkId])
+}
+
+model KontorContractTransition {
+  id                     String             @id @default(cuid())
+  caseId                 String
+  case                   KontorContractCase @relation(fields: [caseId], references: [id], onDelete: Restrict)
+  transitionType         String
+  predecessorCaseId      String?
+  successorCaseId        String?
+  predecessorLabelSnapshot String?
+  successorLabelSnapshot String?
+  serviceSnapshot        Json               @default("[]")
+  phoneNumberSnapshot    String?
+  occurredAt             DateTime
+  transitionStartDate    DateTime?
+  transitionEndDate      DateTime?
+  finalInvoiceFinanceLinkId String?
+  note                   String?
+  supersedesTransitionId String?            @unique
+  correctionReason       String?
+  createdByAccountId     String?
+  createdByLabelSnapshot String?
+  createdAt              DateTime           @default(now())
+
+  @@index([caseId, occurredAt])
+  @@index([predecessorCaseId])
+  @@index([successorCaseId])
+  @@index([supersedesTransitionId])
+}
+
+model KontorContractTask {
+  id                     String             @id @default(cuid())
+  caseId                 String
+  case                   KontorContractCase @relation(fields: [caseId], references: [id], onDelete: Restrict)
+  taskType               String
+  title                  String
+  description            String?
+  dueDate                DateTime?
+  status                 String             @default("OPEN")
+  responsibleAccountId   String?
+  responsibleLabelSnapshot String?
+  supersedesTaskId       String?            @unique
+  correctionReason       String?
+  createdByAccountId     String?
+  createdByLabelSnapshot String?
+  createdAt              DateTime           @default(now())
+
+  @@index([caseId, status, dueDate])
+  @@index([supersedesTaskId])
+}
+
+model KontorContractLink {
+  id                     String             @id @default(cuid())
+  caseId                 String
+  case                   KontorContractCase @relation(fields: [caseId], references: [id], onDelete: Restrict)
+  linkType               String
+  targetType             String
+  targetId               String
+  targetLabelSnapshot    String?
+  note                   String?
+  supersedesLinkId       String?            @unique
+  correctionReason       String?
+  createdByAccountId     String?
+  createdByLabelSnapshot String?
+  createdAt              DateTime           @default(now())
+
+  @@index([caseId, linkType, createdAt])
+  @@index([targetType, targetId])
+  @@index([supersedesLinkId])
+}
+
+model KontorContractHistory {
+  id                 String             @id @default(cuid())
+  caseId             String
+  case               KontorContractCase @relation(fields: [caseId], references: [id], onDelete: Restrict)
+  revision           Int
+  event              String
+  actorAccountId     String?
+  actorLabelSnapshot String?
+  actorRolesSnapshot Json               @default("[]")
+  note               String?
+  beforeState        Json?
+  afterState         Json?
+  createdAt          DateTime           @default(now())
+
+  @@unique([caseId, revision])
+  @@index([caseId, createdAt])
+}
+
+model KontorContractActionChallenge {
+  challengeId       String             @id
+  caseId            String
+  case              KontorContractCase @relation(fields: [caseId], references: [id], onDelete: Restrict)
+  action            String
+  expectedRevision  Int
+  dependencyHash    String
+  actorAccountId    String
+  actorLabelSnapshot String?
+  verifiedAt        DateTime?
+  consumedAt        DateTime?
+  createdAt         DateTime           @default(now())
+
+  @@index([caseId, action, createdAt])
+  @@index([actorAccountId, consumedAt])
+}
+
+model KontorContractIdempotency {
+  scopeKey          String   @id
+  accountId         String
+  operation         String
+  resourceKey       String
+  idempotencyKey    String
+  requestHash       String
+  status            String   @default("PROCESSING")
+  responseStatus    Int?
+  responseBody      Json?
+  encryptedResponse String?
+  sensitiveResponseExpiresAt DateTime?
+  artifactData      Bytes?
+  artifactHash      String?
+  artifactMimeType  String?
+  artifactFileName  String?
+  artifactRetainUntil DateTime?
+  targetCaseId      String?
+  targetRevision    Int?
+  createdAt         DateTime @default(now())
+  completedAt       DateTime?
+  expiresAt         DateTime
+
+  @@index([accountId, operation, resourceKey, createdAt])
+  @@index([status, createdAt])
+  @@index([expiresAt])
+  @@index([artifactRetainUntil])
+}
+
+// Durable append-only replay ledger for legacy APIs that call the protected
+// organization provider outside the database transaction. A single mutable
+// projection payload cannot safely retain response identity across A -> B ->
+// retry-A sequences, so every actor/route/resource/key claim is independent.
+// Only hashes and public projection revision are persisted; protected fields,
+// documents and access grants are never copied into this ledger.
+model KontorContractLegacyOperation {
+  scopeKey          String   @id
+  contractId        String
+  contract          KontorContract @relation(fields: [contractId], references: [id], onDelete: Restrict)
+  accountId         String
+  operation         String
+  idempotencyKeyHash String
+  requestHash       String
+  state             String   @default("PROCESSING")
+  leaseId           String?  @unique
+  responseHash      String?
+  responseRevision  Int?
+  encryptedResponse String?
+  completedAt       DateTime?
+  expiresAt         DateTime
+  createdAt         DateTime @default(now())
+
+  @@index([contractId, operation, createdAt])
+  @@index([state, expiresAt])
+}
+
+// Phase 7 – Dokumente und digitale Ablage.  The new document store is
+// deliberately additive: existing Core archive entries, protected documents
+// and specialist originals remain canonical at their current owners and are
+// exposed as projections by the module.  Only newly uploaded originals live in
+// these tables.
+model KontorDocumentFolder {
+  id                       String                 @id @default(cuid())
+  parentId                 String?
+  parent                   KontorDocumentFolder?  @relation("KontorDocumentFolderTree", fields: [parentId], references: [id], onDelete: Restrict)
+  children                 KontorDocumentFolder[] @relation("KontorDocumentFolderTree")
+  scopeType                String
+  scopeId                  String?
+  name                     String
+  normalizedName           String
+  uniquePathKey            String                 @unique
+  revision                 Int                    @default(1)
+  archivedAt               DateTime?
+  createdByAccountId       String?
+  createdByLabelSnapshot   String?
+  createdByRolesSnapshot   Json                   @default("[]")
+  documents                KontorStoredDocument[]
+  grants                   KontorDocumentGrant[]  @relation("KontorDocumentFolderGrants")
+  createdAt                DateTime               @default(now())
+  updatedAt                DateTime               @updatedAt
+
+  @@index([scopeType, scopeId, archivedAt, name])
+  @@index([parentId, archivedAt, name])
+}
+
+// Original bytes and identity are immutable.  Metadata, security, retention
+// and lifecycle fields form a CAS protected projection via recordRevision.
+// A replacement file always creates a new row linked through previousVersionId.
+model KontorStoredDocument {
+  id                       String                                  @id @default(cuid())
+  folderId                 String
+  folder                   KontorDocumentFolder                    @relation(fields: [folderId], references: [id], onDelete: Restrict)
+  scopeType                String
+  scopeId                  String?
+  rootDocumentId           String?
+  rootDocument             KontorStoredDocument?                   @relation("KontorStoredDocumentRoot", fields: [rootDocumentId], references: [id], onDelete: Restrict)
+  rootVersions             KontorStoredDocument[]                  @relation("KontorStoredDocumentRoot")
+  previousVersionId        String?                                 @unique
+  previousVersion          KontorStoredDocument?                   @relation("KontorStoredDocumentPrevious", fields: [previousVersionId], references: [id], onDelete: Restrict)
+  nextVersion              KontorStoredDocument?                   @relation("KontorStoredDocumentPrevious")
+  version                  Int                                     @default(1)
+  recordRevision           Int                                     @default(1)
+  title                    String
+  description              String?
+  category                 String                                  @default("OTHER")
+  tags                     Json                                    @default("[]")
+  validFrom                DateTime?
+  validUntil               DateTime?
+  fileName                 String
+  claimedMimeType          String
+  detectedMimeType         String
+  sizeInBytes              Int
+  checksum                 String
+  encryptedData            String?
+  encryptionKeyId          String?
+  securityStatus           String                                  @default("QUARANTINED")
+  securityRevision         Int                                     @default(1)
+  scannerLeaseId           String?
+  scannerLeaseRequestId    String?                                 @unique
+  scannerLeaseUntil        DateTime?
+  scannerDeliveryAttempts  Int                                     @default(0)
+  archivedAt               DateTime?
+  retentionUntil           DateTime?
+  legalHold                Boolean                                 @default(false)
+  legalHoldReason          String?
+  deletionRequestedAt      DateTime?
+  deletionEligibleAt       DateTime?
+  erasedAt                 DateTime?
+  createdByAccountId       String?
+  createdByLabelSnapshot   String?
+  createdByRolesSnapshot   Json                                    @default("[]")
+  links                    KontorStoredDocumentLink[]
+  grants                   KontorDocumentGrant[]                   @relation("KontorStoredDocumentGrants")
+  deletionRequests         KontorDocumentDeletionRequest[]
+  securityScans            KontorStoredDocumentScan[]
+  securityDecisions        KontorStoredDocumentSecurityDecision[]
+  tombstone                KontorDocumentTombstone?
+  exportDependencies       KontorDocumentExportDependency[]
+  contributionArtifacts    KontorContributionArtifact[]
+  contributionLinks        KontorContributionDocumentLink[]
+  createdAt                DateTime                                @default(now())
+  updatedAt                DateTime                                @updatedAt
+
+  @@unique([rootDocumentId, version])
+  @@index([folderId, archivedAt, createdAt])
+  @@index([scopeType, scopeId, archivedAt, createdAt])
+  @@index([checksum])
+  @@index([securityStatus, scannerLeaseUntil, createdAt])
+  @@index([retentionUntil, legalHold, deletionEligibleAt])
+}
+
+// Link changes are append-only.  Removing a link appends a REMOVED leaf that
+// supersedes the previous ACTIVE row; specialist source records are never
+// mutated or deleted by this store.
+model KontorStoredDocumentLink {
+  id                       String               @id @default(cuid())
+  documentId               String
+  document                 KontorStoredDocument @relation(fields: [documentId], references: [id], onDelete: Restrict)
+  revision                 Int
+  state                    String               @default("ACTIVE")
+  targetType               String
+  targetId                 String
+  targetRevisionSnapshot   Int?
+  targetLabelSnapshot      String
+  supersedesLinkId         String?              @unique
+  supersedesLink           KontorStoredDocumentLink? @relation("KontorStoredDocumentLinkChain", fields: [supersedesLinkId], references: [id], onDelete: Restrict)
+  supersededBy             KontorStoredDocumentLink? @relation("KontorStoredDocumentLinkChain")
+  reason                   String?
+  createdByAccountId       String?
+  createdByLabelSnapshot   String?
+  createdByRolesSnapshot   Json                 @default("[]")
+  createdAt                DateTime             @default(now())
+
+  @@unique([documentId, revision])
+  @@index([targetType, targetId, state])
+  @@index([documentId, state, createdAt])
+}
+
+// Folder- and document-level ACL facts are append-only.  ALLOW and DENY are
+// both explicit so a child can immediately revoke inherited access.
+model KontorDocumentGrant {
+  id                       String                @id @default(cuid())
+  resourceKey              String
+  folderId                 String?
+  folder                   KontorDocumentFolder? @relation("KontorDocumentFolderGrants", fields: [folderId], references: [id], onDelete: Restrict)
+  documentId               String?
+  document                 KontorStoredDocument? @relation("KontorStoredDocumentGrants", fields: [documentId], references: [id], onDelete: Restrict)
+  revision                 Int
+  subjectType              String
+  subjectId                String
+  effect                   String                @default("ALLOW")
+  capabilities             Json                  @default("[]")
+  inherited                Boolean               @default(true)
+  supersedesGrantId        String?               @unique
+  supersedesGrant          KontorDocumentGrant?  @relation("KontorDocumentGrantChain", fields: [supersedesGrantId], references: [id], onDelete: Restrict)
+  supersededBy             KontorDocumentGrant?  @relation("KontorDocumentGrantChain")
+  reason                   String?
+  expiresAt                DateTime?
+  createdByAccountId       String?
+  createdByLabelSnapshot   String?
+  createdByRolesSnapshot   Json                  @default("[]")
+  createdAt                DateTime              @default(now())
+
+  @@index([folderId, subjectType, subjectId, createdAt])
+  @@index([documentId, subjectType, subjectId, createdAt])
+  @@index([expiresAt])
+  @@unique([resourceKey, revision])
+}
+
+model KontorDocumentDeletionRequest {
+  id                       String               @id @default(cuid())
+  documentId               String
+  document                 KontorStoredDocument @relation(fields: [documentId], references: [id], onDelete: Restrict)
+  expectedRevision         Int
+  state                    String               @default("REQUESTED")
+  reason                   String
+  requestedByAccountId     String
+  requestedByLabelSnapshot String?
+  requestedByRolesSnapshot Json                 @default("[]")
+  approvedByAccountId      String?
+  approvedByLabelSnapshot  String?
+  approvedByRolesSnapshot  Json                 @default("[]")
+  approvedAt               DateTime?
+  rejectedAt               DateTime?
+  erasedAt                 DateTime?
+  createdAt                DateTime             @default(now())
+  activeKey                String?              @unique
+
+  @@index([documentId, state, createdAt])
+  @@index([state, createdAt])
+}
+
+model KontorStoredDocumentScan {
+  id                       String               @id @default(cuid())
+  documentId               String
+  document                 KontorStoredDocument @relation(fields: [documentId], references: [id], onDelete: Restrict)
+  attempt                  Int
+  providerKey              String
+  engineVersion            String?
+  trustedAdapterDomain     String
+  payloadHash              String
+  contentChecksum          String
+  verdict                  String
+  signatureSet             String?
+  resultHash               String
+  details                  Json                 @default("{}")
+  scannedAt                DateTime             @default(now())
+
+  @@unique([documentId, attempt])
+  @@index([contentChecksum])
+}
+
+model KontorStoredDocumentSecurityDecision {
+  id                       String               @id @default(cuid())
+  documentId               String
+  document                 KontorStoredDocument @relation(fields: [documentId], references: [id], onDelete: Restrict)
+  revision                 Int
+  decision                 String
+  previousStatus           String
+  newStatus                String
+  scanId                   String?
+  actorAccountId           String?
+  actorLabelSnapshot       String?
+  actorRolesSnapshot       Json                 @default("[]")
+  reason                   String?
+  metadata                 Json?
+  createdAt                DateTime             @default(now())
+
+  @@unique([documentId, revision])
+  @@index([documentId, createdAt])
+}
+
+// Every read and mutation produces an immutable history fact.  sequence is
+// scoped to a target and allocated transactionally; targetRevision records the
+// resource snapshot observed by the operation without changing it for reads.
+model KontorStoredDocumentHistory {
+  id                       String   @id @default(cuid())
+  targetType               String
+  targetId                 String
+  sequence                 Int
+  targetRevision           Int
+  event                    String
+  actorAccountId           String?
+  actorLabelSnapshot       String?
+  actorRolesSnapshot       Json     @default("[]")
+  note                     String?
+  beforeState              Json?
+  afterState               Json?
+  createdAt                DateTime @default(now())
+
+  @@unique([targetType, targetId, sequence])
+  @@index([targetType, targetId, createdAt])
+  @@index([event, createdAt])
+}
+
+model KontorDocumentActionChallenge {
+  challengeId              String   @id
+  resourceType             String
+  resourceId               String
+  action                   String
+  expectedRevision         Int
+  dependencyHash           String
+  actorAccountId           String
+  actorLabelSnapshot       String?
+  verifiedAt               DateTime?
+  consumedAt               DateTime?
+  createdAt                DateTime @default(now())
+
+  @@index([resourceType, resourceId, action, createdAt])
+  @@index([actorAccountId, consumedAt])
+}
+
+model KontorDocumentIdempotency {
+  scopeKey                 String   @id
+  accountId                String
+  operation                String
+  resourceKey              String
+  idempotencyKey           String
+  requestHash              String
+  status                   String   @default("PROCESSING")
+  responseStatus           Int?
+  responseBody             Json?
+  encryptedResponse        String?
+  sensitiveResponseExpiresAt DateTime?
+  artifactData             Bytes?
+  artifactHash             String?
+  artifactMimeType         String?
+  artifactFileName         String?
+  artifactRetainUntil      DateTime?
+  targetId                 String?
+  targetRevision           Int?
+  createdAt                DateTime @default(now())
+  completedAt              DateTime?
+  expiresAt                DateTime
+  exportDependencies       KontorDocumentExportDependency[]
+
+  @@index([accountId, operation, resourceKey, createdAt])
+  @@index([status, createdAt])
+  @@index([expiresAt])
+  @@index([artifactRetainUntil])
+}
+
+// An encrypted ZIP must be crypto-shredded together with every original it
+// contains. JSON payloads are intentionally not used as a reverse index:
+// erasure needs one bounded, transactional lookup that survives restarts.
+model KontorDocumentExportDependency {
+  id                       String                    @id @default(cuid())
+  idempotencyScopeKey      String
+  idempotency              KontorDocumentIdempotency @relation(fields: [idempotencyScopeKey], references: [scopeKey], onDelete: Restrict)
+  documentId               String
+  document                 KontorStoredDocument      @relation(fields: [documentId], references: [id], onDelete: Restrict)
+  createdAt                DateTime                  @default(now())
+
+  @@unique([idempotencyScopeKey, documentId])
+  @@index([documentId, createdAt])
+  @@index([idempotencyScopeKey])
+}
+
+// The document row retains public provenance after ciphertext erasure.  This
+// separate one-to-one fact makes it impossible to mistake a missing blob for a
+// storage defect or to silently recreate a deleted original.
+model KontorDocumentTombstone {
+  id                       String               @id @default(cuid())
+  documentId               String               @unique
+  document                 KontorStoredDocument @relation(fields: [documentId], references: [id], onDelete: Restrict)
+  checksum                 String
+  sizeInBytes              Int
+  reason                   String
+  erasedByAccountId        String?
+  erasedByLabelSnapshot    String?
+  erasedByRolesSnapshot    Json                 @default("[]")
+  metadataHash             String
+  erasedAt                 DateTime             @default(now())
+
+  @@index([erasedAt])
+}

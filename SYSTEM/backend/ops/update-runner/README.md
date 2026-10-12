@@ -1,5 +1,11 @@
 # Externer Bonni-Core-Update-Runner
 
+> **OCI-/Container-Pfad:** Dieser Docker-Hostprozess ist nicht der native
+> Windows-v2-Installer. Für das Windows-Aktionscenter und lokale
+> `UPDATE-MANIFEST.json`-/PAYLOAD-ZIPs siehe
+> `scripts/setup/READY-UPDATE-INSTALLER.md`. Dessen Public Trust liegt unter
+> `RUN_INSTALL/trust` und wird niemals aus einem Update-ZIP übernommen.
+
 Der Runner ist ein vom Web-Backend getrennter Hostprozess. Nur er erhält Zugriff
 auf die Docker-API. Er veröffentlicht keinen Port und akzeptiert keine
 Docker-Namen, Image-Tags, Compose-Pfade oder Befehle aus einem Update-Request.

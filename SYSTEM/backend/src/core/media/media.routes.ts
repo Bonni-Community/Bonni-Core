@@ -5,6 +5,10 @@ import {
   type ModuleMediaStore,
   type StoredModuleMedia,
 } from "./module-media-runtime.js";
+import {
+  authorizeSnapshotCoreBrandingMedia,
+  CORE_BRANDING_MEDIA_OWNER,
+} from "../branding/branding-media-reference.js";
 
 function safeDownloadName(value: string) {
   const fallback = value
@@ -72,7 +76,14 @@ function mayReadProtectedMedia(user: VerifiedCoreMediaUser, moduleKey: string) {
   return normalizedStringList(user.allowedApps).includes(moduleKey.toLowerCase());
 }
 
-export function createMediaFilesRouter(store?: ModuleMediaStore) {
+type MediaFilesRouterOptions = {
+  authorizeCoreBrandingMedia?: (media: StoredModuleMedia) => Promise<boolean>;
+};
+
+export function createMediaFilesRouter(
+  store?: ModuleMediaStore,
+  options: MediaFilesRouterOptions = {},
+) {
   const router = Router();
   router.get("/:mediaId", async (req: Request, res: Response, next: NextFunction) => {
     try {
@@ -82,6 +93,16 @@ export function createMediaFilesRouter(store?: ModuleMediaStore) {
       // Resolve the default store lazily. This keeps .env loading authoritative
       // even though the route module itself is imported during ESM bootstrap.
       const media = await (store || getCoreMediaStore()).read(mediaId);
+      if (
+        media.moduleKey === CORE_BRANDING_MEDIA_OWNER
+        && !await (options.authorizeCoreBrandingMedia || authorizeSnapshotCoreBrandingMedia)(media)
+      ) {
+        // Do not reveal whether a revoked capability still exists physically.
+        throw Object.assign(new Error("CORE_MEDIA_NOT_FOUND"), {
+          code: "CORE_MEDIA_NOT_FOUND",
+          statusCode: 404,
+        });
+      }
       // Browser-native <img>-Elemente können keinen Authorization-Header
       // mitsenden. Sichere Bildformate bleiben deshalb über ihre 192-Bit
       // Capability-ID direkt darstellbar. Dokumente und sonstige Binärdaten

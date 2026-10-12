@@ -1372,10 +1372,14 @@ export class UpdateRunner {
     });
   }
 
-  async startCanonicalActive(version) {
+  async startCanonicalActive(version, requiredLicensePredecessor = "") {
+    const environment = { SYSTEM_IMAGE: this.config.canonicalActiveImage, SYSTEM_VERSION: version };
+    if (requiredLicensePredecessor) {
+      environment.BONNI_CORE_LICENSE_REQUIRED_PREDECESSOR = requiredLicensePredecessor;
+    }
     await this.docker.compose([
       "up", "-d", "--no-deps", "--force-recreate", "--no-build", SERVICES.active,
-    ], { env: { SYSTEM_IMAGE: this.config.canonicalActiveImage, SYSTEM_VERSION: version } });
+    ], { env: environment });
   }
 
   async startEmergency() {
@@ -1639,7 +1643,7 @@ export class UpdateRunner {
       throw new Error("RECOVERED_ACTIVE_TAG_ID_MISMATCH");
     }
     await this.commitActiveOverlay(request, progress, progress.newImageId, request.targetVersion);
-    await this.startCanonicalActive(request.targetVersion);
+    await this.startCanonicalActive(request.targetVersion, request.currentVersion);
     await this.waitForHealth(() => this.docker.health(SERVICES.active), "active", request.targetVersion, "Wiederaufgenommener Active");
     progress.flags.activePromoted = true;
     await this.saveProgress(progress, "active-healthy", "Dauerhaft entschiedener Active ist nach Wiederanlauf vollständig bestätigt.");
@@ -1895,7 +1899,7 @@ export class UpdateRunner {
         throw new Error("PROMOTED_ACTIVE_TAG_ID_MISMATCH");
       }
       await this.commitActiveOverlay(request, progress, progress.newImageId, request.targetVersion);
-      await this.startCanonicalActive(request.targetVersion);
+      await this.startCanonicalActive(request.targetVersion, request.currentVersion);
       await this.waitForHealth(() => this.docker.health(SERVICES.active), "active", request.targetVersion, "Neuer Active");
       progress.flags.activePromoted = true;
       await this.saveProgress(progress, "active-healthy", "Neuer Active ist vollständig bereit.");

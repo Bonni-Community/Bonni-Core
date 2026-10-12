@@ -44,9 +44,13 @@ function containsModulePackages(candidate: string) {
  * Startvarianten müssen zu derselben Modulstruktur führen.
  */
 export function resolveBonniProjectRoot() {
+  const modulePackageRoot = process.env.BONNI_MODULE_PACKAGE_ROOT?.trim();
   const configuredRoot = process.env.BONNI_PROJECT_ROOT?.trim();
   const cwd = process.cwd();
   const candidates = [
+    // RUN_SYSTEM/RUN_INSTALL enthalten absichtlich nur den Core. Installierte
+    // Apps und Module werden unabhaengig davon aus dem stabilen SYSTEM gelesen.
+    ...candidateVariants(modulePackageRoot),
     ...candidateVariants(configuredRoot),
     ...candidateVariants(cwd),
     ...candidateVariants(path.dirname(cwd)),
@@ -60,7 +64,7 @@ export function resolveBonniProjectRoot() {
   // Ohne installierte Pakete bleibt ein ausdrücklich konfigurierter Pfad die
   // maßgebliche Basis. Andernfalls ist der Ort des Backend-Moduls stabiler als
   // ein zufälliger VS-Code-Arbeitsordner.
-  return configuredRoot
-    ? path.resolve(configuredRoot)
-    : systemRootFromModuleLocation;
+  if (modulePackageRoot) return path.resolve(modulePackageRoot);
+  if (configuredRoot) return path.resolve(configuredRoot);
+  return systemRootFromModuleLocation;
 }

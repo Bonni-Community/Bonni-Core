@@ -106,7 +106,8 @@ try {
   const accountState = {
     ...await readBootstrapAccountState(client),
     repairRequested: Boolean(
-      String(process.env.BONNI_BOOTSTRAP_ADMIN_PASSWORD || "").trim(),
+      String(process.env.BONNI_BOOTSTRAP_ADMIN_PASSWORD || "").trim()
+      && process.env.BONNI_BOOTSTRAP_FIRST_INSTALL_ONLY !== "true",
     ),
   };
   const bootstrapAction = resolveDatabaseBootstrapAction(accountState);

@@ -19,7 +19,11 @@ const systemRoot = path.resolve(backendRoot, "..");
 const frontendRoot = path.join(systemRoot, "frontend");
 const frontendBuildRoot = path.join(frontendRoot, "dist");
 const publishedFrontendRoot = path.join(backendRoot, "public", "system");
-const productRoot = path.resolve(systemRoot, "..");
+const configuredProductRoot = String(process.env.BONNI_PRODUCT_ROOT || "").trim();
+if (configuredProductRoot && (configuredProductRoot.includes("\u0000") || !path.isAbsolute(configuredProductRoot))) {
+  throw new Error("BONNI_PRODUCT_ROOT_INVALID");
+}
+const productRoot = configuredProductRoot || path.resolve(systemRoot, "..");
 const setupMode = process.env.BONNI_SETUP_MODE === "update" ? "update" : "setup";
 const MAX_SETUP_ENV_BYTES = 1024 * 1024;
 const setupProgressPath = path.join(
@@ -385,11 +389,8 @@ function publicSetupStageLabel(label) {
     ["Prisma Client aktualisieren", "Datenzugriff wird aktualisiert"],
     ["Technische Systemdaten und Administrator anlegen/reparieren", "Technische Systemdaten werden geprüft"],
     ["Backend erzeugen und prüfen", "Bonni-Core-Backend wird erzeugt und geprüft"],
-    ["Core-gesteuerte App-Laufzeitpakete erzeugen", "Bonni-Core-Bereiche werden erzeugt"],
-    ["Core-gesteuerte App-Laufzeitpakete prüfen", "Bonni-Core-Bereiche werden geprüft"],
+    ["Bonni-Core-Lizenzkatalog zentral und unveränderlich ablegen", "Bonni-Core-Lizenzdaten werden geprüft und abgelegt"],
     ["Frontend erzeugen", "Bonni-Core-Oberfläche wird erzeugt"],
-    ["Modul-Lizenzpayloads zentral und unveränderlich ablegen", "Lizenzdaten werden geprüft und abgelegt"],
-    ["KontorApp zentral registrieren, aktivieren und Fachrouten prüfen", "Bonni-Core-Bereiche werden registriert und aktiviert"],
   ]);
   return known.get(label) || String(label || "Bonni Core wird eingerichtet");
 }
@@ -832,10 +833,7 @@ const baseStages = [
     "seed",
   ]],
   ["Backend erzeugen und prüfen", backendRoot, ["run", "build:code"]],
-  ["Core-gesteuerte App-Laufzeitpakete erzeugen", backendRoot, ["run", "modules:build"]],
-  ["Core-gesteuerte App-Laufzeitpakete prüfen", backendRoot, ["run", "modules:verify"]],
-  ["Modul-Lizenzpayloads zentral und unveränderlich ablegen", backendRoot, ["run", "modules:sync-legal-payloads"]],
-  ["KontorApp zentral registrieren, aktivieren und Fachrouten prüfen", backendRoot, ["run", "modules:repair:kontorapp"]],
+  ["Bonni-Core-Lizenzkatalog zentral und unveränderlich ablegen", backendRoot, ["run", "licenses:sync-core"]],
 ];
 
 export function createSetupStages(frontendMode, options = {}) {
@@ -851,9 +849,9 @@ export function createSetupStages(frontendMode, options = {}) {
   return [
     baseStages[0],
     ...frontendStages.slice(0, 1),
-    ...baseStages.slice(1, -2),
+    ...baseStages.slice(1, -1),
     ...frontendStages.slice(1),
-    ...baseStages.slice(-2),
+    ...baseStages.slice(-1),
   ];
 }
 
@@ -952,13 +950,12 @@ async function runSetup() {
       stage: "setup-complete",
       stageIndex: totalStageCount,
       stageCount: totalStageCount,
-      message: "Programmdaten und Bonni-Core-Bereiche sind vollständig eingerichtet",
+      message: "Bonni Core ist vollständig eingerichtet",
     });
     console.log(setupMode === "update"
       ? "\n[bonni-setup] Aktualisierung vollständig eingerichtet."
       : "\n[bonni-setup] Neuinstallation vollständig eingerichtet.");
-    console.log("[bonni-setup] App-Laufzeitmodule wurden zentral durch Bonni Core bereitgestellt und geprüft.");
-    console.log("[bonni-setup] Prisma-Fragmente wurden zentral und ausschließlich aus den Manifesten zusammengesetzt.");
+    console.log("[bonni-setup] Fach-Apps wurden nicht installiert, repariert oder aktiviert.");
     console.log("[bonni-setup] Standardzugang einer neuen Installation: admin / hamster");
     console.log("[bonni-setup] Systemstart: npm start");
   } catch (error) {

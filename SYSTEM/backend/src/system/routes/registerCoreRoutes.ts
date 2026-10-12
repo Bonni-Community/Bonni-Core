@@ -2,6 +2,10 @@ import type { Express } from "express";
 
 import { clientLogRouter } from "../../core/logger/clientLog.routes.js";
 import {
+  publicBrandingRouter,
+  publicBrandingSnapshotRouter,
+} from "../../core/branding/index.js";
+import {
   mediaFilesRouter,
   resolveMediaPublicBasePath,
 } from "../../core/media/index.js";
@@ -28,6 +32,7 @@ import { systemRouter } from "./system.routes.js";
  */
 export function registerCoreRoutes(app: Express) {
   app.use("/api/health", healthRouter);
+  registerPublicBrandingReadRoutes(app);
   app.use(resolveMediaPublicBasePath(), mediaFilesRouter);
   app.use("/api/terminals", terminalRouter);
   app.use("/api/notifications", notificationRouter);
@@ -43,4 +48,23 @@ export function registerCoreRoutes(app: Express) {
   app.use("/api/internal/runtime", runtimeControlRouter);
   app.use("/api/system/user", systemUsersRouter);
   app.use("/api/system", lazySystemRouter);
+}
+
+/** Public GET-only surface shared by Active, Local and Emergency. */
+export function registerPublicBrandingReadRoutes(
+  app: Express,
+  routes: {
+    branding?: typeof publicBrandingRouter;
+  } = {},
+) {
+  // Public by design: the login screen needs the sanitized branding snapshot
+  // before an account can authenticate. Mutations remain below /api/system.
+  app.use("/api/branding", routes.branding || publicBrandingRouter);
+}
+
+/** Local/Emergency never consult LOCAL_DATABASE_URL for organization branding. */
+export function registerSnapshotBrandingReadRoutes(app: Express) {
+  registerPublicBrandingReadRoutes(app, {
+    branding: publicBrandingSnapshotRouter,
+  });
 }

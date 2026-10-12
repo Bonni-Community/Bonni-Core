@@ -8,6 +8,9 @@ import PasswordRecoveryFlow, {
   PasswordRecoveryLauncher,
 } from "../../core/modules/security/identity/components/PasswordRecoveryFlow.jsx";
 import { passwordRecoveryApi } from "../../core/modules/security/identity/api/accountRecoveryApi.js";
+import BrandLogo from "../brand/BrandLogo.jsx";
+import BrandName from "../brand/BrandName.jsx";
+import { useBranding } from "../brand/BrandContext.jsx";
 import "./LoginView.css";
 
 function FieldIcon({ kind }) {
@@ -47,38 +50,15 @@ function PasswordVisibilityIcon({ visible }) {
   );
 }
 
-function BonniCoreSignet() {
+function BonniBrandLogo() {
   return (
-    <svg
-      className="bonni-login-brand__signet"
-      viewBox="0 0 540 320"
-      role="img"
-      aria-label="Bonni Core"
-    >
-      <title>Bonni Core</title>
-      <path
-        className="bonni-login-brand__bonni-mark"
-        fill="#0B1F4D"
-        fillRule="evenodd"
-        d="M45 20h121c49 0 78 26 78 70 0 28-13 49-38 62 31 13 48 37 48 70 0 51-34 78-91 78H45c-25 0-40-15-40-40V60c0-25 15-40 40-40Zm18 48v184h91c27 0 43-13 43-36 0-22-16-35-43-35h-25c-20 0-35-15-35-34s15-34 35-34h23c25 0 39-12 39-33 0-20-14-32-39-32H63Z"
-      />
-      <path
-        className="bonni-login-brand__corner"
-        d="m205 28-21 21 21 21"
-      />
-      <path className="bonni-login-brand__divider" d="M282 28v264" />
-      <path
-        className="bonni-login-brand__core-hexagon"
-        fill="#F5B000"
-        fillRule="evenodd"
-        d="m416 27 115 66v134l-115 66-115-66V93l115-66Zm0 55-67 39v78l67 39 67-39v-78l-67-39Z"
-      />
-      <path
-        className="bonni-login-brand__core-center"
-        fill="#F5B000"
-        d="m416 112 41 24v48l-41 24-41-24v-48l41-24Z"
-      />
-    </svg>
+    <div className="bonni-login-brand__hexagon">
+      <div className="bonni-login-brand__hexagon-body">
+        <BrandLogo
+          className="bonni-login-brand__logo"
+        />
+      </div>
+    </div>
   );
 }
 
@@ -198,6 +178,7 @@ export default function LoginView({
   onCancelTwoFactor,
   onSubmit,
 }) {
+  const { branding } = useBranding();
   const [passwordRecoveryActive, setPasswordRecoveryActive] = useState(false);
   const localRecoveryAllowed = Boolean(
     twoFactorChallenge
@@ -212,7 +193,7 @@ export default function LoginView({
     <main className="bonni-login-page">
       <div className="bonni-login-page__content">
         <section className="bonni-login-brand">
-          <BonniCoreSignet />
+          <BonniBrandLogo />
         </section>
 
         <section className="bonni-login-panel" aria-label={passwordRecoveryActive ? "Passwort-Wiederherstellung" : "Anmeldung"}>
@@ -332,9 +313,10 @@ export default function LoginView({
         </section>
       </div>
 
-      <footer className="bonni-login-slogan">
+      <aside className="bonni-login-slogan" aria-label={branding.displayName}>
         <p>Organisationen sollen genau die Werkzeuge nutzen können, die sie benötigen – nicht mehr und nicht weniger.</p>
-      </footer>
+        <p className="bonni-login-slogan__copyright"><BrandName /> © 2025</p>
+      </aside>
     </main>
   );
 }

@@ -89,7 +89,7 @@ let emergencyActiveHint: boolean | null = null;
 const identityWriteCache = new Map<string, { fingerprint: string; writtenAt: number }>();
 
 function emergencyRoot() {
-  return path.join(path.resolve(env.RUN_SYSTEM_ROOT), "system");
+  return path.join(path.resolve(env.BONNI_RUNTIME_STATE_ROOT), "system");
 }
 
 export function jsonEmergencyStorePath() {

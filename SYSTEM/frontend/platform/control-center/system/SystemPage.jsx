@@ -5,6 +5,7 @@ import {
   fetchSystemNetworkPolicies,
   updateSystemNetworkPolicy,
 } from "../../../system/api/systemNetworkPolicyApi.js";
+import { formatBonniCoreVersion } from "../update/localUpdatePresentation.js";
 import "./SystemPage.css";
 
 const STATE_LABELS = {
@@ -128,7 +129,7 @@ export default function SystemPage({ token, onNavigate }) {
           </div>
         </div>
         <dl>
-          <div><dt>Version</dt><dd>{status?.version || "—"}</dd></div>
+          <div><dt>Version</dt><dd>{formatBonniCoreVersion(status?.version)}</dd></div>
           <div><dt>Betriebszeit</dt><dd>{formatUptime(status?.uptimeSeconds)}</dd></div>
           <div><dt>System</dt><dd>{status?.hostname || "—"}</dd></div>
         </dl>

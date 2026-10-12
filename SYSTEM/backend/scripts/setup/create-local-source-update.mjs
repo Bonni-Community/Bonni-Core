@@ -5,6 +5,11 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 
 import {
+  compareBonniReleaseVersion,
+  compareStrictSemVer,
+} from "../../src/system/update-runner/contract.mjs";
+
+import {
   SOURCE_UPDATE_PAYLOAD_LAYOUT,
   SOURCE_UPDATE_REPAIR_PAYLOAD_LAYOUT,
   SOURCE_UPDATE_SCHEMA,
@@ -17,7 +22,8 @@ const UPDATE_CHANNEL = "development";
 const MAX_FILES = 20_000;
 const MAX_FILE_BYTES = 64 * 1024 * 1024;
 const MAX_TOTAL_BYTES = 1024 * 1024 * 1024;
-const VERSION = /^[0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?$/u;
+const CANONICAL_UTC_TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u;
+const MAXIMUM_TIMESTAMP_FUTURE_SKEW_MS = 24 * 60 * 60_000;
 const UPDATE_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$/u;
 const WINDOWS_RESERVED_NAME = /^(?:con|prn|aux|nul|clock\$|conin\$|conout\$|com[1-9¹²³]|lpt[1-9¹²³])(?:\..*)?$/iu;
 const DATABASE_FILE = /\.(?:db|sqlite|sqlite3)(?:-(?:journal|wal|shm))?$/iu;
@@ -128,9 +134,27 @@ function isPathInside(relativePath, rootPath) {
   return relativePath === rootPath || relativePath.startsWith(`${rootPath}/`);
 }
 
-function assertVersion(value, label) {
-  if (typeof value !== "string" || !VERSION.test(value)) {
+function assertVersion(value, label, { core = false } = {}) {
+  if (typeof value !== "string" || !value || value.length > 128) {
     fail("LOCAL_SOURCE_UPDATE_INVALID_VERSION", label);
+  }
+  try {
+    (core ? compareBonniReleaseVersion : compareStrictSemVer)(value, value);
+  } catch {
+    fail("LOCAL_SOURCE_UPDATE_INVALID_VERSION", label);
+  }
+  return value;
+}
+
+function canonicalUtcTimestamp(value, label) {
+  if (
+    typeof value !== "string"
+    || !CANONICAL_UTC_TIMESTAMP.test(value)
+    || !Number.isFinite(Date.parse(value))
+    || new Date(Date.parse(value)).toISOString() !== value
+  ) fail("LOCAL_SOURCE_UPDATE_TIMESTAMP_INVALID", label);
+  if (Date.parse(value) > Date.now() + MAXIMUM_TIMESTAMP_FUTURE_SKEW_MS) {
+    fail("LOCAL_SOURCE_UPDATE_TIMESTAMP_IN_FUTURE", label);
   }
   return value;
 }
@@ -285,11 +309,15 @@ async function assertSafeDirectoryPath(directory, { create = false } = {}) {
   return resolved;
 }
 
-async function assertSafeComponentRoot(productRoot, componentPath) {
+async function assertSafeComponentRoot(productRoot, componentPath, { optional = false } = {}) {
   let cursor = productRoot;
   for (const segment of componentPath.split("/")) {
     cursor = path.join(cursor, segment);
-    await assertRealDirectory(cursor, "LOCAL_SOURCE_UPDATE_COMPONENT_MISSING_OR_UNSAFE");
+    const state = await lstatOrNull(cursor);
+    if (!state && optional) return null;
+    if (!state?.isDirectory() || state.isSymbolicLink()) {
+      fail("LOCAL_SOURCE_UPDATE_COMPONENT_MISSING_OR_UNSAFE", cursor);
+    }
   }
   return cursor;
 }
@@ -303,7 +331,7 @@ async function readRegularSourceFile(file, label) {
   return fs.readFile(file, "utf8");
 }
 
-async function readTargetVersions(productRoot) {
+async function readCoreVersion(productRoot) {
   const backendPackagePath = path.join(productRoot, "SYSTEM", "backend", "package.json");
   const packageSource = await readRegularSourceFile(backendPackagePath, "SYSTEM/backend/package.json");
   let backendPackage;
@@ -312,8 +340,14 @@ async function readTargetVersions(productRoot) {
   } catch {
     fail("LOCAL_SOURCE_UPDATE_BACKEND_PACKAGE_INVALID");
   }
-  const coreVersion = assertVersion(backendPackage?.version, "SYSTEM/backend/package.json#version");
+  return assertVersion(
+    backendPackage?.version,
+    "SYSTEM/backend/package.json#version",
+    { core: true },
+  );
+}
 
+async function readKontorVersion(productRoot) {
   const kontorManifestPath = path.join(productRoot, "SYSTEM", "app", "kontorapp", "manifest.ts");
   const kontorManifest = await readRegularSourceFile(
     kontorManifestPath,
@@ -346,10 +380,7 @@ async function readTargetVersions(productRoot) {
       `${String(kontorPackage?.version || "missing")}:${validatedKontorVersion}`,
     );
   }
-  return {
-    coreVersion,
-    kontorAppVersion: validatedKontorVersion,
-  };
+  return validatedKontorVersion;
 }
 
 async function collectSourceFiles(productRoot) {
@@ -394,7 +425,10 @@ async function collectSourceFiles(productRoot) {
   }
 
   for (const component of COMPONENTS) {
-    const componentRoot = await assertSafeComponentRoot(productRoot, component.path);
+    const componentRoot = await assertSafeComponentRoot(productRoot, component.path, {
+      optional: component.path === "SYSTEM/app/kontorapp",
+    });
+    if (!componentRoot) continue;
     await walk(componentRoot, component.path);
   }
   collected.sort((left, right) => bytewiseCompare(left.path, right.path));
@@ -451,6 +485,7 @@ export async function createLocalSourceUpdate({
   requiresManifestSha256 = null,
   releaseNotes = null,
   payloadMode = "delta",
+  createdAt = new Date().toISOString(),
 }) {
   if (typeof sourceProduct !== "string" || !sourceProduct.trim()) {
     fail("LOCAL_SOURCE_UPDATE_ARGUMENT_REQUIRED", "sourceProduct");
@@ -469,8 +504,9 @@ export async function createLocalSourceUpdate({
     fail("LOCAL_SOURCE_UPDATE_PAYLOAD_MODE_INVALID", String(payloadMode));
   }
   const repairMode = payloadMode === "repair";
+  const normalizedCreatedAt = canonicalUtcTimestamp(createdAt, "createdAt");
   const from = {
-    coreVersion: assertVersion(fromCoreVersion, "from.coreVersion"),
+    coreVersion: assertVersion(fromCoreVersion, "from.coreVersion", { core: true }),
     kontorAppVersion: assertVersion(fromKontorAppVersion, "from.kontorAppVersion"),
   };
   if (Boolean(requiresUpdateId) !== Boolean(requiresManifestSha256)) {
@@ -490,15 +526,14 @@ export async function createLocalSourceUpdate({
   await assertRealDirectory(resolvedBaselineProduct, "LOCAL_SOURCE_UPDATE_BASELINE_ROOT_INVALID");
   assertOutputLocation(resolvedSourceProduct, resolvedOutput);
   assertOutputLocation(resolvedBaselineProduct, resolvedOutput);
-  const to = await readTargetVersions(resolvedSourceProduct);
-  const baselineVersions = await readTargetVersions(resolvedBaselineProduct);
-  if (
-    baselineVersions.coreVersion !== from.coreVersion
-    || baselineVersions.kontorAppVersion !== from.kontorAppVersion
-  ) {
+  const [toCoreVersion, baselineCoreVersion] = await Promise.all([
+    readCoreVersion(resolvedSourceProduct),
+    readCoreVersion(resolvedBaselineProduct),
+  ]);
+  if (baselineCoreVersion !== from.coreVersion) {
     fail(
       "LOCAL_SOURCE_UPDATE_BASELINE_VERSION_MISMATCH",
-      `${baselineVersions.coreVersion}/${baselineVersions.kontorAppVersion}`,
+      baselineCoreVersion,
     );
   }
   const allSourceFiles = await collectSourceFiles(resolvedSourceProduct);
@@ -510,8 +545,7 @@ export async function createLocalSourceUpdate({
     allBaselineFiles.map((entry) => [windowsPathKey(entry.path), entry]),
   );
   const components = COMPONENTS.filter((component) => {
-    if (component.path === "SYSTEM/backend" && from.coreVersion !== to.coreVersion) return true;
-    if (component.path === "SYSTEM/app/kontorapp" && from.kontorAppVersion !== to.kontorAppVersion) return true;
+    if (component.path === "SYSTEM/backend" && from.coreVersion !== toCoreVersion) return true;
     const paths = new Set([
       ...allSourceFiles.filter((entry) => isPathInside(entry.path, component.path)).map((entry) => windowsPathKey(entry.path)),
       ...allBaselineFiles.filter((entry) => isPathInside(entry.path, component.path)).map((entry) => windowsPathKey(entry.path)),
@@ -523,6 +557,40 @@ export async function createLocalSourceUpdate({
     });
   });
   if (!components.length) fail("LOCAL_SOURCE_UPDATE_NO_COMPONENT_CHANGES");
+  const updatesKontor = components.some((component) => component.path === "SYSTEM/app/kontorapp");
+  let toKontorAppVersion = from.kontorAppVersion;
+  if (updatesKontor) {
+    const [sourceKontorVersion, baselineKontorVersion] = await Promise.all([
+      readKontorVersion(resolvedSourceProduct),
+      readKontorVersion(resolvedBaselineProduct),
+    ]);
+    if (baselineKontorVersion !== from.kontorAppVersion) {
+      fail(
+        "LOCAL_SOURCE_UPDATE_BASELINE_VERSION_MISMATCH",
+        `${baselineCoreVersion}/${baselineKontorVersion}`,
+      );
+    }
+    toKontorAppVersion = sourceKontorVersion;
+  }
+  const to = {
+    coreVersion: toCoreVersion,
+    kontorAppVersion: toKontorAppVersion,
+  };
+  if (compareBonniReleaseVersion(to.coreVersion, from.coreVersion) < 0) {
+    fail(
+      "LOCAL_SOURCE_UPDATE_DOWNGRADE_FORBIDDEN",
+      `${from.coreVersion}:${to.coreVersion}`,
+    );
+  }
+  if (
+    updatesKontor
+    && compareStrictSemVer(to.kontorAppVersion, from.kontorAppVersion) < 0
+  ) {
+    fail(
+      "LOCAL_SOURCE_UPDATE_APP_DOWNGRADE_FORBIDDEN",
+      `${from.kontorAppVersion}:${to.kontorAppVersion}`,
+    );
+  }
   const sourceFiles = allSourceFiles.filter((entry) => (
     components.some((component) => isPathInside(entry.path, component.path))
   ));
@@ -601,6 +669,7 @@ export async function createLocalSourceUpdate({
       status: UPDATE_STATUS,
       updateId: safeUpdateId,
       channel: UPDATE_CHANNEL,
+      createdAt: normalizedCreatedAt,
       payloadLayout: repairMode
         ? SOURCE_UPDATE_REPAIR_PAYLOAD_LAYOUT
         : SOURCE_UPDATE_PAYLOAD_LAYOUT,
@@ -637,6 +706,7 @@ function parseArguments(argumentsList) {
     "--requires-manifest-sha256",
     "--release-notes-file",
     "--payload-mode",
+    "--created-at",
   ]);
   const required = new Set([
     "--source-product",
@@ -680,6 +750,7 @@ async function main() {
     requiresManifestSha256: values.get("--requires-manifest-sha256"),
     releaseNotes,
     payloadMode: values.get("--payload-mode") || "delta",
+    createdAt: values.get("--created-at") || new Date().toISOString(),
   });
   console.info(`[bonni-package] Unveröffentlichtes Test-Update erstellt: ${result.packageRoot}`);
 }

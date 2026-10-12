@@ -510,6 +510,40 @@ export default function useSession() {
     setMessage(reason || "Deine Sitzung wurde nach der Sicherheitsaenderung beendet. Bitte melde dich erneut an.");
   }
 
+  function applyOwnProfile(profile) {
+    const person = profile?.person || {};
+    const nextDisplayName = person.displayName || person.nickname || "";
+
+    setUser((current) => {
+      if (!current) return current;
+      const next = {
+        ...current,
+        email: profile?.email ?? current.email,
+        displayName: nextDisplayName || current.displayName,
+        name: nextDisplayName || current.name,
+        person: { ...(current.person || {}), ...person },
+      };
+      localStorage.setItem("user", JSON.stringify(next));
+      return next;
+    });
+
+    setShell((current) => {
+      if (!current?.identity) return current;
+      const next = {
+        ...current,
+        identity: {
+          ...current.identity,
+          email: profile?.email ?? current.identity.email,
+          displayName: nextDisplayName || current.identity.displayName,
+          name: nextDisplayName || current.identity.name,
+          person: { ...(current.identity.person || {}), ...person },
+        },
+      };
+      localStorage.setItem("shell", JSON.stringify(next));
+      return next;
+    });
+  }
+
   function changeArea(nextArea) {
     const normalized = normalizeWorkspace(nextArea);
 
@@ -674,6 +708,7 @@ export default function useSession() {
     cancelTwoFactor,
     endRevokedSession,
     suspendRevokedSession,
+    applyOwnProfile,
     logout,
     reloadShell: loadShell,
 

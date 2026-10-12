@@ -2,7 +2,11 @@ import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 
-import { getProjectRoot } from "../../../boot/run-system/run-system.paths.js";
+import { getProductRoot, getProjectRoot } from "../../../boot/run-system/run-system.paths.js";
+import {
+  compareBonniReleaseVersion,
+  isStrictSemVer,
+} from "../../../update-release/semver.js";
 
 const SOURCE_SCHEMA = "bonni.local-source-update/v1";
 const SOURCE_PAYLOAD_LAYOUT = "content-addressed-delta-v1";
@@ -13,12 +17,17 @@ const SOURCE_STATUS = "UNPUBLISHED_TEST_UPDATE";
 const SOURCE_CHANNEL = "development";
 const MANIFEST_NAME = "bonni-source-update.json";
 const MONITOR_ACCESS_FILE = "monitor-access.json";
+const QUEUE_CLAIM_FILE = "request.queue-claim.json";
+const QUEUE_CLAIM_SCHEMA = "bonni.local-source-update-queue-claim/v1";
+const QUEUE_CLAIM_HMAC_DOMAIN = "bonni.local-source-update-queue-claim-hmac/v1";
+const MONITOR_TOKEN_DERIVATION_DOMAIN = "bonni.local-source-update-monitor-token/v1";
 // Source-Manifeste binden jede verwaltete Datei einzeln und sind bei einem
 // vollständigen Core/Kontor-Stand bereits größer als typische Release-Metadaten.
 const MAXIMUM_MANIFEST_BYTES = 4 * 1024 * 1024;
 const MAXIMUM_ENTRIES = 20_000;
 const HEARTBEAT_MAX_AGE_MS = 15_000;
 const MONITOR_ACCESS_LIFETIME_MS = 60 * 60_000;
+const MAXIMUM_TIMESTAMP_FUTURE_SKEW_MS = 24 * 60 * 60_000;
 
 type VersionPair = {
   coreVersion: string;
@@ -36,6 +45,7 @@ type LocalSourceReleaseNotes = {
 };
 
 type CompletedUpdateMetadata = {
+  createdAt: string | null;
   from: VersionPair;
   to: VersionPair;
   components: Array<{ key: string; path: string; mode: "managed" }>;
@@ -48,6 +58,7 @@ type LocalSourceManifest = {
   status: typeof SOURCE_STATUS;
   channel: typeof SOURCE_CHANNEL;
   updateId: string;
+  createdAt: string;
   payloadLayout: typeof SOURCE_PAYLOAD_LAYOUT | typeof SOURCE_REPAIR_PAYLOAD_LAYOUT | typeof LEGACY_SOURCE_PAYLOAD_LAYOUT;
   requires: { updateId: string; manifestSha256: string } | null;
   releaseNotes: LocalSourceReleaseNotes | null;
@@ -152,7 +163,7 @@ function sourceUpdatesEnabled() {
 }
 
 function stateRoot() {
-  return path.join(getProjectRoot(), "SYSTEM", ".bonni-source-update");
+  return path.join(getProductRoot(), "SYSTEM", ".bonni-source-update");
 }
 
 function controlRoot() {
@@ -160,15 +171,71 @@ function controlRoot() {
 }
 
 function inboxRoot() {
-  return path.join(getProjectRoot(), "UPDATE", "inbox");
+  return path.join(getProductRoot(), "UPDATE", "inbox");
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
-function validVersion(value: unknown): value is string {
-  return typeof value === "string" && /^[0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?$/u.test(value);
+type MonitorTokenBinding = {
+  requestId: string;
+  updateId: string;
+  manifestSha256: string;
+  supervisorInstanceId: string;
+};
+
+function monitorTokenSecret(environment: NodeJS.ProcessEnv = process.env) {
+  const secret = String(environment.JWT_SECRET || environment.MASTER_KEY || "");
+  if (secret.length < 32 || secret.includes("\u0000")) {
+    throw new Error("LOCAL_SOURCE_MONITOR_TOKEN_SECRET_MISSING");
+  }
+  return secret;
+}
+
+export function deriveLocalSourceMonitorToken(
+  binding: MonitorTokenBinding,
+  environment: NodeJS.ProcessEnv = process.env,
+) {
+  if (
+    !isPlainObject(binding)
+    || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u.test(String(binding.requestId || ""))
+    || !validUpdateId(binding.updateId)
+    || !/^[a-f0-9]{64}$/u.test(String(binding.manifestSha256 || ""))
+    || typeof binding.supervisorInstanceId !== "string"
+    || binding.supervisorInstanceId.length < 16
+    || binding.supervisorInstanceId.length > 255
+    || /[\u0000-\u001f\u007f]/u.test(binding.supervisorInstanceId)
+  ) throw new Error("LOCAL_SOURCE_MONITOR_TOKEN_BINDING_INVALID");
+  const payload = [
+    MONITOR_TOKEN_DERIVATION_DOMAIN,
+    binding.requestId,
+    binding.updateId,
+    binding.manifestSha256,
+    binding.supervisorInstanceId,
+  ].join("\u0000");
+  return crypto.createHmac("sha256", monitorTokenSecret(environment)).update(payload, "utf8").digest("hex");
+}
+
+function validCoreVersion(value: unknown): value is string {
+  if (typeof value !== "string" || value.length > 128) return false;
+  try {
+    compareBonniReleaseVersion(value, value);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function validAppVersion(value: unknown): value is string {
+  return typeof value === "string" && value.length <= 128 && isStrictSemVer(value);
+}
+
+function canonicalTimestamp(value: unknown): value is string {
+  return typeof value === "string"
+    && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u.test(value)
+    && Number.isFinite(Date.parse(value))
+    && new Date(Date.parse(value)).toISOString() === value;
 }
 
 function validUpdateId(value: unknown): value is string {
@@ -186,7 +253,7 @@ function validManifestPath(value: unknown): value is string {
 }
 
 function parseVersionPair(value: unknown): VersionPair | null {
-  if (!isPlainObject(value) || !validVersion(value.coreVersion) || !validVersion(value.kontorAppVersion)) return null;
+  if (!isPlainObject(value) || !validCoreVersion(value.coreVersion) || !validAppVersion(value.kontorAppVersion)) return null;
   return { coreVersion: value.coreVersion, kontorAppVersion: value.kontorAppVersion };
 }
 
@@ -233,6 +300,10 @@ function parseLocalSourceManifest(value: unknown): LocalSourceManifest {
   if (value.schemaVersion !== SOURCE_SCHEMA) throw new Error("LOCAL_SOURCE_SCHEMA_UNSUPPORTED");
   if (value.status !== SOURCE_STATUS || value.channel !== SOURCE_CHANNEL) throw new Error("LOCAL_SOURCE_NOT_DEVELOPMENT_PACKAGE");
   if (!validUpdateId(value.updateId)) throw new Error("LOCAL_SOURCE_UPDATE_ID_INVALID");
+  if (!canonicalTimestamp(value.createdAt)) throw new Error("LOCAL_SOURCE_TIMESTAMP_INVALID");
+  if (Date.parse(value.createdAt) > Date.now() + MAXIMUM_TIMESTAMP_FUTURE_SKEW_MS) {
+    throw new Error("LOCAL_SOURCE_TIMESTAMP_IN_FUTURE");
+  }
   const payloadLayout = value.payloadLayout === undefined
     ? LEGACY_SOURCE_PAYLOAD_LAYOUT
     : value.payloadLayout;
@@ -307,6 +378,7 @@ function parseLocalSourceManifest(value: unknown): LocalSourceManifest {
     status: SOURCE_STATUS,
     channel: SOURCE_CHANNEL,
     updateId: value.updateId,
+    createdAt: value.createdAt,
     payloadLayout,
     requires,
     releaseNotes,
@@ -330,12 +402,20 @@ async function readJson<T>(file: string): Promise<T | null> {
 function parseCompletedUpdateMetadata(value: unknown): CompletedUpdateMetadata | null {
   if (value === null || value === undefined) return null;
   if (!isPlainObject(value) || Object.keys(value).some((key) => ![
+    "createdAt",
     "from",
     "to",
     "components",
     "counts",
     "repair",
   ].includes(key))) throw new Error("LOCAL_SOURCE_COMPLETED_METADATA_INVALID");
+  let createdAt: string | null = null;
+  if (value.createdAt !== undefined) {
+    if (!canonicalTimestamp(value.createdAt)) {
+      throw new Error("LOCAL_SOURCE_COMPLETED_METADATA_INVALID");
+    }
+    createdAt = value.createdAt;
+  }
   const from = parseVersionPair(value.from);
   const to = parseVersionPair(value.to);
   if (!from || !to || !Array.isArray(value.components) || !value.components.length || value.components.length > 3) {
@@ -367,12 +447,13 @@ function parseCompletedUpdateMetadata(value: unknown): CompletedUpdateMetadata |
     || counts.files > counts.inventory
     || typeof value.repair !== "boolean"
   ) throw new Error("LOCAL_SOURCE_COMPLETED_METADATA_INVALID");
-  return { from, to, components, counts, repair: value.repair };
+  return { createdAt, from, to, components, counts, repair: value.repair };
 }
 
 async function readCompletedDetails(progress: SupervisorProgress | null) {
   if (
-    progress?.status !== "completed"
+    !progress
+    || !["completed", "failed"].includes(String(progress.status || ""))
     || !validUpdateId(progress.updateId)
     || typeof progress.manifestSha256 !== "string"
     || !/^[a-f0-9]{64}$/u.test(progress.manifestSha256)
@@ -414,7 +495,8 @@ async function readCompletedDetails(progress: SupervisorProgress | null) {
     const receiptVersions = parseVersionPair(receipt.versions);
     if (!receiptVersions || (metadata && (
       receiptVersions.coreVersion !== metadata.to.coreVersion
-      || receiptVersions.kontorAppVersion !== metadata.to.kontorAppVersion))) return null;
+      || (managesKontor(metadata.components)
+        && receiptVersions.kontorAppVersion !== metadata.to.kontorAppVersion)))) return null;
     return {
       releaseNotes: parseReleaseNotes(receipt.releaseNotes),
       metadata,
@@ -449,11 +531,12 @@ async function completedProgressAfterSupervisorFailure(
   if (progressState(progress) !== "failed") return null;
   const details = await readCompletedDetails(progress);
   if (!details?.metadata) return null;
-  const versions = await installedVersions();
-  if (
-    versions.coreVersion !== details.metadata.to.coreVersion
-    || versions.kontorAppVersion !== details.metadata.to.kontorAppVersion
-  ) return null;
+  const installedCore = await installedCoreVersion();
+  if (installedCore !== details.metadata.to.coreVersion) return null;
+  if (managesKontor(details.metadata.components)) {
+    const installedKontor = await installedKontorVersion();
+    if (installedKontor !== details.metadata.to.kontorAppVersion) return null;
+  }
   return {
     ...progress,
     status: "completed",
@@ -489,15 +572,22 @@ async function readManifestFile(file: string) {
   return { manifest, manifestSha256: crypto.createHash("sha256").update(raw).digest("hex") };
 }
 
-async function installedVersions(): Promise<VersionPair> {
-  const [core, kontor] = await Promise.all([
-    readJson<{ version?: string }>(path.join(getProjectRoot(), "SYSTEM", "backend", "package.json")),
-    readJson<{ version?: string }>(path.join(getProjectRoot(), "SYSTEM", "app", "kontorapp", "package.json")),
-  ]);
-  return {
-    coreVersion: validVersion(core?.version) ? core.version : "0.0.0",
-    kontorAppVersion: validVersion(kontor?.version) ? kontor.version : "0.0.0",
-  };
+function managesKontor(components: Array<{ path: string }>) {
+  return components.some((component) => component.path === "SYSTEM/app/kontorapp");
+}
+
+async function installedCoreVersion() {
+  const core = await readJson<{ version?: string }>(
+    path.join(getProjectRoot(), "SYSTEM", "backend", "package.json"),
+  );
+  return validCoreVersion(core?.version) ? core.version : "0.0.0";
+}
+
+async function installedKontorVersion() {
+  const kontor = await readJson<{ version?: string }>(
+    path.join(getProjectRoot(), "SYSTEM", "app", "kontorapp", "package.json"),
+  );
+  return validAppVersion(kontor?.version) ? kontor.version : "0.0.0";
 }
 
 async function readSupervisorStatus() {
@@ -581,7 +671,17 @@ function emptyStatus(
 
 function progressState(progress: SupervisorProgress | null): LocalSourceState | null {
   if (!progress?.status) return null;
-  if (["queued", "stopping", "installing", "restarting", "committing", "running"].includes(progress.status)) return "in-progress";
+  if ([
+    "queued",
+    "stopping",
+    "installing",
+    "restarting",
+    "running",
+    "awaiting-confirmation",
+    "awaiting-retry",
+    "commit-pending",
+    "committing",
+  ].includes(progress.status)) return "in-progress";
   if (progress.status === "completed") return "completed";
   if (progress.status === "failed") return "failed";
   return null;
@@ -590,7 +690,26 @@ function progressState(progress: SupervisorProgress | null): LocalSourceState | 
 export async function getLocalSourceUpdateStatus(): Promise<LocalSourceStatus> {
   const runner = await readSupervisorStatus();
   if (!sourceUpdatesEnabled()) {
-    return emptyStatus("disabled", "Lokale, unveröffentlichte Source-Updates sind im Produktionsmodus deaktiviert.", runner);
+    const durable = await inspectDurableMonitorState(runner).catch(() => null);
+    if (durable?.request) {
+      const progress = runner.progress?.requestId === durable.request.requestId
+        && runner.progress.updateId === durable.request.updateId
+        && runner.progress.manifestSha256 === durable.request.manifestSha256
+        ? runner.progress
+        : null;
+      const state = progressState(progress) || "in-progress";
+      const status = emptyStatus(
+        state,
+        progress?.message || "Diese Bonni-Core-Aktualisierung wird bereits verarbeitet.",
+        progress === runner.progress ? runner : { ...runner, progress: null },
+        progress?.errorCode || null,
+      );
+      status.enabled = true;
+      status.updateId = durable.request.updateId;
+      status.manifestSha256 = durable.request.manifestSha256;
+      return status;
+    }
+    return emptyStatus("disabled", "Neue lokale Source-Updates sind im Produktionsmodus deaktiviert.", runner);
   }
 
   const inbox = inboxRoot();
@@ -666,8 +785,10 @@ export async function getLocalSourceUpdateStatus(): Promise<LocalSourceStatus> {
     const { manifest, manifestSha256 } = await readManifestFile(candidate.manifestFile);
     if (path.basename(candidate.directory) !== manifest.updateId) throw new Error("LOCAL_SOURCE_DIRECTORY_ID_MISMATCH");
 
-    const [versions, pending, history, active, lock] = await Promise.all([
-      installedVersions(),
+    const updatesKontor = managesKontor(manifest.components);
+    const [installedCore, installedKontor, pending, history, active, lock] = await Promise.all([
+      installedCoreVersion(),
+      updatesKontor ? installedKontorVersion() : Promise.resolve(null),
       readJson<{ updateId?: string; phase?: string }>(path.join(stateRoot(), "pending-update.json")).catch(() => null),
       readJson<{ status?: string; manifestSha256?: string }>(path.join(stateRoot(), "history", `${manifest.updateId}.json`)).catch(() => null),
       readJson<{ updateId?: string; manifestSha256?: string }>(path.join(stateRoot(), "active-manifest.json")).catch(() => null),
@@ -716,11 +837,11 @@ export async function getLocalSourceUpdateStatus(): Promise<LocalSourceStatus> {
       message = `${predecessorLabel(manifest.requires.updateId)} fehlt: Der erforderliche Zwischenstand Bonni Core ${manifest.from.coreVersion} (${manifest.requires.updateId}) wurde noch nicht vollständig abgeschlossen.`;
       errorCode = "LOCAL_SOURCE_REQUIRED_PREDECESSOR_MISSING";
     } else if (
-      versions.coreVersion !== manifest.from.coreVersion
-      || versions.kontorAppVersion !== manifest.from.kontorAppVersion
+      installedCore !== manifest.from.coreVersion
+      || (updatesKontor && installedKontor !== manifest.from.kontorAppVersion)
     ) {
       state = "invalid";
-      message = "Die Aktualisierung passt nicht zum installierten Bonni-Core-/Kontor-Stand.";
+      message = "Die Aktualisierung passt nicht zum installierten Bonni-Core-Stand.";
       errorCode = "LOCAL_SOURCE_FROM_VERSION_MISMATCH";
     }
 
@@ -778,21 +899,417 @@ async function ensureControlRoot() {
   await assertRealDirectory(controlRoot());
 }
 
-async function writeJsonAtomic(file: string, value: unknown) {
+async function writeJsonExclusive(file: string, value: unknown) {
   await ensureControlRoot();
-  const temporary = `${file}.${process.pid}.${crypto.randomBytes(8).toString("hex")}.tmp`;
-  await fs.writeFile(temporary, `${JSON.stringify(value, null, 2)}\n`, { encoding: "utf8", mode: 0o600, flag: "wx" });
-  await fs.rename(temporary, file);
+  await fs.writeFile(file, `${JSON.stringify(value, null, 2)}\n`, {
+    encoding: "utf8",
+    mode: 0o600,
+    flag: "wx",
+  });
 }
 
-export async function queueLocalSourceUpdate(input: { updateId?: string; manifestSha256?: string }) {
+function exactObjectKeys(value: Record<string, unknown>, expected: string[]) {
+  return Object.keys(value).sort().join("\u0000") === [...expected].sort().join("\u0000");
+}
+
+type PersistedInstallRequest = MonitorTokenBinding & {
+  schemaVersion: typeof REQUEST_SCHEMA;
+  action: "install";
+  monitorTokenSha256: string;
+  issuedAt: string;
+  expiresAt: string;
+};
+
+type PersistedMonitorAccess = {
+  requestId: string;
+  updateId: string;
+  manifestSha256: string;
+  monitorTokenSha256: string;
+  expiresAt: string;
+};
+
+type QueueClaim = {
+  schemaVersion: typeof QUEUE_CLAIM_SCHEMA;
+  requestId: string;
+  updateId: string;
+  manifestSha256: string;
+  monitorTokenSha256: string;
+  supervisorInstanceId: string;
+  issuedAt: string;
+  requestExpiresAt: string;
+  accessExpiresAt: string;
+  ownerPid: number;
+  ownerNonce: string;
+  createdAt: string;
+  signature: string;
+};
+
+function parsePersistedRequest(value: unknown): PersistedInstallRequest | null {
+  if (!isPlainObject(value) || !exactObjectKeys(value, [
+    "schemaVersion", "requestId", "action", "updateId", "manifestSha256",
+    "monitorTokenSha256", "supervisorInstanceId", "issuedAt", "expiresAt",
+  ])) return null;
+  if (
+    value.schemaVersion !== REQUEST_SCHEMA
+    || value.action !== "install"
+    || typeof value.requestId !== "string"
+    || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u.test(value.requestId)
+    || !validUpdateId(value.updateId)
+    || typeof value.manifestSha256 !== "string"
+    || !/^[a-f0-9]{64}$/u.test(value.manifestSha256)
+    || typeof value.monitorTokenSha256 !== "string"
+    || !/^[a-f0-9]{64}$/u.test(value.monitorTokenSha256)
+    || typeof value.supervisorInstanceId !== "string"
+    || value.supervisorInstanceId.length < 16
+    || value.supervisorInstanceId.length > 255
+    || /[\u0000-\u001f\u007f]/u.test(value.supervisorInstanceId)
+    || typeof value.issuedAt !== "string"
+    || !Number.isFinite(Date.parse(value.issuedAt))
+    || typeof value.expiresAt !== "string"
+    || !Number.isFinite(Date.parse(value.expiresAt))
+  ) return null;
+  return value as PersistedInstallRequest;
+}
+
+function parsePersistedAccess(value: unknown): PersistedMonitorAccess | null {
+  if (!isPlainObject(value) || !exactObjectKeys(value, [
+    "requestId", "updateId", "manifestSha256", "monitorTokenSha256", "expiresAt",
+  ])) return null;
+  if (
+    typeof value.requestId !== "string"
+    || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u.test(value.requestId)
+    || !validUpdateId(value.updateId)
+    || typeof value.manifestSha256 !== "string"
+    || !/^[a-f0-9]{64}$/u.test(value.manifestSha256)
+    || typeof value.monitorTokenSha256 !== "string"
+    || !/^[a-f0-9]{64}$/u.test(value.monitorTokenSha256)
+    || typeof value.expiresAt !== "string"
+    || !Number.isFinite(Date.parse(value.expiresAt))
+  ) return null;
+  return value as PersistedMonitorAccess;
+}
+
+function sameMonitorIdentity(
+  left: Pick<PersistedInstallRequest, "requestId" | "updateId" | "manifestSha256" | "monitorTokenSha256">,
+  right: Pick<PersistedMonitorAccess, "requestId" | "updateId" | "manifestSha256" | "monitorTokenSha256">,
+) {
+  return left.requestId === right.requestId
+    && left.updateId === right.updateId
+    && left.manifestSha256 === right.manifestSha256
+    && left.monitorTokenSha256 === right.monitorTokenSha256;
+}
+
+async function inspectDurableMonitorState(
+  suppliedRunner?: Awaited<ReturnType<typeof readSupervisorStatus>>,
+) {
+  const runner = suppliedRunner || await readSupervisorStatus();
+  const [queuedRaw, processingRaw, accessRaw] = await Promise.all([
+    readJson<unknown>(path.join(controlRoot(), "request.json")),
+    readJson<unknown>(path.join(controlRoot(), "request.processing.json")),
+    readJson<unknown>(path.join(controlRoot(), MONITOR_ACCESS_FILE)),
+  ]);
+  if (queuedRaw && processingRaw) throw new Error("LOCAL_SOURCE_MONITOR_ACCESS_RECOVERY_INVALID");
+  const rawRequest = queuedRaw || processingRaw;
+  const request = rawRequest ? parsePersistedRequest(rawRequest) : null;
+  const access = accessRaw ? parsePersistedAccess(accessRaw) : null;
+  if ((rawRequest && !request) || (accessRaw && !access)) {
+    throw new Error("LOCAL_SOURCE_MONITOR_ACCESS_RECOVERY_INVALID");
+  }
+  if (request && access && !sameMonitorIdentity(request, access)) {
+    throw new Error("LOCAL_SOURCE_MONITOR_ACCESS_RECOVERY_INVALID");
+  }
+  if (queuedRaw && request && (
+    request.supervisorInstanceId !== runner.instanceId
+    || Date.parse(request.expiresAt) <= Date.now()
+  )) throw new Error("LOCAL_SOURCE_MONITOR_ACCESS_RECOVERY_INVALID");
+  return { request, access, queued: Boolean(queuedRaw), processing: Boolean(processingRaw) };
+}
+
+function queueClaimPayload(claim: Omit<QueueClaim, "signature">) {
+  return [
+    QUEUE_CLAIM_HMAC_DOMAIN,
+    claim.schemaVersion,
+    claim.requestId,
+    claim.updateId,
+    claim.manifestSha256,
+    claim.monitorTokenSha256,
+    claim.supervisorInstanceId,
+    claim.issuedAt,
+    claim.requestExpiresAt,
+    claim.accessExpiresAt,
+    String(claim.ownerPid),
+    claim.ownerNonce,
+    claim.createdAt,
+  ].join("\u0000");
+}
+
+function signQueueClaim(claim: Omit<QueueClaim, "signature">) {
+  return crypto.createHmac("sha256", monitorTokenSecret()).update(queueClaimPayload(claim), "utf8").digest("hex");
+}
+
+function parseQueueClaim(value: unknown): QueueClaim | null {
+  if (!isPlainObject(value) || !exactObjectKeys(value, [
+    "schemaVersion", "requestId", "updateId", "manifestSha256", "monitorTokenSha256",
+    "supervisorInstanceId", "issuedAt", "requestExpiresAt", "accessExpiresAt",
+    "ownerPid", "ownerNonce", "createdAt", "signature",
+  ])) return null;
+  const unsigned = { ...value } as Record<string, unknown>;
+  delete unsigned.signature;
+  if (
+    value.schemaVersion !== QUEUE_CLAIM_SCHEMA
+    || typeof value.ownerPid !== "number"
+    || !Number.isSafeInteger(value.ownerPid)
+    || value.ownerPid <= 0
+    || typeof value.ownerNonce !== "string"
+    || !/^[a-f0-9]{32}$/u.test(value.ownerNonce)
+    || typeof value.signature !== "string"
+    || !/^[a-f0-9]{64}$/u.test(value.signature)
+  ) return null;
+  const request = parsePersistedRequest({
+    schemaVersion: REQUEST_SCHEMA,
+    requestId: value.requestId,
+    action: "install",
+    updateId: value.updateId,
+    manifestSha256: value.manifestSha256,
+    monitorTokenSha256: value.monitorTokenSha256,
+    supervisorInstanceId: value.supervisorInstanceId,
+    issuedAt: value.issuedAt,
+    expiresAt: value.requestExpiresAt,
+  });
+  if (
+    !request
+    || typeof value.accessExpiresAt !== "string"
+    || !Number.isFinite(Date.parse(value.accessExpiresAt))
+    || typeof value.createdAt !== "string"
+    || !Number.isFinite(Date.parse(value.createdAt))
+  ) return null;
+  const expected = signQueueClaim(unsigned as Omit<QueueClaim, "signature">);
+  if (!crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(value.signature))) return null;
+  return value as QueueClaim;
+}
+
+const liveQueueOwners = new Set<string>();
+
+function processExists(pid: number) {
+  if (pid === process.pid) return true;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "EPERM";
+  }
+}
+
+function claimOwnerIsLive(claim: QueueClaim) {
+  return claim.ownerPid === process.pid
+    ? liveQueueOwners.has(claim.ownerNonce)
+    : processExists(claim.ownerPid);
+}
+
+async function removeExactJson(file: string, expected: Record<string, unknown>) {
+  const current = await readJson<Record<string, unknown>>(file);
+  if (!current || JSON.stringify(current) !== JSON.stringify(expected)) {
+    throw new Error("LOCAL_SOURCE_QUEUE_CLAIM_CHANGED");
+  }
+  await fs.rm(file);
+}
+
+function monitorAccessResponse({
+  origin,
+  request,
+  token,
+}: {
+  origin: string;
+  request: MonitorTokenBinding & { issuedAt: string };
+  token: string;
+}) {
+  return {
+    schemaVersion: "bonni.local-source-update-monitor-access/v1",
+    origin,
+    requestId: request.requestId,
+    updateId: request.updateId,
+    manifestSha256: request.manifestSha256,
+    token,
+    issuedAt: request.issuedAt,
+  };
+}
+
+async function reclaimExistingMonitorAccess(
+  status: LocalSourceStatus,
+  input: { updateId?: string; manifestSha256?: string },
+) {
+  if (
+    status.state !== "in-progress"
+    || status.updateId !== input.updateId
+    || status.manifestSha256 !== input.manifestSha256
+  ) return null;
+  if (
+    !status.runner.available
+    || !status.runner.instanceId
+    || !status.runner.monitor.available
+    || !status.runner.monitor.origin
+  ) throw new Error("LOCAL_SOURCE_INSTALLATION_MONITOR_NOT_READY");
+
+  const durable = await inspectDurableMonitorState(status.runner);
+  const { request, access } = durable;
+  if (
+    !request
+    || !access
+    || request.updateId !== status.updateId
+    || request.manifestSha256 !== status.manifestSha256
+    || Date.parse(access.expiresAt) <= Date.now()
+  ) throw new Error("LOCAL_SOURCE_MONITOR_ACCESS_RECOVERY_INVALID");
+
+  const binding = {
+    requestId: request.requestId,
+    updateId: request.updateId as string,
+    manifestSha256: request.manifestSha256 as string,
+    supervisorInstanceId: request.supervisorInstanceId as string,
+  };
+  const token = deriveLocalSourceMonitorToken(binding);
+  const tokenSha256 = crypto.createHash("sha256").update(token, "utf8").digest("hex");
+  if (tokenSha256 !== request.monitorTokenSha256) {
+    throw new Error("LOCAL_SOURCE_MONITOR_ACCESS_NOT_RECLAIMABLE");
+  }
+  return {
+    ok: true,
+    accepted: false,
+    existing: true,
+    requestId: request.requestId,
+    monitor: monitorAccessResponse({
+      origin: status.runner.monitor.origin,
+      request: { ...binding, issuedAt: request.issuedAt },
+      token,
+    }),
+    localSourceUpdate: status,
+  };
+}
+
+type QueueCrashHooks = {
+  afterClaim?: () => void | Promise<void>;
+  afterGrant?: () => void | Promise<void>;
+  afterRequest?: () => void | Promise<void>;
+};
+
+function requestFromClaim(claim: QueueClaim): PersistedInstallRequest {
+  return {
+    schemaVersion: REQUEST_SCHEMA,
+    requestId: claim.requestId,
+    action: "install",
+    updateId: claim.updateId,
+    manifestSha256: claim.manifestSha256,
+    monitorTokenSha256: claim.monitorTokenSha256,
+    supervisorInstanceId: claim.supervisorInstanceId,
+    issuedAt: claim.issuedAt,
+    expiresAt: claim.requestExpiresAt,
+  };
+}
+
+function accessFromClaim(claim: QueueClaim): PersistedMonitorAccess {
+  return {
+    requestId: claim.requestId,
+    updateId: claim.updateId,
+    manifestSha256: claim.manifestSha256,
+    monitorTokenSha256: claim.monitorTokenSha256,
+    expiresAt: claim.accessExpiresAt,
+  };
+}
+
+function claimMatchesStatus(claim: QueueClaim, status: LocalSourceStatus) {
+  return claim.updateId === status.updateId
+    && claim.manifestSha256 === status.manifestSha256
+    && claim.supervisorInstanceId === status.runner.instanceId
+    && Date.parse(claim.requestExpiresAt) > Date.now()
+    && Date.parse(claim.accessExpiresAt) > Date.now();
+}
+
+function responseFromClaim(claim: QueueClaim, status: LocalSourceStatus, accepted: boolean) {
+  const token = deriveLocalSourceMonitorToken({
+    requestId: claim.requestId,
+    updateId: claim.updateId,
+    manifestSha256: claim.manifestSha256,
+    supervisorInstanceId: claim.supervisorInstanceId,
+  });
+  if (crypto.createHash("sha256").update(token, "utf8").digest("hex") !== claim.monitorTokenSha256) {
+    throw new Error("LOCAL_SOURCE_MONITOR_ACCESS_NOT_RECLAIMABLE");
+  }
+  return {
+    ok: true,
+    accepted,
+    ...(accepted ? {} : { existing: true }),
+    requestId: claim.requestId,
+    monitor: monitorAccessResponse({
+      origin: status.runner.monitor.origin as string,
+      request: {
+        requestId: claim.requestId,
+        updateId: claim.updateId,
+        manifestSha256: claim.manifestSha256,
+        supervisorInstanceId: claim.supervisorInstanceId,
+        issuedAt: claim.issuedAt,
+      },
+      token,
+    }),
+    localSourceUpdate: { ...status, state: "in-progress" as const, updateAvailable: false },
+  };
+}
+
+async function recoverAbandonedQueueClaim(claim: QueueClaim, status: LocalSourceStatus) {
+  if (!claimMatchesStatus(claim, status)) throw new Error("LOCAL_SOURCE_QUEUE_CLAIM_TARGET_MISMATCH");
+  const durable = await inspectDurableMonitorState(status.runner);
+  const request = requestFromClaim(claim);
+  const access = accessFromClaim(claim);
+  if (durable.request && !sameMonitorIdentity(durable.request, request)) {
+    throw new Error("LOCAL_SOURCE_QUEUE_CLAIM_CONFLICT");
+  }
+  if (durable.access && !sameMonitorIdentity(request, durable.access)) {
+    throw new Error("LOCAL_SOURCE_QUEUE_CLAIM_CONFLICT");
+  }
+  if (!durable.access) await writeJsonExclusive(path.join(controlRoot(), MONITOR_ACCESS_FILE), access);
+  if (!durable.request) await writeJsonExclusive(path.join(controlRoot(), "request.json"), request);
+  await removeExactJson(path.join(controlRoot(), QUEUE_CLAIM_FILE), claim);
+  return responseFromClaim(claim, status, false);
+}
+
+async function retireExactTerminalAccessOnly(
+  durable: Awaited<ReturnType<typeof inspectDurableMonitorState>>,
+  runner: Awaited<ReturnType<typeof readSupervisorStatus>>,
+) {
+  if (durable.request || !durable.access) return false;
+  const progress = runner.progress;
+  if (
+    !progress
+    || !["completed", "failed"].includes(String(progress.status || ""))
+    || progress.requestId !== durable.access.requestId
+    || progress.updateId !== durable.access.updateId
+    || progress.manifestSha256 !== durable.access.manifestSha256
+  ) throw new Error("LOCAL_SOURCE_FOREIGN_MONITOR_ACCESS_PRESENT");
+  await removeExactJson(path.join(controlRoot(), MONITOR_ACCESS_FILE), durable.access);
+  return true;
+}
+
+export async function queueLocalSourceUpdate(
+  input: { updateId?: string; manifestSha256?: string },
+  crashHooks: QueueCrashHooks = {},
+) {
   const status = await getLocalSourceUpdateStatus();
   if (
     status.state === "in-progress"
     && status.updateId === input.updateId
     && status.manifestSha256 === input.manifestSha256
   ) {
-    return { ok: true, accepted: false, existing: true, localSourceUpdate: status };
+    try {
+      const reclaimed = await reclaimExistingMonitorAccess(status, input);
+      if (!reclaimed) throw new Error("LOCAL_SOURCE_MONITOR_ACCESS_RECOVERY_INVALID");
+      return reclaimed;
+    } catch (error) {
+      return {
+        ok: false,
+        error: error instanceof Error
+          ? error.message.split(":", 1)[0]
+          : "LOCAL_SOURCE_MONITOR_ACCESS_RECOVERY_INVALID",
+        message: "Der laufende Installationsauftrag kann nur in seiner ursprünglichen, sicheren Browsersitzung fortgesetzt werden.",
+      };
+    }
   }
   if (!status.updateAvailable || !["available", "failed"].includes(status.state)) {
     return { ok: false, error: status.errorCode || "LOCAL_SOURCE_UPDATE_NOT_AVAILABLE", message: status.message };
@@ -811,60 +1328,95 @@ export async function queueLocalSourceUpdate(input: { updateId?: string; manifes
     };
   }
 
-  const requestFile = path.join(controlRoot(), "request.json");
-  const existing = await fs.lstat(requestFile).catch((error) => {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
-    throw error;
-  });
-  if (existing) return { ok: false, error: "LOCAL_SOURCE_UPDATE_ALREADY_QUEUED", message: "Eine Aktualisierung wurde bereits angefordert." };
-
   const now = new Date();
-  const monitorToken = crypto.randomBytes(32).toString("hex");
+  const requestId = `local-source-${Date.now()}-${crypto.randomBytes(8).toString("hex")}`;
+  const monitorToken = deriveLocalSourceMonitorToken({
+    requestId,
+    updateId: status.updateId,
+    manifestSha256: status.manifestSha256,
+    supervisorInstanceId: status.runner.instanceId,
+  });
   const monitorTokenSha256 = crypto.createHash("sha256").update(monitorToken, "utf8").digest("hex");
-  const monitorAccessExpiresAt = new Date(now.getTime() + MONITOR_ACCESS_LIFETIME_MS).toISOString();
-  const request = {
-    schemaVersion: REQUEST_SCHEMA,
-    requestId: `local-source-${Date.now()}-${crypto.randomBytes(8).toString("hex")}`,
-    action: "install",
+  const unsignedClaim: Omit<QueueClaim, "signature"> = {
+    schemaVersion: QUEUE_CLAIM_SCHEMA,
+    requestId,
     updateId: status.updateId,
     manifestSha256: status.manifestSha256,
     monitorTokenSha256,
     supervisorInstanceId: status.runner.instanceId,
     issuedAt: now.toISOString(),
-    expiresAt: new Date(now.getTime() + 5 * 60_000).toISOString(),
+    requestExpiresAt: new Date(now.getTime() + 5 * 60_000).toISOString(),
+    accessExpiresAt: new Date(now.getTime() + MONITOR_ACCESS_LIFETIME_MS).toISOString(),
+    ownerPid: process.pid,
+    ownerNonce: crypto.randomBytes(16).toString("hex"),
+    createdAt: now.toISOString(),
   };
-  const monitorAccessFile = path.join(controlRoot(), MONITOR_ACCESS_FILE);
-  await writeJsonAtomic(monitorAccessFile, {
-    requestId: request.requestId,
-    updateId: request.updateId,
-    manifestSha256: request.manifestSha256,
-    monitorTokenSha256,
-    expiresAt: monitorAccessExpiresAt,
-  });
+  const claim: QueueClaim = { ...unsignedClaim, signature: signQueueClaim(unsignedClaim) };
+  const claimFile = path.join(controlRoot(), QUEUE_CLAIM_FILE);
+  liveQueueOwners.add(claim.ownerNonce);
   try {
-    await writeJsonAtomic(requestFile, request);
-  } catch (error) {
-    const persisted = await readJson<{ requestId?: string }>(monitorAccessFile).catch(() => null);
-    if (persisted?.requestId === request.requestId) {
-      await fs.rm(monitorAccessFile, { force: true }).catch(() => {});
+    for (let attempt = 0; attempt < 200; attempt += 1) {
+      const durable = await inspectDurableMonitorState(status.runner);
+      const persistedClaimRaw = await readJson<unknown>(claimFile);
+      if (persistedClaimRaw) {
+        const persistedClaim = parseQueueClaim(persistedClaimRaw);
+        if (!persistedClaim) throw new Error("LOCAL_SOURCE_QUEUE_CLAIM_INVALID");
+        if (!claimMatchesStatus(persistedClaim, status)) {
+          throw new Error("LOCAL_SOURCE_QUEUE_CLAIM_TARGET_MISMATCH");
+        }
+        if (!claimOwnerIsLive(persistedClaim)) {
+          return recoverAbandonedQueueClaim(persistedClaim, status);
+        }
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        continue;
+      }
+      if (durable.request) {
+        if (
+          durable.request.updateId !== status.updateId
+          || durable.request.manifestSha256 !== status.manifestSha256
+        ) throw new Error("LOCAL_SOURCE_UPDATE_ALREADY_QUEUED");
+        const reclaimed = await reclaimExistingMonitorAccess(
+          { ...status, state: "in-progress", updateAvailable: false },
+          input,
+        );
+        if (!reclaimed) throw new Error("LOCAL_SOURCE_MONITOR_ACCESS_RECOVERY_INVALID");
+        return reclaimed;
+      }
+
+      if (durable.access) {
+        await retireExactTerminalAccessOnly(durable, await readSupervisorStatus());
+        continue;
+      }
+
+      try {
+        await writeJsonExclusive(claimFile, claim);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "EEXIST") continue;
+        throw error;
+      }
+      await crashHooks.afterClaim?.();
+      await writeJsonExclusive(path.join(controlRoot(), MONITOR_ACCESS_FILE), accessFromClaim(claim));
+      await crashHooks.afterGrant?.();
+      await writeJsonExclusive(path.join(controlRoot(), "request.json"), requestFromClaim(claim));
+      await crashHooks.afterRequest?.();
+      await removeExactJson(claimFile, claim);
+      return responseFromClaim(claim, status, true);
     }
-    throw error;
+    throw new Error("LOCAL_SOURCE_QUEUE_CLAIM_BUSY");
+  } catch (error) {
+    const code = error instanceof Error
+      ? error.message.split(":", 1)[0]
+      : "LOCAL_SOURCE_UPDATE_QUEUE_FAILED";
+    return {
+      ok: false,
+      error: code,
+      message: code === "LOCAL_SOURCE_UPDATE_ALREADY_QUEUED"
+        ? "Eine andere Aktualisierung wurde bereits angefordert."
+        : "Der Updateauftrag konnte nicht sicher eingereiht oder wieder aufgenommen werden.",
+    };
+  } finally {
+    liveQueueOwners.delete(claim.ownerNonce);
   }
-  return {
-    ok: true,
-    accepted: true,
-    requestId: request.requestId,
-    monitor: {
-      schemaVersion: "bonni.local-source-update-monitor-access/v1",
-      origin: status.runner.monitor.origin,
-      requestId: request.requestId,
-      updateId: status.updateId,
-      manifestSha256: status.manifestSha256,
-      token: monitorToken,
-      issuedAt: now.toISOString(),
-    },
-    localSourceUpdate: { ...status, state: "in-progress", updateAvailable: false },
-  };
 }
 
 export const LOCAL_SOURCE_UPDATE_REQUEST_SCHEMA = REQUEST_SCHEMA;

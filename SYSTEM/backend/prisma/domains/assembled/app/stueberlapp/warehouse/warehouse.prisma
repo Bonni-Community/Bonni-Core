@@ -1,0 +1,121 @@
+// =====================================================
+// MODULE: STUEBERLAPP / WAREHOUSE / BASE
+// =====================================================
+// Warehouse führt körperliche Bestände über Product, Article und DepositProduct.
+//
+// Audit/Inventory und Audit/Conversion liegen bewusst nicht mehr hier,
+// sondern unter ../audit/*.prisma.
+//
+// Kernregel:
+// - ProductStock gehört zu Product.
+// - ArticleStock gehört zu Article.
+// - DepositStock gehört zu DepositProduct.
+// - Inventory prüft Bestände.
+// - Conversion erklärt die fachliche Umwandlung / Übergabe.
+// =====================================================
+
+// =====================================================
+// SHARED UNITS / PACKAGES / LOCATIONS
+// =====================================================
+
+model Unit {
+  id    String @id @default(cuid())
+  key   String @unique
+  label String
+  kind  String
+}
+
+model UnitConversion {
+  id         String  @id @default(cuid())
+  fromUnitId String
+  toUnitId   String
+  factor     Decimal
+  note       String?
+
+  @@unique([fromUnitId, toUnitId])
+}
+
+model PackageType {
+  id          String  @id @default(cuid())
+  key         String  @unique
+  label       String
+  description String?
+}
+
+model PackageConversion {
+  id            String  @id @default(cuid())
+  packageTypeId String
+  articleId     String?
+  quantity      Decimal
+  unitId        String
+  note          String?
+}
+
+model StorageLocation {
+  id       String  @id @default(cuid())
+  key      String  @unique
+  label    String
+  parentId String?
+}
+
+// =====================================================
+// STOCK REASON ENTRY
+// =====================================================
+// StockReasonEntry ist ein kurzer fachlicher Hinweis, warum eine
+// ProductTransaction, ArticleTransaction oder DepositTransaction entstanden ist.
+// Er ersetzt keinen Audit-Vorgang. Für echte Übergabe/Umwandlung Conversion nutzen.
+// =====================================================
+
+model StockReasonEntry {
+  id String @id @default(cuid())
+
+  productId        String?
+  product          Product? @relation(fields: [productId], references: [id])
+
+  articleId        String?
+  article          Article? @relation(fields: [articleId], references: [id])
+
+  depositProductId String?
+  depositProduct   DepositProduct? @relation(fields: [depositProductId], references: [id])
+
+  productCategoryId String?
+  productCategory   ProductCategory? @relation(fields: [productCategoryId], references: [id])
+
+  productTransactionId String?
+  productTransaction   ProductTransaction? @relation(fields: [productTransactionId], references: [id])
+
+  articleTransactionId String?
+  articleTransaction   ArticleTransaction? @relation(fields: [articleTransactionId], references: [id])
+
+  depositTransactionId String?
+  depositTransaction   DepositTransaction? @relation(fields: [depositTransactionId], references: [id])
+
+  conversionTransactionId String?
+  conversionTransaction   ConversionTransaction? @relation(fields: [conversionTransactionId], references: [id])
+
+  inventoryCorrectionId String?
+  inventoryCorrection   InventoryCorrection? @relation(fields: [inventoryCorrectionId], references: [id])
+
+  reason   String
+  quantity Decimal @db.Decimal(14, 4)
+  unitId   String?
+
+  comment String?
+
+  occurredAt DateTime
+  createdAt  DateTime @default(now())
+
+  createdByAccountId String?
+
+  @@index([productId])
+  @@index([articleId])
+  @@index([depositProductId])
+  @@index([productCategoryId])
+  @@index([productTransactionId])
+  @@index([articleTransactionId])
+  @@index([depositTransactionId])
+  @@index([conversionTransactionId])
+  @@index([inventoryCorrectionId])
+  @@index([reason])
+  @@index([occurredAt])
+}

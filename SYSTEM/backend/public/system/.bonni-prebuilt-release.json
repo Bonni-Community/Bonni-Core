@@ -1,21 +1,31 @@
 {
   "schemaVersion": "bonni.prebuilt-frontend/v1",
-  "coreVersion": "0.1.20",
+  "coreVersion": "0.1.20+e",
   "files": [
     {
-      "path": "assets/index-BEJ1WY9y.js",
-      "bytes": 619398,
-      "sha256": "ee6382f90e8e4ee203c956eb85312e823fc68a2aecd87ad0ed2b2fa2e78ea1b4"
+      "path": "assets/index-BovihJN1.css",
+      "bytes": 280823,
+      "sha256": "5a7e2f4c00310e1416b759094c25869b534c7cab821d769c9ac9a0ef784c76b5"
     },
     {
-      "path": "assets/index-BLHrZRhu.css",
-      "bytes": 251740,
-      "sha256": "bd03c2d81bf6c75bb3e4f12b426c7fa723f233ddb899338896ad1098af27c092"
+      "path": "assets/index-HFhm-CI-.js",
+      "bytes": 702843,
+      "sha256": "25a55e81cd98a41db131dfe7efc443c82247e9c70a8f10ff60111a90aa36c6dc"
     },
     {
       "path": "index.html",
-      "bytes": 419,
-      "sha256": "02b7b3dc1015a1c4d8133bf98eb9c110312df9870173c271db11373fc0cdecb9"
+      "bytes": 423,
+      "sha256": "9197969efaf774321f68d152e87c00ad865dc9edf9e54e2d3838628a006e492a"
+    },
+    {
+      "path": "system/brand/bonni-logo-original.png",
+      "bytes": 7119,
+      "sha256": "dd41953487b594f21c75863183d6500adbf68c1694c8206faf42cf2fb96453a7"
+    },
+    {
+      "path": "system/brand/github-octocat.png",
+      "bytes": 7684,
+      "sha256": "861b49d20e8a6c963e9f0f6854906dba7e2c48c63a362a859bd5dade2906fc29"
     },
     {
       "path": "system/guides/2fa/01-provider.svg",
@@ -43,5 +53,5 @@
       "sha256": "2ba1afe1dbe06b792968d00fb47344ec2157ef045102143c9495a0d1c746e21b"
     }
   ],
-  "treeSha256": "28cc89c0eaca19fe45a4fc5cb2dc1e77d02423a578abb787fcebfa00036175f2"
+  "treeSha256": "e5092e6b763363637d433d32e174f381a932c7806fcee8cce0e86ab14dbac021"
 }

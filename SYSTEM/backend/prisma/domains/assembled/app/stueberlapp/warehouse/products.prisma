@@ -1,0 +1,606 @@
+// =====================================================
+// MODULE: STUEBERLAPP / WAREHOUSE / PRODUCTS
+// =====================================================
+// Produkte, Produktversionen, Kategorien, ProductStock/ProductTransaction und produktbezogene Auswertungen.
+//
+// V2-Begriffe:
+// - Product = wird verkauft.
+// - ProductStock = aktueller berechneter Systembestand.
+// - ProductTransaction = fachlicher Produktvorgang / Wahrheit der Ereignisse.
+// - ProductCalculation = Rechenweg aus ProductTransactions.
+// - ProductMetrics = berechnete Kennzahlen.
+//
+// Alte unspezifische Sammelbegriffe werden im aktiven Schema nicht mehr verwendet.
+//
+// Hinweis: Diese Datei enthält die fachlich zugehörigen
+// Enums und Modelle zusammen. Die Datenbankstruktur wurde
+// nicht fachlich verändert; das große stueberlapp.prisma
+// wurde nur organisatorisch aufgeteilt.
+// =====================================================
+
+enum ProductStatus {
+  DRAFT
+  APPROVED
+  ACTIVE
+  ARCHIVED
+}
+
+enum ProductType {
+  DRINK
+  FOOD
+  SNACK
+  MERCH
+  CONTAINER
+  RETURNABLE
+  PACKAGE
+  SERVICE
+  DEVICE
+  BOX
+  OTHER
+}
+
+enum ProductTransactionType {
+  PURCHASE
+  SALE
+  OPEN
+  PRODUCE
+  RETURN
+  WASTE
+  CORRECTION
+  INVENTORY_CORRECTION
+  REVERSAL
+}
+
+enum ProductTransactionStatus {
+  DRAFT
+  POSTED
+  CANCELLED
+  REVERSED
+}
+
+enum ProductTransactionDirection {
+  IN
+  OUT
+}
+
+enum ProductCalculationType {
+  STOCK_RECALCULATION
+  VALUE_RECALCULATION
+  COST_ALLOCATION
+  INVENTORY_RECONCILIATION
+}
+
+
+// =====================================================
+//                  Miscellaneous
+// =====================================================
+
+model PackagingNode {
+  id               String           @id @default(cuid())
+  productId        String
+  product          Product          @relation(fields: [productId], references: [id], onDelete: Cascade)
+  parentId         String?
+  parent           PackagingNode?   @relation("PackagingTree", fields: [parentId], references: [id], onDelete: Cascade)
+  children         PackagingNode[]  @relation("PackagingTree")
+  name             String
+  depositTypeId    String?
+  depositType      DepositType?     @relation(fields: [depositTypeId], references: [id])
+  depositQty       Int              @default(0)
+  categoryId       String?
+  category         ProductCategory? @relation(fields: [categoryId], references: [id])
+  linkedCategoryId String?
+  linkedCategory   ProductCategory? @relation("PackagingCategoryLink", fields: [linkedCategoryId], references: [id])
+
+  attributes PackagingAttribute[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([productId])
+  @@index([parentId])
+  @@index([depositTypeId])
+  @@index([categoryId])
+  @@index([linkedCategoryId])
+}
+
+model PackagingAttribute {
+  id        String        @id @default(cuid())
+  nodeId    String
+  node      PackagingNode @relation(fields: [nodeId], references: [id], onDelete: Cascade)
+  type      String
+  value     String
+  createdAt DateTime      @default(now())
+  updatedAt DateTime      @updatedAt
+
+  @@index([nodeId])
+}
+
+
+
+model MemberProductFavorite {
+  id        String @id @default(cuid())
+  memberId  String
+  productId String
+
+  score    Int @default(1)
+  quantity Int @default(0)
+
+  source     String    @default("AUTO_14_DAYS")
+  lastSeenAt DateTime?
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+
+  product Product       @relation(fields: [productId], references: [id])
+
+  @@unique([memberId, productId])
+}
+
+model ProductTasteTag {
+  productVersionId String
+  tasteTagId       String
+  intensity        Int?
+
+  productVersion ProductVersion @relation(fields: [productVersionId], references: [id])
+
+  @@id([productVersionId, tasteTagId])
+}
+
+model AgeRestriction {
+  id     String  @id @default(cuid())
+  key    String  @unique
+  label  String
+  minAge Int?
+  note   String?
+
+  products ProductAgeRestriction[]
+}
+
+model ProductAgeRestriction {
+  productVersionId String
+  ageRestrictionId String
+
+  productVersion ProductVersion @relation(fields: [productVersionId], references: [id])
+  ageRestriction AgeRestriction @relation(fields: [ageRestrictionId], references: [id])
+
+  @@id([productVersionId, ageRestrictionId])
+}
+
+model ProductVersionIntolerance {
+  productVersionId String
+  intoleranceId    String
+  riskLevel        RiskLevel?
+  note             String?
+
+  productVersion ProductVersion @relation(fields: [productVersionId], references: [id])
+
+  @@id([productVersionId, intoleranceId])
+}
+
+model CrossContaminationRule {
+  id             String    @id @default(cuid())
+  key            String    @unique
+  label          String
+  description    String?
+  riskLevel      RiskLevel
+  appliesToJson  Json?
+  mitigationNote String?
+}
+
+model Additive {
+  id           String  @id @default(cuid())
+  code         String  @unique
+  name         String
+  description  String?
+  warningLevel String?
+
+  productAdditives ProductVersionAdditive[]
+}
+
+
+// =====================================================
+//                  Product Category
+// =====================================================
+
+model ProductCategory {
+  id       String            @id @default(cuid())
+  parentId String?
+  parent   ProductCategory?  @relation("CategoryTree", fields: [parentId], references: [id], onDelete: Restrict)
+  children ProductCategory[] @relation("CategoryTree")
+
+  key                  String
+  label                String
+  description          String?
+  icon                 String?
+  color                String?
+  sortOrder            Int      @default(0)
+  visible              Boolean  @default(true)
+  active               Boolean  @default(true)
+  terminalTypes        Json?
+  packagingDisplayJson Json?
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  products           Product[]
+  visibilities       ProductCategoryVisibility[]
+  images             ProductCategoryImage[]
+  presets            ProductCategoryPreset[]
+  stockReasonEntries StockReasonEntry[]
+  packagingNodes     PackagingNode[]
+  packagingLinks     PackagingNode[]             @relation("PackagingCategoryLink")
+
+  @@unique([parentId, key])
+  @@index([parentId])
+}
+
+model ProductCategoryVisibility {
+  id           String          @id @default(cuid())
+  categoryId   String
+  category     ProductCategory @relation(fields: [categoryId], references: [id])
+  terminalType String?
+  layoutPreset String?
+  visible      Boolean         @default(true)
+  sortOrder    Int             @default(0)
+
+  @@unique([categoryId, terminalType, layoutPreset])
+}
+
+model ProductCategoryImage {
+  id           String          @id @default(cuid())
+  categoryId   String
+  category     ProductCategory @relation(fields: [categoryId], references: [id])
+  terminalType String?
+  layoutPreset String?
+  mediaFileId  String?
+  imageUrl     String?
+  altText      String?
+  sortOrder    Int             @default(0)
+}
+
+model ProductCategoryPreset {
+  id         String          @id @default(cuid())
+  categoryId String
+  category   ProductCategory @relation(fields: [categoryId], references: [id])
+  key        String
+  label      String
+  configJson Json?
+  active     Boolean         @default(true)
+
+  @@unique([categoryId, key])
+}
+
+// =====================================================
+//                   Product
+// =====================================================
+
+model Product {
+  id                   String           @id @default(cuid())
+  sku                  String           @unique
+  type                 ProductType      @default(OTHER)
+  categoryId           String?
+  category             ProductCategory? @relation(fields: [categoryId], references: [id])
+  active               Boolean          @default(true)
+  isSellable           Boolean          @default(true)
+  isStockTracked       Boolean          @default(true)
+  packagingDisplayJson Json?
+  currentVersionId     String?
+  createdAt            DateTime         @default(now())
+  updatedAt            DateTime         @updatedAt
+
+  productContainers      ProductContainer[]
+  containerContents      ContainerContent[] @relation("ContainerContentProduct")
+  packagingNodes         PackagingNode[]
+  versions               ProductVersion[]
+  memberProductFavorites MemberProductFavorite[]
+
+  stock        ProductStock?
+  transactions ProductTransaction[]
+  calculations ProductCalculation[]
+  metrics      ProductMetrics[]
+  stockReasonEntries StockReasonEntry[]
+
+  inventoryScopes      InventoryScope[]
+  inventorySnapshots   InventorySnapshot[]
+  inventoryStocks      InventoryStock[]
+  inventoryDifferences InventoryDifference[]
+  inventoryCorrections InventoryCorrection[]
+
+  conversionInputs  ConversionInput[]  @relation("ConversionInputProduct")
+  conversionOutputs ConversionOutput[] @relation("ConversionOutputProduct")
+
+  @@index([type])
+  @@index([active])
+}
+
+model ProductVersion {
+  id                     String        @id @default(cuid())
+  productId              String
+  product                Product       @relation(fields: [productId], references: [id])
+  versionNumber          Int
+  name                   String
+  shortName              String?
+  description            String?
+  price                  Decimal
+  depositPrice           Decimal?
+  minimumStock           Decimal?
+  blocked                Boolean       @default(false)
+  barcode                String?
+  status                 ProductStatus @default(DRAFT)
+  recipeVersionId        String?
+  allergenSnapshotJson   Json?
+  additiveSnapshotJson   Json?
+  ingredientSnapshotJson Json?
+  hash                   String
+  previousVersionHash    String?
+  createdByAccountId     String?
+  approvedByAccountId    String?
+  createdAt              DateTime      @default(now())
+  approvedAt             DateTime?
+
+  images          ProductImage[]
+  tasteTags       ProductTasteTag[]
+  allergens       ProductVersionAllergen[]
+  additives       ProductVersionAdditive[]
+  intolerances    ProductVersionIntolerance[]
+  ageRestrictions ProductAgeRestriction[]
+  articleMappings ProductArticleMapping[]
+  productDeposits    ProductDeposit[]
+  containerContents ContainerContent[] @relation("ContainerContentProductVersion")
+  loanConfig        ProductLoanConfig?
+
+  @@unique([productId, versionNumber])
+  @@index([barcode])
+}
+
+model ProductArticleMapping {
+  id               String         @id @default(cuid())
+  productVersionId String
+  productVersion   ProductVersion @relation(fields: [productVersionId], references: [id])
+  articleId        String?
+  articleVariantId String?
+  quantity         Decimal
+  unitId           String?
+  role             String?        // INGREDIENT, PACKAGING, CONSUMABLE, ACCESSORY, OTHER
+  wasteFactor      Decimal?
+  note             String?
+
+  @@index([productVersionId])
+  @@index([articleId])
+  @@index([articleVariantId])
+}
+
+model ProductVersionAllergen {
+  productVersionId String
+  allergenId       String
+  severity         String?
+  note             String?
+
+  productVersion ProductVersion @relation(fields: [productVersionId], references: [id])
+
+  @@id([productVersionId, allergenId])
+}
+
+model ProductVersionAdditive {
+  productVersionId String
+  additiveId       String
+  note             String?
+
+  productVersion ProductVersion @relation(fields: [productVersionId], references: [id])
+  additive       Additive       @relation(fields: [additiveId], references: [id])
+
+  @@id([productVersionId, additiveId])
+}
+
+model ProductImage {
+  id               String         @id @default(cuid())
+  productVersionId String
+  productVersion   ProductVersion @relation(fields: [productVersionId], references: [id])
+  terminalType     String?
+  layoutPreset     String?
+  mediaFileId      String?
+  imageUrl         String?
+  imageHash        String?
+  altText          String?
+  sortOrder        Int            @default(0)
+}
+
+// =====================================================
+// PRODUCT STOCK / TRANSACTIONS / CALCULATIONS
+// =====================================================
+
+model ProductStock {
+  id               String   @id @default(cuid())
+  productId        String   @unique
+  product          Product  @relation(fields: [productId], references: [id])
+  productVersionId String?
+
+  quantity         Decimal  @default(0) @db.Decimal(14, 4)
+  unitId           String?
+  valueCents       Int      @default(0)
+  currency         String   @default("EUR")
+
+  calculationId    String?
+  lastCalculatedAt DateTime?
+  updatedAt        DateTime @updatedAt
+
+  @@index([productVersionId])
+}
+
+model ProductTransaction {
+  id                 String                   @id @default(cuid())
+  productId           String
+  product             Product                  @relation(fields: [productId], references: [id])
+  productVersionId    String?
+
+  type               ProductTransactionType
+  direction          ProductTransactionDirection
+  status             ProductTransactionStatus @default(POSTED)
+
+  quantity           Decimal                  @db.Decimal(14, 4)
+  unitId             String?
+  unitValueCents     Int?
+  totalValueCents    Int?
+  currency           String                   @default("EUR")
+
+  articleTransactionId String?
+  depositTransactionId String?
+  financeTransactionId String?
+  conversionTransactionId String?
+  conversionTransaction   ConversionTransaction? @relation("ConversionProductTransactions", fields: [conversionTransactionId], references: [id])
+  sourceModule        String?
+  sourceType          String?
+  sourceId            String?
+  reason              String?
+  note                String?
+
+  occurredAt          DateTime @default(now())
+  createdAt           DateTime @default(now())
+  createdByAccountId  String?
+
+  stockReasonEntries StockReasonEntry[]
+
+  @@index([productId, occurredAt])
+  @@index([type])
+  @@index([conversionTransactionId])
+  @@index([sourceModule, sourceType, sourceId])
+}
+
+model ProductCalculation {
+  id             String                 @id @default(cuid())
+  productId      String
+  product        Product                @relation(fields: [productId], references: [id])
+
+  type           ProductCalculationType
+  fromAt         DateTime?
+  toAt           DateTime?
+
+  calculatedQuantity Decimal?           @db.Decimal(14, 4)
+  calculatedValueCents Int?
+  currency       String                 @default("EUR")
+
+  basisJson      Json?
+  note           String?
+  calculatedAt   DateTime               @default(now())
+  createdByAccountId String?
+
+  @@index([productId, calculatedAt])
+  @@index([type])
+}
+
+model ProductMetrics {
+  id                String   @id @default(cuid())
+  productId          String
+  product            Product  @relation(fields: [productId], references: [id])
+
+  periodType         ForecastPeriodType?
+  periodStart        DateTime?
+  periodEnd          DateTime?
+
+  stockQuantity      Decimal? @db.Decimal(14, 4)
+  stockValueCents    Int?
+  averageCostCents   Int?
+  sellPriceCents     Int?
+  marginCents        Int?
+  marginBasisPoints  Int?
+  soldQuantity       Decimal? @db.Decimal(14, 4)
+  revenueCents       Int?
+  contributionCents  Int?
+  lowStockWarning    Boolean  @default(false)
+  metricsJson        Json?
+
+  calculatedAt       DateTime @default(now())
+
+  @@index([productId, calculatedAt])
+  @@index([periodType, periodStart, periodEnd])
+}
+
+model ProductSalesRanking {
+  id           String             @id @default(cuid())
+  periodType   ForecastPeriodType
+  periodStart  DateTime
+  periodEnd    DateTime
+  productId    String
+  soldQuantity Decimal
+  revenue      Decimal
+  rank         Int
+  createdAt    DateTime           @default(now())
+}
+
+model ProductDemandForecast {
+  id                 String             @id @default(cuid())
+  productId          String?
+  articleId          String?
+  periodType         ForecastPeriodType
+  expectedQuantity   Decimal
+  confidence         Decimal?
+  basedOnPeriodCount Int?
+  note               String?
+  createdAt          DateTime           @default(now())
+}
+
+model ProductVariant {
+  id               String   @id @default(cuid())
+  productId        String
+  key              String
+  label            String
+  currentVersionId String?
+  active           Boolean  @default(true)
+  sortOrder        Int      @default(0)
+  createdAt        DateTime @default(now())
+
+  versions ProductVariantVersion[]
+
+  @@unique([productId, key])
+}
+
+model ProductVariantVersion {
+  id                  String         @id @default(cuid())
+  productVariantId    String
+  productVariant      ProductVariant @relation(fields: [productVariantId], references: [id])
+  versionNumber       Int
+  productVersionId    String?
+  barcode             String?
+  price               Decimal?
+  depositPrice        Decimal?
+  contentQuantity     Decimal?
+  contentUnitId       String?
+  packageTypeId       String?
+  hash                String?
+  previousVersionHash String?
+  active              Boolean        @default(true)
+  createdAt           DateTime       @default(now())
+
+  @@unique([productVariantId, versionNumber])
+  @@index([barcode])
+}
+
+model ProductDeposit {
+  id               String          @id @default(cuid())
+  productVersionId String?
+  productVersion   ProductVersion? @relation(fields: [productVersionId], references: [id])
+  articleVariantId String?
+  depositTypeId    String
+  depositType      DepositType     @relation(fields: [depositTypeId], references: [id])
+  amount           Decimal
+  active           Boolean         @default(true)
+  createdAt        DateTime        @default(now())
+  updatedAt        DateTime        @updatedAt
+
+  @@index([productVersionId])
+  @@index([depositTypeId])
+}
+
+model ProductLoanConfig {
+  id               String         @id @default(cuid())
+  productVersionId String         @unique
+  productVersion   ProductVersion @relation(fields: [productVersionId], references: [id])
+  enabled          Boolean        @default(false)
+  label            String?
+  cautionAmount    Decimal?
+  replacementCost  Decimal?
+  dueAfterDays     Int?           @default(90)
+  warnAfterDays    Int?           @default(14)
+  active           Boolean        @default(true)
+  note             String?
+  createdAt        DateTime       @default(now())
+  updatedAt        DateTime       @updatedAt
+}

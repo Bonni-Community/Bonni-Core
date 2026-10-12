@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 
 import ExactSecretInput from "../../two-factor/components/ExactSecretInput.jsx";
+import BrandName from "../../../../../system/brand/BrandName.jsx";
 import {
   countUnicodeCodePoints,
   LOCAL_PASSWORD_MAX_LENGTH,
@@ -313,7 +314,7 @@ export default function PasswordRecoveryFlow({
   return (
     <section className="bonni-password-recovery" aria-label="Passwort-Wiederherstellung">
       <header>
-        <p>Bonni Core</p>
+        <BrandName as="p" />
         <h2>{phase === "approved" ? "Neues Passwort" : "Passwort-Wiederherstellung"}</h2>
       </header>
 
