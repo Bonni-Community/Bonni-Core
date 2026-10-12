@@ -1,4 +1,4 @@
-# Bonni Core v0.1.21 – ARM64
+# Bonni Core v0.1.21 – ARMv7
 # Docker Compose: passende Architektur wählen und diese YAML verwenden.
 # Vor dem Start die DREI BITTE-Werte unten durch eigene Werte ersetzen.
 # DB-Kennwort: mindestens 24 Zeichen. MASTER_KEY: mindestens 43 Zeichen.
@@ -30,8 +30,8 @@ x-bonni-environment: &bonni_environment
 
 services:
   db:
-    image: postgres:16-alpine@sha256:7ae1143a9f249af815f056751a122a86d7e44ddce0926f2b227e3d5c434444f4
-    platform: linux/arm64
+    image: ghcr.io/bonni-community/bonni-core-database:0.1.21-armv7
+    platform: linux/arm/v7
     restart: unless-stopped
     environment:
       POSTGRES_USER: bonni
@@ -48,7 +48,7 @@ services:
 
   bonni-core:
     image: ghcr.io/bonni-community/bonni-core:0.1.21
-    platform: linux/arm64
+    platform: linux/arm/v7
     init: true
     restart: unless-stopped
     depends_on:

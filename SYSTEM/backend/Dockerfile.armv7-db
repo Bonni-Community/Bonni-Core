@@ -1,0 +1,44 @@
+FROM ubuntu:22.04@sha256:5ec03bb3441e8b0bf3b4f9cd4629a1ae763010dc3035bb8da3ae6cf026486401 AS bonni-arm-os
+RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+      ca-certificates openssl libssl3 zlib1g libreadline8 libstdc++6 libatomic1 locales tzdata \
+    && rm -rf /var/lib/apt/lists/*
+RUN localedef -i en_US -c -f UTF-8 -A /usr/share/locale/locale.alias en_US.UTF-8
+
+FROM bonni-arm-os AS bonni-pg-build
+RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+      curl bzip2 build-essential libssl-dev zlib1g-dev libreadline-dev bison flex \
+    && rm -rf /var/lib/apt/lists/*
+WORKDIR /build
+RUN curl --fail --show-error --location --proto '=https' --tlsv1.2 \
+      https://ftp.postgresql.org/pub/source/v16.14/postgresql-16.14.tar.bz2 -o postgres.tar.bz2 \
+    && echo 'f6d077142737920858ce958ccdb75c6ee137a63b5b0853c70693d401ac7e3471  postgres.tar.bz2' | sha256sum -c - \
+    && tar -xjf postgres.tar.bz2 --strip-components=1 \
+    && ./configure --prefix=/usr/local/pgsql --with-openssl --without-icu \
+      --with-system-tzdata=/usr/share/zoneinfo \
+      LDFLAGS='-Wl,-z,max-page-size=65536 -Wl,-z,common-page-size=65536 -Wl,-rpath,/usr/local/pgsql/lib' \
+    && make -j2 world-bin && make install-world-bin \
+    && cp COPYRIGHT /usr/local/pgsql/COPYRIGHT
+
+FROM postgres:16-bookworm@sha256:2cbff43061baf39d06e6b011ba68d221b65805020d4f4aef654978849c3fc745 AS bonni-pg-entrypoint
+
+FROM bonni-arm-os AS database
+COPY --from=bonni-pg-build /usr/local/pgsql /usr/local/pgsql
+COPY --from=bonni-pg-entrypoint /usr/local/bin/gosu /usr/local/bin/gosu
+COPY --from=bonni-pg-entrypoint /usr/local/bin/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+ENV PATH=/usr/local/pgsql/bin:$PATH
+ENV PG_MAJOR=16 PG_VERSION=16.14 PGDATA=/var/lib/postgresql/data LANG=en_US.utf8
+RUN echo /usr/local/pgsql/lib > /etc/ld.so.conf.d/bonni-postgresql.conf && ldconfig \
+    && sed -ri "s!^#?(listen_addresses)\\s*=\\s*\\S+.*!\\1 = '*'!" /usr/local/pgsql/share/postgresql.conf.sample \
+    && grep -F "listen_addresses = '*'" /usr/local/pgsql/share/postgresql.conf.sample \
+    && groupadd -r postgres --gid=999 \
+    && useradd -r -g postgres --uid=999 --home-dir=/var/lib/postgresql --shell=/bin/bash postgres \
+    && mkdir -p /var/lib/postgresql/data /var/run/postgresql /docker-entrypoint-initdb.d \
+    && chown -R postgres:postgres /var/lib/postgresql /var/run/postgresql \
+    && chmod 700 /var/lib/postgresql/data && chmod 3777 /var/run/postgresql \
+    && postgres --version && gosu nobody true
+LABEL org.opencontainers.image.title="Bonni PostgreSQL ARMv7" org.bonni.database.major="16"
+VOLUME ["/var/lib/postgresql/data"]
+EXPOSE 5432
+STOPSIGNAL SIGINT
+ENTRYPOINT ["docker-entrypoint.sh"]
+CMD ["postgres"]
