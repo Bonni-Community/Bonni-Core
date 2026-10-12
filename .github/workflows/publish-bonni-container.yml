@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       release_id:
-        description: Draft release identifier
+        description: Existing Bonni release or new draft identifier
         required: true
         type: string
       asset_id:
@@ -46,7 +46,163 @@ jobs:
     name: Build selected container architectures
     runs-on: ubuntu-latest
     timeout-minutes: 120
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RELEASE_ID: ${{ inputs.release_id }}
+      ASSET_SHA256: ${{ inputs.asset_sha256 }}
+      VERSION: ${{ inputs.version }}
+      PLATFORMS: ${{ inputs.platforms }}
+      IMAGE: ${{ inputs.image }}
     steps:
+      - name: Validate the existing release and publication plan
+        run: |
+          set -euo pipefail
+          cat > bonni-release-reconcile.mjs <<'BONNI_RECONCILE_SCRIPT'
+          async function reconcileContainerRelease({env = process.env, fetchImpl = globalThis.fetch, log = console.log} = {}) {
+            const fs = await import("node:fs/promises");
+            const {createReadStream} = await import("node:fs");
+            const {createHash} = await import("node:crypto");
+            const version = env.VERSION || "";
+            const sha = env.ASSET_SHA256 || "";
+            const platforms = (env.PLATFORMS || "").split(",");
+            const repository = env.GITHUB_REPOSITORY || "";
+            if (!/^[\w.-]+\/[\w.-]+$/.test(repository) || !/^[1-9][0-9]*$/.test(env.RELEASE_ID || "")
+              || !/^\d+\.\d+\.\d+(?:-[a-z])?$/.test(version) || !/^[a-f0-9]{64}$/.test(sha)
+              || !["linux/amd64", "linux/arm64", "linux/amd64,linux/arm64"].includes(platforms.join(","))) throw Error("BONNI_RELEASE_INPUT_INVALID");
+            const coreVersion = version.replace(/-([a-z])$/, "+$1");
+            const prefix = "/repos/" + repository;
+            const releasePath = prefix + "/releases/" + env.RELEASE_ID;
+            const planPrefix = "<!-- bonni-container-plan:";
+            const resultPrefix = "<!-- bonni-container-result:";
+            async function api(relative, {method = "GET", json, file, size} = {}) {
+              const headers = {Authorization: "Bearer " + env.GH_TOKEN, Accept: "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"};
+              const options = {method, headers, redirect: "error"};
+              if (json !== undefined) { headers["Content-Type"] = "application/json"; options.body = JSON.stringify(json); }
+              if (file) {
+                headers["Content-Type"] = "application/octet-stream";
+                headers["Content-Length"] = String(size);
+                options.body = createReadStream(file); options.duplex = "half";
+              }
+              const response = await fetchImpl((file ? "https://uploads.github.com" : "https://api.github.com") + relative, options);
+              if (![200, 201, 204].includes(response.status)) throw Error("BONNI_RELEASE_API_" + response.status + "_" + method);
+              return response.status === 204 ? null : response.json();
+            }
+            async function validate() {
+              const release = await api(releasePath);
+              const line = String(release.body || "").split("\n").find(line => line.startsWith(planPrefix) && line.endsWith(" -->"));
+              const plan = line ? JSON.parse(line.slice(planPrefix.length, -4)) : null;
+              if (release.tag_name !== "v" + coreVersion || release.immutable === true
+                || !String(release.body).includes("<!-- bonni-windows-container-release -->")
+                || plan?.schema !== "bonni.container-plan/v2" || plan.sourceSha256 !== sha
+                || !/^[a-f0-9]{64}$/.test(plan.sourceFingerprint || "")
+                || plan.imageRepository !== env.IMAGE || plan.imageTag !== version
+                || plan.platforms?.join(",") !== platforms.join(",")) throw Error("BONNI_RELEASE_PLAN_CHANGED_OR_LOCKED");
+              return {release, plan};
+            }
+            async function assets() {
+              const result = [];
+              for (let page = 1; page <= 50; page++) {
+                const items = await api(releasePath + "/assets?per_page=100&page=" + page);
+                if (!Array.isArray(items)) throw Error("BONNI_RELEASE_ASSETS_INVALID");
+                result.push(...items);
+                if (items.length < 100) return result;
+              }
+              throw Error("BONNI_RELEASE_ASSETS_LIMIT");
+            }
+            const expected = platforms.flatMap(platform => {
+              const name = "Bonni-Core-v" + coreVersion + "-" + platform.split("/")[1].toUpperCase();
+              return [name + ".yml", name + ".yml.sha256", name + ".tar", name + ".tar.sha256"];
+            }).concat("Bonni-Core-v" + coreVersion + "-QNAP-Anleitung.txt");
+            const phase = env.BONNI_RELEASE_PHASE || "validate";
+            const {release, plan} = await validate();
+            if (phase === "validate") {
+              if (env.GITHUB_OUTPUT) await fs.appendFile(env.GITHUB_OUTPUT, "release_tag=" + release.tag_name + "\n");
+              return {releaseTag: release.tag_name, published: release.draft === false};
+            }
+            const local = [];
+            for (const name of expected) {
+              const file = (env.BONNI_ASSET_DIRECTORY || "compose-assets") + "/" + name;
+              const stat = await fs.lstat(file);
+              if (!stat.isFile() || stat.size === 0) throw Error("BONNI_RELEASE_FILE_INVALID: " + name);
+              const hash = createHash("sha256");
+              for await (const bytes of createReadStream(file)) hash.update(bytes);
+              local.push({name, file, size: stat.size, digest: "sha256:" + hash.digest("hex")});
+            }
+            const current = await assets();
+            const identical = (asset, file) => asset?.state === "uploaded" && asset.size === file.size && asset.digest === file.digest;
+            if (phase === "assets") {
+              if (!/^[0-9]+$/.test(env.GITHUB_RUN_ID || "") || !/^[0-9]+$/.test(env.GITHUB_RUN_ATTEMPT || "")) throw Error("BONNI_RUN_ID_INVALID");
+              const suffix = env.GITHUB_RUN_ID + "-" + env.GITHUB_RUN_ATTEMPT;
+              const staged = [];
+              try {
+                // Stage every replacement before any old download is renamed or removed.
+                for (const file of local) {
+                  const old = current.find(asset => asset.name === file.name);
+                  if (identical(old, file)) { log("Unverändert: " + file.name); continue; }
+                  const stagedName = "bonni-staging-" + suffix + "-" + file.name;
+                  const backupName = "bonni-backup-" + suffix + "-" + file.name;
+                  if (current.some(asset => [stagedName, backupName].includes(asset.name))) throw Error("BONNI_RELEASE_STAGING_CONFLICT");
+                  const item = {file, old, backupName, uploaded: null, oldRenamed: false, activated: false};
+                  staged.push(item);
+                  item.uploaded = await api(releasePath + "/assets?name=" + encodeURIComponent(stagedName), {method: "POST", file: file.file, size: file.size});
+                  if (!identical(item.uploaded, file)) throw Error("BONNI_RELEASE_UPLOAD_CHECK_FAILED: " + file.name);
+                }
+                await validate();
+                // Detect external asset edits since inventory, before replacing anything.
+                const fresh = await assets();
+                for (const item of staged) {
+                  const found = fresh.find(asset => asset.name === item.file.name);
+                  if (item.old ? found?.id !== item.old.id || found.updated_at !== item.old.updated_at : found) throw Error("BONNI_RELEASE_ASSET_CHANGED");
+                }
+                for (const item of staged) {
+                  if (item.old) {
+                    await api(prefix + "/releases/assets/" + item.old.id, {method: "PATCH", json: {name: item.backupName}});
+                    item.oldRenamed = true;
+                  }
+                  await api(prefix + "/releases/assets/" + item.uploaded.id, {method: "PATCH", json: {name: item.file.name}});
+                  item.activated = true;
+                  log((item.old ? "Aktualisiert: " : "Ergänzt: ") + item.file.name);
+                }
+              } catch (error) {
+                let restored = true;
+                for (const item of staged.reverse()) {
+                  try {
+                    if (item.uploaded?.id) await api(prefix + "/releases/assets/" + item.uploaded.id, {method: "DELETE"});
+                    if (item.oldRenamed) await api(prefix + "/releases/assets/" + item.old.id, {method: "PATCH", json: {name: item.file.name}});
+                  } catch { restored = false; }
+                }
+                if (!restored) throw Error("BONNI_RELEASE_ROLLBACK_INCOMPLETE_BACKUPS_RETAINED", {cause: error});
+                throw error;
+              }
+              // Old downloads are discarded only after all replacements succeeded.
+              for (const item of staged) if (item.old) {
+                try { await api(prefix + "/releases/assets/" + item.old.id, {method: "DELETE"}); }
+                catch { log("Sicherung bleibt erhalten: " + item.backupName); }
+              }
+              return {changed: staged.length, unchanged: local.length - staged.length};
+            }
+            if (phase !== "finalize") throw Error("BONNI_RELEASE_PHASE_INVALID");
+            if (!/^[a-f0-9]{40}$/.test(env.SOURCE_COMMIT || "") || !/^sha256:[a-f0-9]{64}$/.test(env.DIGEST || "")) throw Error("BONNI_RELEASE_RESULT_INVALID");
+            if (!local.every(file => identical(current.find(asset => asset.name === file.name), file))) throw Error("BONNI_RELEASE_DOWNLOADS_INCOMPLETE");
+            const result = {sourceFingerprint: plan.sourceFingerprint, sourceSha256: sha, sourceCommit: env.SOURCE_COMMIT,
+              imageDigest: env.DIGEST, assets: local.map(({name, size, digest}) => ({name, size, digest}))};
+            const latest = await validate();
+            const start = "<!-- bonni-container-summary:start -->", end = "<!-- bonni-container-summary:end -->";
+            const cleaned = String(latest.release.body || "").replace(/<!-- bonni-container-summary:start -->[\s\S]*?<!-- bonni-container-summary:end -->/g, "")
+              .split("\n").filter(line => !line.startsWith(resultPrefix) && !line.startsWith("<!-- bonni-container-built:")).join("\n").trim();
+            const code = "https://github.com/" + repository + "/tree/" + env.SOURCE_COMMIT + "/SYSTEM";
+            const body = cleaned + "\n\n" + start + "\nGeprüfter Container: `" + env.IMAGE + "@" + env.DIGEST
+              + "`.\n\nPassender Quellcode: [SYSTEM](" + code + ").\n" + end
+              + "\n\n<!-- bonni-container-built:" + env.DIGEST + " -->\n" + resultPrefix + JSON.stringify(result) + " -->\n";
+            await api(releasePath, {method: "PATCH", json: {name: "Bonni Core v" + coreVersion, body, draft: false}});
+            log("Release vollständig aktualisiert: " + release.html_url);
+            return result;
+          }
+          await reconcileContainerRelease();
+          
+          BONNI_RECONCILE_SCRIPT
+          node bonni-release-reconcile.mjs
+
       - name: Validate selected architectures
         env:
           PLATFORMS: ${{ inputs.platforms }}
@@ -417,17 +573,6 @@ jobs:
             trap - EXIT
           done
 
-      - name: Upload QNAP configuration and instructions to the draft
-        env:
-          GH_TOKEN: ${{ github.token }}
-          RELEASE_ID: ${{ inputs.release_id }}
-        run: |
-          set -euo pipefail
-          RELEASE_TAG=$(gh api "/repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}" --jq '.tag_name')
-          for FILE in compose-assets/*; do
-            gh release upload "${RELEASE_TAG}" "$FILE" --repo "${GITHUB_REPOSITORY}" --clobber
-          done
-
       - name: Export and verify downloadable Docker TAR images
         env:
           GH_TOKEN: ${{ github.token }}
@@ -439,11 +584,11 @@ jobs:
           SOURCE_SHA256: ${{ inputs.asset_sha256 }}
         run: |
           set -euo pipefail
-          RELEASE_TAG=$(gh api "/repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}" --jq '.tag_name')
           for PLATFORM in ${PLATFORMS//,/ }; do
             ARCH=${PLATFORM#linux/}
             ARCH_LABEL=${ARCH^^}
-            FILE="Bonni-Core-v${VERSION}-${ARCH_LABEL}.tar"
+            CORE_VERSION=$(node -e 'process.stdout.write(process.env.VERSION.replace(/-([a-z])$/, "+$1"))')
+            FILE="Bonni-Core-v${CORE_VERSION}-${ARCH_LABEL}.tar"
             IMAGE_TAG="bonni-core:${VERSION}-${ARCH}"
             docker buildx build --builder "${BUILDER}" --platform "${PLATFORM}" \
               --build-arg "BONNI_CORE_REVISION=${SOURCE_COMMIT}" \
@@ -459,10 +604,10 @@ jobs:
             DETECTED=$(node -e 'const c = require("./image-config.json"); const labels = c.config?.Labels || {}; if (labels["org.opencontainers.image.revision"] !== process.env.SOURCE_COMMIT || labels["io.bonni.source-package.sha256"] !== process.env.SOURCE_SHA256 || labels["org.opencontainers.image.version"] !== process.env.VERSION) throw new Error("Container source labels do not match the release code"); process.stdout.write(c.os + "/" + c.architecture);')
             test "${DETECTED}" = "${PLATFORM}"
             sha256sum "${FILE}" > "${FILE}.sha256"
-            gh release upload "${RELEASE_TAG}" "${FILE}" "${FILE}.sha256" --repo "${GITHUB_REPOSITORY}" --clobber
+            mv "${FILE}" "${FILE}.sha256" compose-assets/
           done
 
-      - name: Update repository code and bind the release tag
+      - name: Update repository code and preserve any existing release tag
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_ID: ${{ inputs.release_id }}
@@ -471,12 +616,15 @@ jobs:
           VERSION: ${{ inputs.version }}
         run: |
           set -euo pipefail
-          gh api "/repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}" > bonni-release.json
-          RELEASE_TAG=$(VERSION="${VERSION}" node -e 'const r = require("./bonni-release.json"); const tag = "v" + process.env.VERSION.replace(/-([a-z])$/, "+$1"); if (r.draft !== true || r.tag_name !== tag || typeof r.body !== "string" || !r.body.includes("<!-- bonni-windows-container-release -->")) throw new Error("Release is not the expected Bonni draft"); process.stdout.write(tag);')
+          node bonni-release-reconcile.mjs
+          RELEASE_TAG=$(node -e 'process.stdout.write("v" + process.env.VERSION.replace(/-([a-z])$/, "+$1"))')
           git -C repository check-ref-format "refs/heads/${DEFAULT_BRANCH}"
           TAG_BASE=$(git -C repository ls-remote origin "refs/tags/${RELEASE_TAG}" | cut -f1)
-          git -C repository push --atomic --force-with-lease="refs/tags/${RELEASE_TAG}:${TAG_BASE}" \
-            origin "${SOURCE_COMMIT}:refs/heads/${DEFAULT_BRANCH}" "${SOURCE_COMMIT}:refs/tags/${RELEASE_TAG}"
+          if [ -n "${TAG_BASE}" ]; then
+            git -C repository push origin "${SOURCE_COMMIT}:refs/heads/${DEFAULT_BRANCH}"
+          else
+            git -C repository push --atomic origin "${SOURCE_COMMIT}:refs/heads/${DEFAULT_BRANCH}" "${SOURCE_COMMIT}:refs/tags/${RELEASE_TAG}"
+          fi
           printf 'Source code: https://github.com/%s/tree/%s/SYSTEM\n' "${GITHUB_REPOSITORY}" "${SOURCE_COMMIT}" >> "${GITHUB_STEP_SUMMARY}"
 
       - name: Promote the verified container to stable
@@ -486,16 +634,23 @@ jobs:
           DIGEST: ${{ steps.bonni_image.outputs.digest }}
         run: |
           set -euo pipefail
+          node bonni-release-reconcile.mjs
           test -n "${DIGEST}"
           docker buildx imagetools create --tag "${IMAGE}:${VERSION}" --tag "${IMAGE}:stable" "${IMAGE}@${DIGEST}"
 
-      - name: Publish GitHub release after successful image build
+      - name: Reconcile only missing or changed Bonni downloads
         env:
-          GH_TOKEN: ${{ github.token }}
-          RELEASE_ID: ${{ inputs.release_id }}
-          SOURCE_COMMIT: ${{ steps.bonni_source.outputs.source_commit }}
+          BONNI_RELEASE_PHASE: assets
         run: |
           set -euo pipefail
-          gh api "/repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}" > bonni-release.json
-          node -e 'const fs = require("node:fs"); const r = require("./bonni-release.json"); const code = "https://github.com/" + process.env.GITHUB_REPOSITORY + "/tree/" + process.env.SOURCE_COMMIT + "/SYSTEM"; fs.writeFileSync("bonni-release-publication.json", JSON.stringify({draft: false, prerelease: false, target_commitish: process.env.SOURCE_COMMIT, body: r.body + "\n\nQuellcode zu diesem Container: [SYSTEM](" + code + ")."}));'
-          gh api --method PATCH "/repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}"             --input bonni-release-publication.json >/dev/null
+          node bonni-release-reconcile.mjs
+
+      - name: Complete the existing release after all checks
+        env:
+          BONNI_RELEASE_PHASE: finalize
+          SOURCE_COMMIT: ${{ steps.bonni_source.outputs.source_commit }}
+          DIGEST: ${{ steps.bonni_image.outputs.digest }}
+        run: |
+          set -euo pipefail
+          node bonni-release-reconcile.mjs
+
