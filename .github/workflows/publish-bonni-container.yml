@@ -38,14 +38,14 @@ permissions:
   packages: write
 
 concurrency:
-  group: bonni-container-${{ inputs.version }}
+  group: bonni-container-publication-${{ github.repository }}
   cancel-in-progress: false
 
 jobs:
   publish:
     name: Build selected container architectures
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 120
     steps:
       - name: Validate selected architectures
         env:
@@ -56,6 +56,13 @@ jobs:
             linux/amd64|linux/arm64|linux/amd64,linux/arm64) ;;
             *) echo "Unsupported container architectures" >&2; exit 1 ;;
           esac
+
+      - name: Check out the repository for the matching release code
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          path: repository
+          fetch-depth: 1
 
       - name: Download signed Bonni package
         env:
@@ -76,6 +83,95 @@ jobs:
             node -e 'const fs = require("node:fs"); const plan = JSON.parse(fs.readFileSync("release/PAYLOAD/SYSTEM/backend/bonni-container-build.json", "utf8")); if (plan.schema !== "bonni.container-build/v1" || !Array.isArray(plan.platforms) || plan.platforms.join(",") !== process.env.PLATFORMS) throw new Error("Container architecture selection differs from the signed package");'
           fi
 
+      - name: Prepare the matching source code commit
+        id: bonni_source
+        env:
+          VERSION: ${{ inputs.version }}
+          ASSET_SHA256: ${{ inputs.asset_sha256 }}
+          IMAGE: ${{ inputs.image }}
+          PLATFORMS: ${{ inputs.platforms }}
+        run: |
+          set -euo pipefail
+          node --input-type=module <<'BONNI_SOURCE_SCRIPT'
+          import fs from "node:fs/promises";
+          import path from "node:path";
+          import {spawnSync} from "node:child_process";
+          
+          const repositoryRoot = path.resolve(process.env.BONNI_REPOSITORY_ROOT || "repository");
+          const systemRoot = path.resolve(process.env.BONNI_SYSTEM_ROOT || "release/PAYLOAD/SYSTEM");
+          const version = process.env.VERSION || "";
+          const sourceSha256 = process.env.ASSET_SHA256 || "";
+          const platforms = (process.env.PLATFORMS || "").split(",");
+          if (!/^(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)(?:-[a-z])?$/.test(version)
+              || !/^[a-f0-9]{64}$/.test(sourceSha256)
+              || !["linux/amd64", "linux/arm64", "linux/amd64,linux/arm64"].includes(platforms.join(","))) {
+            throw new Error("GITHUB_CONTAINER_SOURCE_INPUT_INVALID");
+          }
+          const coreVersion = version.replace(/-([a-z])$/, "+$1");
+          if (!(await fs.lstat(systemRoot)).isDirectory() || (await fs.lstat(systemRoot)).isSymbolicLink()) {
+            throw new Error("GITHUB_CONTAINER_SOURCE_UNSAFE");
+          }
+          const gitEnvironment = {...process.env,
+            GIT_AUTHOR_NAME: "github-actions[bot]", GIT_AUTHOR_EMAIL: "41898282+github-actions[bot]@users.noreply.github.com",
+            GIT_COMMITTER_NAME: "github-actions[bot]", GIT_COMMITTER_EMAIL: "41898282+github-actions[bot]@users.noreply.github.com"};
+          function git(args, input = undefined) {
+            const result = spawnSync("git", ["-C", repositoryRoot, ...args], {input, env: gitEnvironment, maxBuffer: 8 * 1024 * 1024});
+            if (result.error || result.status !== 0) throw new Error("GITHUB_CONTAINER_SOURCE_GIT_FAILED");
+            return result.stdout.toString("utf8");
+          }
+          const baseCommit = git(["rev-parse", "HEAD"]).trim();
+          let files = 0;
+          async function sourceTree(directory, prefix = "") {
+            const entries = [];
+            const names = (await fs.readdir(directory)).sort((a, b) => Buffer.compare(Buffer.from(a), Buffer.from(b)));
+            for (const name of names) {
+              const relative = prefix + name;
+              if (/[\u0000-\u001f\u007f\\]/.test(name) ||
+                  /^(?:tests?|__tests__|__mocks__|fixtures|node_modules|coverage|\.git)$/i.test(name) ||
+                  (name.startsWith(".env") && relative !== "backend/.env.example") ||
+                  /^(?:\.git-credentials|\.netrc|\.npmrc|\.pypirc|credentials?(?:\.json)?|secrets?(?:\.json)?|id_(?:rsa|ed25519)|private[._-]?key(?:\.pem)?)$/i.test(name) ||
+                  /\.(?:test|spec)\.[cm]?[jt]sx?$/i.test(name) || /\.bonni$/i.test(name)) {
+                throw new Error("GITHUB_CONTAINER_SOURCE_PRIVATE_FILE");
+              }
+              const file = path.join(directory, name);
+              const info = await fs.lstat(file);
+              if (info.isSymbolicLink()) throw new Error("GITHUB_CONTAINER_SOURCE_UNSAFE");
+              if (info.isDirectory()) {
+                entries.push("040000 tree " + await sourceTree(file, relative + "/") + "\t" + name);
+              } else if (info.isFile() && info.nlink === 1) {
+                if (++files > 10000) throw new Error("GITHUB_CONTAINER_SOURCE_TOO_LARGE");
+                const bytes = await fs.readFile(file);
+                if (relative === "backend/package.json" || relative === "frontend/package.json") {
+                  if (JSON.parse(bytes.toString("utf8")).version !== coreVersion) throw new Error("GITHUB_CONTAINER_SOURCE_VERSION_MISMATCH");
+                }
+                // Raw blobs keep the exact signed bytes, even with CRLF or Git filters.
+                const blob = git(["hash-object", "-w", "--no-filters", "--stdin"], bytes).trim();
+                entries.push((info.mode & 0o111 ? "100755" : "100644") + " blob " + blob + "\t" + name);
+              } else { throw new Error("GITHUB_CONTAINER_SOURCE_UNSAFE"); }
+            }
+            return git(["mktree", "-z"], Buffer.from(entries.join("\0") + (entries.length ? "\0" : ""))).trim();
+          }
+          for (const part of ["backend", "frontend"]) {
+            const file = path.join(systemRoot, part, "package.json");
+            if (!(await fs.lstat(file)).isFile()) throw new Error("GITHUB_CONTAINER_SOURCE_PACKAGE_MISSING");
+          }
+          const systemTree = await sourceTree(systemRoot);
+          const receipt = Buffer.from(JSON.stringify({schema: "bonni.container-source/v1", version: coreVersion,
+            image: (process.env.IMAGE || "") + ":" + version, sourcePackageSha256: sourceSha256, platforms}, null, 2) + "\n");
+          const receiptBlob = git(["hash-object", "-w", "--no-filters", "--stdin"], receipt).trim();
+          const rootEntries = git(["ls-tree", "-z", baseCommit]).split("\0").filter(Boolean)
+            .filter(entry => !["SYSTEM", "BONNI-CONTAINER-RELEASE.json"].includes(entry.slice(entry.indexOf("\t") + 1)));
+          rootEntries.push("040000 tree " + systemTree + "\tSYSTEM", "100644 blob " + receiptBlob + "\tBONNI-CONTAINER-RELEASE.json");
+          const tree = git(["mktree", "-z"], Buffer.from(rootEntries.join("\0") + "\0")).trim();
+          const previousTree = git(["rev-parse", baseCommit + "^{tree}"]).trim();
+          const commit = tree === previousTree ? baseCommit : git(["commit-tree", tree, "-p", baseCommit],
+            Buffer.from("Release Bonni Core " + coreVersion + "\n\nSigned source package SHA-256: " + sourceSha256 + "\n")).trim();
+          if (!/^[a-f0-9]{40}$/.test(commit)) throw new Error("GITHUB_CONTAINER_SOURCE_COMMIT_INVALID");
+          if (process.env.GITHUB_OUTPUT) await fs.appendFile(process.env.GITHUB_OUTPUT, "source_commit=" + commit + "\nbase_commit=" + baseCommit + "\n");
+          console.log(JSON.stringify({sourceCommit: commit, baseCommit, systemTree, files}));
+          
+          BONNI_SOURCE_SCRIPT
+
       - name: Enable emulation
         uses: docker/setup-qemu-action@v3
 
@@ -91,6 +187,7 @@ jobs:
           password: ${{ github.token }}
 
       - name: Build and publish the finished container
+        id: bonni_image
         uses: docker/build-push-action@v6
         with:
           context: release/PAYLOAD
@@ -99,9 +196,237 @@ jobs:
           push: true
           provenance: mode=max
           sbom: true
+          build-args: |
+            BONNI_CORE_REVISION=${{ steps.bonni_source.outputs.source_commit }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ steps.bonni_source.outputs.source_commit }}
+            org.opencontainers.image.version=${{ inputs.version }}
+            io.bonni.source-package.sha256=${{ inputs.asset_sha256 }}
           tags: |
-            ${{ inputs.image }}:${{ inputs.version }}
-            ${{ inputs.image }}:stable
+            ${{ inputs.image }}:build-${{ github.run_id }}-${{ github.run_attempt }}
+
+      - name: Create versioned QNAP files pinned to the built image
+        env:
+          VERSION: ${{ inputs.version }}
+          PLATFORMS: ${{ inputs.platforms }}
+          IMAGE: ${{ inputs.image }}
+          DIGEST: ${{ steps.bonni_image.outputs.digest }}
+        run: |
+          set -euo pipefail
+          node --input-type=module <<'BONNI_COMPOSE_SCRIPT'
+          import fs from "node:fs/promises";
+          import {randomBytes,createHash} from "node:crypto";
+          function buildContainerCompose({ version, platform, image }) {
+            if (!/^\d+\.\d+\.\d+(?:[+-][a-z])?$/.test(version)
+              || !["linux/amd64", "linux/arm64"].includes(platform)
+              || !/^[a-z0-9][a-z0-9._:/@-]{1,255}$/.test(image)) {
+              throw new Error("CONTAINER_COMPOSE_INPUT_INVALID");
+            }
+            return `# Bonni Core v${version} – ${platform.split("/")[1].toUpperCase()}
+          # QNAP Container Station 3: Anwendung erstellen, diese YAML einfügen.
+          # Vor dem Start die DREI BITTE-Werte unten durch eigene Werte ersetzen.
+          # DB-Kennwort: mindestens 24 Zeichen. MASTER_KEY: mindestens 43 Zeichen.
+          # Admin: mindestens 16 Zeichen, Groß-/Kleinbuchstaben, Zahl und Sonderzeichen.
+          # Für Passwörter kein Dollarzeichen verwenden (Compose-Interpolation).
+          # Anwendung immer gleich benennen: bonni-core. Daten-Volumes behalten!
+          # Einzelbetrieb: Core + PostgreSQL. Der externe Update-/Notlauf-Stack ist separat.
+          
+          x-bonni-environment: &bonni_environment
+            POSTGRES_PASSWORD: &db_password "BITTE_EIGENES_DATENBANKKENNWORT_EINTRAGEN"
+            MASTER_KEY: "BITTE_EIGENEN_ZUFAELLIGEN_MASTER_KEY_EINTRAGEN"
+            BONNI_BOOTSTRAP_ADMIN_PASSWORD: "BITTE_EIGENES_ADMIN_KENNWORT_EINTRAGEN"
+            BONNI_BOOTSTRAP_FIRST_INSTALL_ONLY: "true"
+            NODE_ENV: production
+            PORT: "4000"
+            LOCAL_AUTH_BIND: 0.0.0.0
+            LOCAL_AUTH_PORT: "4001"
+            SYSTEM_VERSION: "${version.replace(/-([a-z])$/, "+$1")}"
+            SYSTEM_SLOT_ROLE: active
+            SYSTEM_SLOT_NAME: backend-single
+            AUTH_MODE: LOCAL
+            DATABASE_OPERATION_MODE: server-only
+            BONNI_PROJECT_ROOT: /app
+            RUN_SYSTEM_ROOT: /app/run_system
+            BONNI_STORAGE_ROOT: /app/storage
+            MEDIA_STORAGE_ROOT: /app/storage/media
+            FRONTEND_DIST_ROOT: /app/public
+            TZ: Europe/Berlin
+          
+          services:
+            db:
+              image: postgres:16-alpine@sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777
+              platform: ${platform}
+              restart: unless-stopped
+              environment:
+                POSTGRES_USER: bonni
+                POSTGRES_DB: bonni_core
+                POSTGRES_PASSWORD: *db_password
+              volumes:
+                - postgres_data:/var/lib/postgresql/data
+              healthcheck:
+                test: ["CMD-SHELL", "pg_isready -U bonni -d bonni_core"]
+                interval: 5s
+                timeout: 5s
+                retries: 30
+              networks: [database]
+          
+            bonni-core:
+              image: ${image}
+              platform: ${platform}
+              init: true
+              restart: unless-stopped
+              depends_on:
+                db:
+                  condition: service_healthy
+              environment: *bonni_environment
+              command:
+                - /bin/sh
+                - -ec
+                - |
+                  export DATABASE_URL="$$(node -e 'const e=process.env; for (const [k,n] of [["POSTGRES_PASSWORD",24],["MASTER_KEY",43],["BONNI_BOOTSTRAP_ADMIN_PASSWORD",16]]) { if (!e[k] || e[k].length<n || /BITTE_|change.?me|example|placeholder/i.test(e[k])) throw Error("Bitte eigenen Wert setzen: "+k); } process.stdout.write("postgresql://bonni:"+encodeURIComponent(e.POSTGRES_PASSWORD)+"@db:5432/bonni_core?schema=public");')"
+                  test -n "$$DATABASE_URL"
+                  export SERVER_DATABASE_URL="$$DATABASE_URL"
+                  node scripts/runtime/bootstrap-production-database.mjs
+                  npm run backup:restore-pending
+                  exec npm run start
+              ports:
+                - "4000:4000"
+              volumes:
+                - core_storage:/app/storage
+                - run_system:/app/run_system
+                - core_logs:/app/backend/archives/logs
+                - core_apps:/app/app
+                - core_addons:/app/addons
+                - core_plugins:/app/plugins
+                - core_bridges:/app/bridges
+              healthcheck:
+                test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:4000/api/health/ready').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+                interval: 10s
+                timeout: 5s
+                retries: 18
+                start_period: 90s
+              stop_grace_period: 30s
+              security_opt: ["no-new-privileges:true"]
+              networks: [database, frontend]
+          
+          volumes:
+            postgres_data:
+            core_storage:
+            run_system:
+            core_logs:
+            core_apps:
+            core_addons:
+            core_plugins:
+            core_bridges:
+          
+          networks:
+            database:
+              internal: true
+            frontend:
+          `;
+          }
+          function composeFilename(version, platform) {
+            // Reuse validation so filenames cannot escape the output directory.
+            buildContainerCompose({version, platform, image: "bonni-core:validation"});
+            return `Bonni-Core-v${version}-${platform.split("/")[1].toUpperCase()}.yml`;
+          }
+          function buildContainerReadme(version) {
+            return `Bonni Core v${version} – QNAP / Docker Compose
+          
+          1. Auf GitHub Actions warten, bis der Auftrag vollständig grün ist.
+          2. Die YML für die NAS-Architektur herunterladen: AMD64 (Intel/AMD) oder ARM64.
+          3. In QNAP Container Station 3 eine Anwendung namens bonni-core erstellen.
+          4. Den YML-Inhalt einfügen und die drei BITTE-Werte am Anfang ersetzen.
+             Datenbank-Kennwort: mindestens 24 zufällige Zeichen.
+             MASTER_KEY: mindestens 43 zufällige Zeichen; sicher und dauerhaft aufbewahren.
+             Admin-Kennwort: mindestens 16 Zeichen mit Groß-/Kleinbuchstaben, Zahl und
+             Sonderzeichen (z. B. !). Kein Dollarzeichen verwenden.
+          5. Anwendung erstellen. Danach http://NAS-IP:4000 öffnen; Benutzername: admin.
+             Die Startprüfung kann mehrere Minuten dauern. Einrichtung und 2FA abschließen.
+          
+          Diese YML startet den Einzelbetrieb mit Core und PostgreSQL. Der bestehende
+          Host-Stack mit externem Update-Runner, Proxy und automatischem Notbetrieb wird
+          weiterhin über runtime:start eingerichtet; er ist nicht Teil dieser QNAP-YML.
+          Diese Vorlage ist für eine neue Installation. Keine bestehende Host-Installation
+          oder Datenbank einfach darauf umstellen. Versionswechsel brauchen Sicherung und
+          die zur Version passenden Datenbankmigrationen. Die YML allein migriert nicht.
+          
+          Anwendungsname und Volumes bei Neustarts behalten. MASTER_KEY und Datenbank-
+          Kennwort nach Erstinstallation nicht ändern. Das Admin-Kennwort in der YML wird
+          nur für die erste Einrichtung verwendet; spätere Änderungen erfolgen in Bonni.
+          Ein erneutes Starten setzt ein bereits vorhandenes Admin-Kennwort nicht zurück.
+          
+          GitHub liefert zusätzlich je Architektur eine echte Docker-TAR-Datei und deren
+          SHA-256-Prüfsumme. ZIP = signierte Bauquelle, TAR = importierbares Container-Image,
+          YML = Anwendungskonfiguration. Für den normalen QNAP-Start genügt die YML plus
+          erreichbare Registry. Die veröffentlichten YML-Dateien sind an den Image-Digest
+          gebunden; sie wechseln nicht unbemerkt auf eine andere Version.
+          
+          Wenn QNAP bei ghcr.io Zugriff verweigert: den passenden Registry-Zugang in
+          Container Station hinterlegen oder das Paket auf GitHub bewusst öffentlich
+          freigeben. Ein öffentliches Repository macht ein GHCR-Paket nicht automatisch
+          öffentlich. Der Ablauf ändert die Sichtbarkeit nicht.
+          
+          Beim Import einer TAR die image-Zeile der passenden YML auf den im TAR enthaltenen
+          Tag bonni-core:${version.replace("+", "-")}-amd64 bzw. -arm64 setzen.
+          PostgreSQL muss zusätzlich aus der Registry geladen werden; die TAR allein ist
+          kein vollständig netzunabhängiges Installationspaket.
+          `;
+          }
+          const version = process.env.VERSION.replace(/-([a-z])$/, "+$1");
+          const platforms = process.env.PLATFORMS.split(",");
+          if (!/^sha256:[a-f0-9]{64}$/.test(process.env.DIGEST)) throw Error("CONTAINER_IMAGE_DIGEST_INVALID");
+          const image = process.env.IMAGE + "@" + process.env.DIGEST;
+          await fs.mkdir("compose-assets", {recursive: true});
+          await fs.mkdir("smoke", {recursive: true, mode: 0o700});
+          for (const platform of platforms) {
+            const text = buildContainerCompose({version, platform, image});
+            const filename = composeFilename(version, platform);
+            await fs.writeFile("compose-assets/" + filename, text);
+            await fs.writeFile("compose-assets/" + filename + ".sha256", createHash("sha256").update(text).digest("hex") + "  " + filename + "\n");
+            const smoke = text.replace("BITTE_EIGENES_DATENBANKKENNWORT_EINTRAGEN", randomBytes(32).toString("hex"))
+              .replace("BITTE_EIGENEN_ZUFAELLIGEN_MASTER_KEY_EINTRAGEN", randomBytes(32).toString("hex"))
+              .replace("BITTE_EIGENES_ADMIN_KENNWORT_EINTRAGEN", "A7!" + randomBytes(24).toString("hex"))
+              .replace('"4000:4000"', '"127.0.0.1::4000"');
+            await fs.writeFile("smoke/" + platform.split("/")[1] + ".yml", smoke, {mode: 0o600});
+          }
+          await fs.writeFile("compose-assets/Bonni-Core-v" + version + "-QNAP-Anleitung.txt", buildContainerReadme(version));
+          
+          BONNI_COMPOSE_SCRIPT
+
+      - name: Start and restart the QNAP application for every architecture
+        env:
+          PLATFORMS: ${{ inputs.platforms }}
+        run: |
+          set -euo pipefail
+          for PLATFORM in ${PLATFORMS//,/ }; do
+            ARCH=${PLATFORM#linux/}
+            PROJECT="bonni-ci-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${ARCH}"
+            FILE="smoke/${ARCH}.yml"
+            trap 'docker compose -p "$PROJECT" -f "$FILE" down --volumes --remove-orphans >/dev/null 2>&1 || true' EXIT
+            docker compose -p "$PROJECT" -f "$FILE" config --quiet
+            if ! docker compose -p "$PROJECT" -f "$FILE" up -d --wait --wait-timeout 600; then
+              docker compose -p "$PROJECT" -f "$FILE" logs --tail 100
+              exit 1
+            fi
+            docker compose -p "$PROJECT" -f "$FILE" exec -T bonni-core node -e "fetch('http://127.0.0.1:4000/').then(async r=>{if(!r.ok || !(await r.text()).includes('<html')) process.exit(1)}).catch(()=>process.exit(1))"
+            docker compose -p "$PROJECT" -f "$FILE" restart bonni-core
+            docker compose -p "$PROJECT" -f "$FILE" up -d --wait --wait-timeout 600
+            docker compose -p "$PROJECT" -f "$FILE" down --volumes --remove-orphans
+            trap - EXIT
+          done
+
+      - name: Upload QNAP configuration and instructions to the draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_ID: ${{ inputs.release_id }}
+        run: |
+          set -euo pipefail
+          RELEASE_TAG=$(gh api "/repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}" --jq '.tag_name')
+          for FILE in compose-assets/*; do
+            gh release upload "${RELEASE_TAG}" "$FILE" --repo "${GITHUB_REPOSITORY}" --clobber
+          done
 
       - name: Export and verify downloadable Docker TAR images
         env:
@@ -110,30 +435,67 @@ jobs:
           PLATFORMS: ${{ inputs.platforms }}
           VERSION: ${{ inputs.version }}
           BUILDER: ${{ steps.bonni_builder.outputs.name }}
+          SOURCE_COMMIT: ${{ steps.bonni_source.outputs.source_commit }}
+          SOURCE_SHA256: ${{ inputs.asset_sha256 }}
         run: |
           set -euo pipefail
           RELEASE_TAG=$(gh api "/repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}" --jq '.tag_name')
           for PLATFORM in ${PLATFORMS//,/ }; do
             ARCH=${PLATFORM#linux/}
             ARCH_LABEL=${ARCH^^}
-            FILE="Bonni-Core-${VERSION}-${ARCH_LABEL}.tar"
+            FILE="Bonni-Core-v${VERSION}-${ARCH_LABEL}.tar"
             IMAGE_TAG="bonni-core:${VERSION}-${ARCH}"
             docker buildx build --builder "${BUILDER}" --platform "${PLATFORM}" \
+              --build-arg "BONNI_CORE_REVISION=${SOURCE_COMMIT}" \
               --file release/PAYLOAD/SYSTEM/backend/Dockerfile --provenance=false \
+              --label "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}" \
+              --label "org.opencontainers.image.revision=${SOURCE_COMMIT}" \
+              --label "org.opencontainers.image.version=${VERSION}" \
+              --label "io.bonni.source-package.sha256=${SOURCE_SHA256}" \
               --tag "${IMAGE_TAG}" --output "type=docker,dest=${FILE}" release/PAYLOAD
             tar -xOf "${FILE}" manifest.json > image-manifest.json
             CONFIG=$(IMAGE_TAG="${IMAGE_TAG}" node -e 'const m = require("./image-manifest.json"); if (!Array.isArray(m) || m.length !== 1 || !Array.isArray(m[0].RepoTags) || !m[0].RepoTags.includes(process.env.IMAGE_TAG) || !/^blobs\/sha256\/[a-f0-9]{64}$|^[a-f0-9]{64}\.json$/.test(m[0].Config)) process.exit(1); process.stdout.write(m[0].Config);')
             tar -xOf "${FILE}" "${CONFIG}" > image-config.json
-            DETECTED=$(node -e 'const c = require("./image-config.json"); process.stdout.write(c.os + "/" + c.architecture);')
+            DETECTED=$(node -e 'const c = require("./image-config.json"); const labels = c.config?.Labels || {}; if (labels["org.opencontainers.image.revision"] !== process.env.SOURCE_COMMIT || labels["io.bonni.source-package.sha256"] !== process.env.SOURCE_SHA256 || labels["org.opencontainers.image.version"] !== process.env.VERSION) throw new Error("Container source labels do not match the release code"); process.stdout.write(c.os + "/" + c.architecture);')
             test "${DETECTED}" = "${PLATFORM}"
             sha256sum "${FILE}" > "${FILE}.sha256"
             gh release upload "${RELEASE_TAG}" "${FILE}" "${FILE}.sha256" --repo "${GITHUB_REPOSITORY}" --clobber
           done
 
+      - name: Update repository code and bind the release tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_ID: ${{ inputs.release_id }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          SOURCE_COMMIT: ${{ steps.bonni_source.outputs.source_commit }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          gh api "/repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}" > bonni-release.json
+          RELEASE_TAG=$(VERSION="${VERSION}" node -e 'const r = require("./bonni-release.json"); const tag = "v" + process.env.VERSION.replace(/-([a-z])$/, "+$1"); if (r.draft !== true || r.tag_name !== tag || typeof r.body !== "string" || !r.body.includes("<!-- bonni-windows-container-release -->")) throw new Error("Release is not the expected Bonni draft"); process.stdout.write(tag);')
+          git -C repository check-ref-format "refs/heads/${DEFAULT_BRANCH}"
+          TAG_BASE=$(git -C repository ls-remote origin "refs/tags/${RELEASE_TAG}" | cut -f1)
+          git -C repository push --atomic --force-with-lease="refs/tags/${RELEASE_TAG}:${TAG_BASE}" \
+            origin "${SOURCE_COMMIT}:refs/heads/${DEFAULT_BRANCH}" "${SOURCE_COMMIT}:refs/tags/${RELEASE_TAG}"
+          printf 'Source code: https://github.com/%s/tree/%s/SYSTEM\n' "${GITHUB_REPOSITORY}" "${SOURCE_COMMIT}" >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Promote the verified container to stable
+        env:
+          IMAGE: ${{ inputs.image }}
+          VERSION: ${{ inputs.version }}
+          DIGEST: ${{ steps.bonni_image.outputs.digest }}
+        run: |
+          set -euo pipefail
+          test -n "${DIGEST}"
+          docker buildx imagetools create --tag "${IMAGE}:${VERSION}" --tag "${IMAGE}:stable" "${IMAGE}@${DIGEST}"
+
       - name: Publish GitHub release after successful image build
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_ID: ${{ inputs.release_id }}
+          SOURCE_COMMIT: ${{ steps.bonni_source.outputs.source_commit }}
         run: |
           set -euo pipefail
-          gh api --method PATCH "/repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}"             -F draft=false -F prerelease=false >/dev/null
+          gh api "/repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}" > bonni-release.json
+          node -e 'const fs = require("node:fs"); const r = require("./bonni-release.json"); const code = "https://github.com/" + process.env.GITHUB_REPOSITORY + "/tree/" + process.env.SOURCE_COMMIT + "/SYSTEM"; fs.writeFileSync("bonni-release-publication.json", JSON.stringify({draft: false, prerelease: false, target_commitish: process.env.SOURCE_COMMIT, body: r.body + "\n\nQuellcode zu diesem Container: [SYSTEM](" + code + ")."}));'
+          gh api --method PATCH "/repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}"             --input bonni-release-publication.json >/dev/null
