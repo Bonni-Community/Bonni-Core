@@ -50,6 +50,7 @@ jobs:
     name: Build selected container architectures
     runs-on: ubuntu-24.04
     timeout-minutes: 240
+    environment: bonni-core-release
     env:
       GH_TOKEN: ${{ github.token }}
       RELEASE_ID: ${{ inputs.release_id }}
@@ -103,7 +104,37 @@ jobs:
             });
             return files.concat(containerBundles(version, platforms).flatMap(b => [b.filename, b.filename + ".sha256"]));
           }
-          async function reconcileContainerRelease({env = process.env, fetchImpl = globalThis.fetch, log = console.log} = {}) {
+          async function readContainerUpdateAssets({env = process.env, verifyManifest} = {}) {
+            const fs = await import("node:fs/promises"), path = await import("node:path");
+            const {pathToFileURL} = await import("node:url");
+            const verify = verifyManifest || (await import(pathToFileURL(path.resolve("release/PAYLOAD/SYSTEM/backend/dist/system/update-release/index.js")).href)).verifyReleaseManifest;
+            const version = env.VERSION.replace(/-([a-z])$/, "+$1");
+            if (env.GITHUB_REPOSITORY?.toLowerCase() !== "bonni-community/bonni-core") throw Error("BONNI_UPDATE_REPOSITORY_INVALID");
+            const platforms = canonicalContainerPlatforms(env.PLATFORMS.split(","));
+            const root = path.resolve(env.BONNI_UPDATE_ASSET_DIRECTORY || "update-assets");
+            const trust = JSON.parse(await fs.readFile("release/PAYLOAD/SYSTEM/APP-INSTALL-TRUST.json", "utf8"));
+            if (trust.schema !== "bonni.app-install-trust/v1" || !Array.isArray(trust.keys)) throw Error("BONNI_UPDATE_TRUST_INVALID");
+            const trustedKeys = Object.fromEntries(trust.keys.filter(k => k.scopes?.includes("RELEASE")).map(k => [k.keyId, k.publicKey]));
+            const archives = [], manifests = [];
+            for (const platform of platforms) {
+              const arch = containerArchitecture(platform), dir = path.join(root, arch), name = `manifest-${arch}.json`;
+              const file = path.join(dir, name), stat = await fs.lstat(file);
+              if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 1024 * 1024) throw Error("BONNI_UPDATE_MANIFEST_FILE_INVALID");
+              const manifest = JSON.parse(await fs.readFile(file, "utf8"));
+              verify(manifest, {trustedKeys, runnerVersion: "0.4.0", nodeEnv: "production", expectedChannel: "stable"});
+              const identity = manifest.artifact?.imageIdentity;
+              const actualPlatform = identity?.platform?.os + "/" + identity?.platform?.architecture + (identity?.platform?.architecture === "arm" ? "/" + identity.platform.variant : "");
+              const archiveName = `Bonni-Core-Update-v${env.VERSION}-${arch}-${manifest.artifact?.sha256}.oci`;
+              const url = `https://github.com/Bonni-Community/bonni-core/releases/download/${encodeURIComponent("v" + version)}/${archiveName}`;
+              if (manifest.version !== version || actualPlatform !== platform || !/^[a-f0-9]{64}$/.test(manifest.artifact?.sha256 || "")
+                || manifest.artifact?.source?.kind !== "https" || manifest.artifact.source.url !== url
+                || (await fs.readdir(dir)).sort().join("\n") !== [archiveName, name].sort().join("\n")) throw Error("BONNI_UPDATE_ASSET_PAIR_INVALID");
+              archives.push({name: archiveName, file: path.join(dir, archiveName), expectedDigest: "sha256:" + manifest.artifact.sha256, expectedSize: manifest.artifact.sizeBytes, immutable: true});
+              manifests.push({name, file});
+            }
+            return [...archives, ...manifests]; // all archives become available before any manifest
+          }
+          async function reconcileContainerRelease({env = process.env, fetchImpl = globalThis.fetch, log = console.log, verifyManifest} = {}) {
             const fs = await import("node:fs/promises");
             const {createReadStream} = await import("node:fs");
             const {createHash} = await import("node:crypto");
@@ -136,7 +167,7 @@ jobs:
               const release = await api(releasePath);
               const line = String(release.body || "").split("\n").find(line => line.startsWith(planPrefix) && line.endsWith(" -->"));
               const plan = line ? JSON.parse(line.slice(planPrefix.length, -4)) : null;
-              if (release.tag_name !== "v" + coreVersion || release.immutable === true
+              if (release.tag_name !== "v" + coreVersion || release.immutable === true || release.prerelease === true
                 || !String(release.body).includes("<!-- bonni-windows-container-release -->")
                 || plan?.schema !== "bonni.container-plan/v2" || plan.sourceSha256 !== sha
                 || !/^[a-f0-9]{64}$/.test(plan.sourceFingerprint || "")
@@ -161,15 +192,19 @@ jobs:
               if (env.GITHUB_OUTPUT) await fs.appendFile(env.GITHUB_OUTPUT, "release_tag=" + release.tag_name + "\n");
               return {releaseTag: release.tag_name, published: release.draft === false};
             }
+            const updates = await readContainerUpdateAssets({env, verifyManifest});
             const local = [];
-            for (const name of expected) {
-              const file = (env.BONNI_ASSET_DIRECTORY || "compose-assets") + "/" + name;
+            for (const entry of [...expected.map(name => ({name, file: (env.BONNI_ASSET_DIRECTORY || "compose-assets") + "/" + name})), ...updates]) {
+              const {name, file} = entry;
               const stat = await fs.lstat(file);
               if (!stat.isFile() || stat.size === 0) throw Error("BONNI_RELEASE_FILE_INVALID: " + name);
               const hash = createHash("sha256");
               for await (const bytes of createReadStream(file)) hash.update(bytes);
-              local.push({name, file, size: stat.size, digest: "sha256:" + hash.digest("hex")});
+              const digest = "sha256:" + hash.digest("hex");
+              if (entry.expectedDigest && (entry.expectedDigest !== digest || entry.expectedSize !== stat.size)) throw Error("BONNI_UPDATE_ARCHIVE_CHANGED: " + name);
+              local.push({name, file, size: stat.size, digest, immutable: entry.immutable === true});
             }
+            if (phase === "verify") return {verified: local.length, updates: updates.length};
             const current = await assets();
             const identical = (asset, file) => asset?.state === "uploaded" && asset.size === file.size && asset.digest === file.digest;
             if (phase === "assets") {
@@ -179,8 +214,10 @@ jobs:
               try {
                 // Stage every replacement before any old download is renamed or removed.
                 for (const file of local) {
+                  if (current.filter(asset => asset.name === file.name).length > 1) throw Error("BONNI_RELEASE_DUPLICATE_ASSET");
                   const old = current.find(asset => asset.name === file.name);
                   if (identical(old, file)) { log("Unverändert: " + file.name); continue; }
+                  if (old && file.immutable) throw Error("BONNI_RELEASE_IMMUTABLE_UPDATE_CONFLICT");
                   const stagedName = "bonni-staging-" + suffix + "-" + file.name;
                   const backupName = "bonni-backup-" + suffix + "-" + file.name;
                   if (current.some(asset => [stagedName, backupName].includes(asset.name))) throw Error("BONNI_RELEASE_STAGING_CONFLICT");
@@ -227,7 +264,7 @@ jobs:
             if (!/^[a-f0-9]{40}$/.test(env.SOURCE_COMMIT || "") || !/^sha256:[a-f0-9]{64}$/.test(env.DIGEST || "")) throw Error("BONNI_RELEASE_RESULT_INVALID");
             if (!local.every(file => identical(current.find(asset => asset.name === file.name), file))) throw Error("BONNI_RELEASE_DOWNLOADS_INCOMPLETE");
             const result = {sourceFingerprint: plan.sourceFingerprint, sourceSha256: sha, sourceCommit: env.SOURCE_COMMIT,
-              imageDigest: env.DIGEST, assets: local.map(({name, size, digest}) => ({name, size, digest}))};
+              imageDigest: env.DIGEST, signedCoreUpdates: true, assets: local.map(({name, size, digest}) => ({name, size, digest}))};
             const latest = await validate();
             const start = "<!-- bonni-container-summary:start -->", end = "<!-- bonni-container-summary:end -->";
             const cleaned = String(latest.release.body || "").replace(/<!-- bonni-container-summary:start -->[\s\S]*?<!-- bonni-container-summary:end -->/g, "")
@@ -239,7 +276,9 @@ jobs:
             const qualification = platforms.includes("linux/arm/v7")
               ? "\n\nARMv7: Start/Neustart unter Emulation und ELF-32K-Vorprüfung bestanden. Hardwaretest noch erforderlich." : "";
             const body = cleaned + "\n\n" + start + "\nGeprüfter Container: `" + env.IMAGE + "@" + env.DIGEST
-              + "`.\n\nDownload-Pakete (je ein Ordner; eigene Anleitung, sofern hinterlegt):\n" + downloads + qualification + "\n\nPassender Quellcode: [SYSTEM](" + code + ").\n" + end
+              + "`.\n\nDownload-Pakete (je ein Ordner; eigene Anleitung, sofern hinterlegt):\n" + downloads + qualification
+              + "\n\nSignierte Core-Updatepakete und Update-Manifeste für " + platforms.map(containerArchitecture).join(", ") + " sind vollständig geprüft und veröffentlicht."
+              + "\n\nPassender Quellcode: [SYSTEM](" + code + ").\n" + end
               + "\n\n<!-- bonni-container-built:" + env.DIGEST + " -->\n" + resultPrefix + JSON.stringify(result) + " -->\n";
             await api(releasePath, {method: "PATCH", json: {name: "Bonni Core v" + coreVersion, body, draft: false}});
             log("Release vollständig aktualisiert: " + release.html_url);
@@ -259,6 +298,48 @@ jobs:
             linux/amd64|linux/arm64|linux/amd64,linux/arm64|linux/arm/v7|linux/amd64,linux/arm/v7|linux/arm64,linux/arm/v7|linux/amd64,linux/arm64,linux/arm/v7) ;;
             *) echo "Unsupported container architectures" >&2; exit 1 ;;
           esac
+
+      - name: Check package read and write access before building
+        env:
+          GITHUB_ACTOR: ${{ github.actor }}
+        run: |
+          set -euo pipefail
+          node --input-type=module <<'BONNI_REGISTRY_PREFLIGHT'
+          async function checkContainerRegistryAccess({env = process.env, fetchImpl = globalThis.fetch, log = console.log} = {}) {
+            const image = env.IMAGE || "";
+            if (!/^ghcr\.io\/[a-z0-9][a-z0-9._-]*\/[a-z0-9][a-z0-9._-]*$/.test(image)
+              || !env.GH_TOKEN || !env.GITHUB_ACTOR) throw Error("BONNI_REGISTRY_INPUT_INVALID");
+            const images = [image];
+            if ((env.PLATFORMS || "").split(",").includes("linux/arm/v7")) images.push(image + "-database");
+            for (const target of images) {
+              const repository = target.slice("ghcr.io/".length);
+              const hint = `Package ${repository}: Package settings → Manage Actions access → ${env.GITHUB_REPOSITORY} mit Write freigeben. Workflow benötigt packages: write.`;
+              const send = (url, options = {}) => fetchImpl(url, {...options, redirect: "error", signal: AbortSignal.timeout(30_000)});
+              const auth = await send("https://ghcr.io/token?" + new URLSearchParams({service: "ghcr.io", scope: `repository:${repository}:pull,push`}), {
+                headers: {Authorization: "Basic " + Buffer.from(env.GITHUB_ACTOR + ":" + env.GH_TOKEN).toString("base64")},
+              });
+              if (!auth.ok) throw Error(`BONNI_REGISTRY_ACCESS_DENIED (HTTP ${auth.status}). ${hint}`);
+              const payload = await auth.json(), token = payload.token || payload.access_token;
+              if (typeof token !== "string" || !token) throw Error("BONNI_REGISTRY_TOKEN_MISSING");
+              const headers = {Authorization: "Bearer " + token};
+              const read = await send(`https://ghcr.io/v2/${repository}/tags/list?n=1`, {headers});
+              // A not-yet-created package has no tags. Its creation permission is tested next.
+              if (read.status !== 200 && read.status !== 404) throw Error(`BONNI_REGISTRY_READ_DENIED (HTTP ${read.status}). ${hint}`);
+              const upload = await send(`https://ghcr.io/v2/${repository}/blobs/uploads/`, {method: "POST", headers: {...headers, "Content-Length": "0"}});
+              if (upload.status !== 202) throw Error(`BONNI_REGISTRY_WRITE_DENIED (HTTP ${upload.status}). ${hint}`);
+              const location = upload.headers.get("location");
+              if (!location) throw Error("BONNI_REGISTRY_UPLOAD_LOCATION_MISSING");
+              const cancel = new URL(location, "https://ghcr.io");
+              if (cancel.origin !== "https://ghcr.io" || cancel.username || cancel.password
+                || !cancel.pathname.startsWith(`/v2/${repository}/blobs/uploads/`)) throw Error("BONNI_REGISTRY_UPLOAD_LOCATION_INVALID");
+              const cancelled = await send(cancel.href, {method: "DELETE", headers});
+              if (![204, 404].includes(cancelled.status)) throw Error("BONNI_REGISTRY_PROBE_CLEANUP_FAILED");
+              log("Paket-Lese- und Schreibzugriff geprüft: " + target);
+            }
+          }
+          await checkContainerRegistryAccess();
+          
+          BONNI_REGISTRY_PREFLIGHT
 
       - name: Check out the repository for the matching release code
         uses: actions/checkout@v6
@@ -285,6 +366,28 @@ jobs:
           if [ -f release/PAYLOAD/SYSTEM/backend/bonni-container-build.json ]; then
             node -e 'const fs = require("node:fs"); const plan = JSON.parse(fs.readFileSync("release/PAYLOAD/SYSTEM/backend/bonni-container-build.json", "utf8")); if (plan.schema !== "bonni.container-build/v1" || !Array.isArray(plan.platforms) || plan.platforms.join(",") !== process.env.PLATFORMS) throw new Error("Container architecture selection differs from the signed package");'
           fi
+
+      - name: Check enrolled Core release signing key before building
+        env:
+          SIGNING_KEY: ${{ secrets.BONNI_CORE_RELEASE_PRIVATE_KEY }}
+          KEY_ID: ${{ vars.BONNI_CORE_RELEASE_KEY_ID }}
+        run: |
+          set -euo pipefail
+          node --input-type=module <<'BONNI_SIGNING_PREFLIGHT'
+          async function checkContainerSigningKey({env = process.env} = {}) {
+            const fs = await import("node:fs/promises"), crypto = await import("node:crypto");
+            if (!env.SIGNING_KEY || !env.KEY_ID) throw Error("BONNI_CORE_RELEASE_SIGNING_NOT_CONFIGURED: Environment bonni-core-release benötigt Secret BONNI_CORE_RELEASE_PRIVATE_KEY und Variable BONNI_CORE_RELEASE_KEY_ID.");
+            const privateKey = crypto.createPrivateKey(env.SIGNING_KEY);
+            if (privateKey.asymmetricKeyType !== "ed25519") throw Error("BONNI_CORE_RELEASE_KEY_NOT_ED25519");
+            const trust = JSON.parse(await fs.readFile("release/PAYLOAD/SYSTEM/APP-INSTALL-TRUST.json", "utf8"));
+            const keys = trust.schema === "bonni.app-install-trust/v1" && trust.keys?.filter(k => k.keyId === env.KEY_ID && k.scopes?.includes("RELEASE"));
+            if (!keys || keys.length !== 1 || !crypto.createPublicKey(keys[0].publicKey).equals(crypto.createPublicKey(privateKey))) {
+              throw Error("BONNI_CORE_RELEASE_KEY_NOT_ENROLLED: Der öffentliche GitHub-Release-Schlüssel muss mit RELEASE-Berechtigung in APP-INSTALL-TRUST.json hinterlegt sein.");
+            }
+          }
+          await checkContainerSigningKey();
+          
+          BONNI_SIGNING_PREFLIGHT
 
       - name: Prepare the matching source code commit
         id: bonni_source
@@ -416,6 +519,11 @@ jobs:
           
           BONNI_SOURCE_SCRIPT
 
+      - name: Resolve canonical Core version
+        id: bonni_version
+        run: |
+          node -e 'const fs=require("node:fs"); fs.appendFileSync(process.env.GITHUB_OUTPUT, "core_version=" + process.env.VERSION.replace(/-([a-z])$/, "+$1") + "\n")'
+
       - name: Enable emulation
         uses: docker/setup-qemu-action@v3
 
@@ -473,10 +581,11 @@ jobs:
           sbom: true
           build-args: |
             BONNI_CORE_REVISION=${{ steps.bonni_source.outputs.source_commit }}
+            BONNI_CORE_VERSION=${{ steps.bonni_version.outputs.core_version }}
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.revision=${{ steps.bonni_source.outputs.source_commit }}
-            org.opencontainers.image.version=${{ inputs.version }}
+            org.opencontainers.image.version=${{ steps.bonni_version.outputs.core_version }}
             io.bonni.source-package.sha256=${{ inputs.asset_sha256 }}
           tags: |
             ${{ inputs.image }}:build-${{ github.run_id }}-${{ github.run_attempt }}
@@ -757,7 +866,7 @@ jobs:
 
       - name: Export and verify the tested Core and database images
         env:
-          VERSION: ${{ inputs.version }}
+          VERSION: ${{ steps.bonni_version.outputs.core_version }}
           SOURCE_COMMIT: ${{ steps.bonni_source.outputs.source_commit }}
           SOURCE_SHA256: ${{ inputs.asset_sha256 }}
         run: |
@@ -1002,6 +1111,153 @@ jobs:
               print('Verified package: ' + filename)
           
           BONNI_BUNDLES
+
+      - name: Set up Node for the existing Core update signer
+        uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+
+      - name: Compile the release verifier from the matching source
+        working-directory: release/PAYLOAD/SYSTEM/backend
+        run: |
+          set -euo pipefail
+          npm ci
+          npm run build
+
+      - name: Prepare signed Core updates from the tested images
+        env:
+          SIGNING_KEY: ${{ secrets.BONNI_CORE_RELEASE_PRIVATE_KEY }}
+          KEY_ID: ${{ vars.BONNI_CORE_RELEASE_KEY_ID }}
+          SOURCE_COMMIT: ${{ steps.bonni_source.outputs.source_commit }}
+        run: |
+          set -euo pipefail
+          node --input-type=module <<'BONNI_CORE_UPDATE_PREPARE'
+          function canonicalContainerPlatforms(raw) {
+            const supported = ["linux/amd64", "linux/arm64", "linux/arm/v7"];
+            if (!Array.isArray(raw) || !raw.length || raw.length > supported.length
+              || new Set(raw).size !== raw.length || raw.some(p => !supported.includes(p))) {
+              throw new Error("GITHUB_CONTAINER_PLATFORMS_INVALID");
+            }
+            return supported.filter(p => raw.includes(p));
+          }
+          function containerArchitecture(platform) {
+            const architecture = {"linux/amd64": "AMD64", "linux/arm64": "ARM64", "linux/arm/v7": "ARMv7"}[platform];
+            if (!architecture) throw new Error("GITHUB_CONTAINER_PLATFORMS_INVALID");
+            return architecture;
+          }
+          function containerBundles(version, platforms) {
+            if (!/^\d+\.\d+\.\d+(?:[+-][a-z])?$/.test(version)) throw new Error("CONTAINER_VERSION_INVALID");
+            const selected = canonicalContainerPlatforms(platforms);
+            const bundles = selected.map(platform => {
+              const architecture = containerArchitecture(platform);
+              const prefix = platform === "linux/arm/v7" ? "32-Bit" : "64-Bit";
+              const folder = `${prefix}-Bonni-Core-v${version}-${architecture}`;
+              return {folder, filename: folder + ".zip", platform, architecture,
+                variants: [{platform, architecture, subfolder: ""}]};
+            });
+            // One Raspi package always contains both variants. Never publish a partial
+            // Raspi ZIP when only one of its required architectures was built.
+            if (selected.includes("linux/arm64") && selected.includes("linux/arm/v7")) {
+              const folder = `Raspi-Bonni-Core-v${version}`;
+              bundles.push({folder, filename: folder + ".zip", variants: [
+                {platform: "linux/arm/v7", architecture: "ARMv7", subfolder: "32-Bit-ARMv7"},
+                {platform: "linux/arm64", architecture: "ARM64", subfolder: "64-Bit-ARM64"},
+              ]});
+            }
+            return bundles;
+          }
+          function containerDownloadNames(version, platforms) {
+            const files = canonicalContainerPlatforms(platforms).flatMap(platform => {
+              const base = `Bonni-Core-v${version}-${containerArchitecture(platform)}`;
+              return [".yml", ".yml.sha256", "-Offline.yml", "-Offline.yml.sha256", ".tar", ".tar.sha256", "-Datenbank.tar", "-Datenbank.tar.sha256"].map(suffix => base + suffix);
+            });
+            return files.concat(containerBundles(version, platforms).flatMap(b => [b.filename, b.filename + ".sha256"]));
+          }
+          function localContainerImageTag(reference, version, platform, database = false) {
+            if (!/^[a-z0-9][a-z0-9._:/-]*@sha256:[a-f0-9]{64}$/.test(reference)
+              || !/^\d+\.\d+\.\d+(?:[+-][a-z])?$/.test(version)
+              || !['linux/amd64', 'linux/arm64', 'linux/arm/v7'].includes(platform)) throw Error('BONNI_EXPORT_REFERENCE_INVALID');
+            const arch = platform === 'linux/arm/v7' ? 'armv7' : platform.split('/')[1];
+            return `bonni-core${database ? '-database' : ''}:${version.replace('+', '-')}-${arch}-${reference.split('sha256:')[1]}`;
+          }
+          async function checkContainerSigningKey({env = process.env} = {}) {
+            const fs = await import("node:fs/promises"), crypto = await import("node:crypto");
+            if (!env.SIGNING_KEY || !env.KEY_ID) throw Error("BONNI_CORE_RELEASE_SIGNING_NOT_CONFIGURED: Environment bonni-core-release benötigt Secret BONNI_CORE_RELEASE_PRIVATE_KEY und Variable BONNI_CORE_RELEASE_KEY_ID.");
+            const privateKey = crypto.createPrivateKey(env.SIGNING_KEY);
+            if (privateKey.asymmetricKeyType !== "ed25519") throw Error("BONNI_CORE_RELEASE_KEY_NOT_ED25519");
+            const trust = JSON.parse(await fs.readFile("release/PAYLOAD/SYSTEM/APP-INSTALL-TRUST.json", "utf8"));
+            const keys = trust.schema === "bonni.app-install-trust/v1" && trust.keys?.filter(k => k.keyId === env.KEY_ID && k.scopes?.includes("RELEASE"));
+            if (!keys || keys.length !== 1 || !crypto.createPublicKey(keys[0].publicKey).equals(crypto.createPublicKey(privateKey))) {
+              throw Error("BONNI_CORE_RELEASE_KEY_NOT_ENROLLED: Der öffentliche GitHub-Release-Schlüssel muss mit RELEASE-Berechtigung in APP-INSTALL-TRUST.json hinterlegt sein.");
+            }
+          }
+          async function prepareContainerUpdateAssets({env = process.env, dockerImpl, prepareRelease} = {}) {
+            const fs = await import("node:fs/promises"), path = await import("node:path");
+            const {createReadStream} = await import("node:fs"), {createHash} = await import("node:crypto");
+            const {pathToFileURL} = await import("node:url"), {execFile} = await import("node:child_process"), {promisify} = await import("node:util");
+            const execute = promisify(execFile);
+            const docker = dockerImpl || (async (...args) => (await execute("docker", args, {maxBuffer: 16 * 1024 * 1024})).stdout.trim());
+            const version = env.VERSION?.replace(/-([a-z])$/, "+$1");
+            const platforms = canonicalContainerPlatforms((env.PLATFORMS || "").split(","));
+            if (!/^\d+\.\d+\.\d+(?:\+[a-z])?$/.test(version || "")
+              || env.GITHUB_REPOSITORY?.toLowerCase() !== "bonni-community/bonni-core"
+              || !/^[a-f0-9]{40}$/.test(env.SOURCE_COMMIT || "") || !/^[a-f0-9]{64}$/.test(env.ASSET_SHA256 || "")) throw Error("BONNI_UPDATE_PUBLICATION_INPUT_INVALID");
+            await checkContainerSigningKey({env});
+            const prepare = prepareRelease || (await import(pathToFileURL(path.resolve("release/PAYLOAD/SYSTEM/backend/scripts/update-release/prepare-public-release.mjs")).href)).preparePublicRelease;
+            const plans = JSON.parse(await fs.readFile("export-plan.json", "utf8"));
+            if (!Array.isArray(plans) || plans.map(p => p.platform).join(",") !== platforms.join(",")) throw Error("BONNI_UPDATE_EXPORT_PLAN_INVALID");
+            const output = path.resolve(env.BONNI_UPDATE_ASSET_DIRECTORY || "update-assets");
+            await fs.mkdir(output, {mode: 0o700}); // never reuse stale signed output
+            const scratch = await fs.mkdtemp(path.join(path.resolve(env.RUNNER_TEMP || "."), "bonni-update-sign-"));
+            const key = path.join(scratch, "release-key.pem");
+            try {
+              await fs.writeFile(key, env.SIGNING_KEY, {mode: 0o600, flag: "wx"});
+              for (const plan of plans) {
+                const arch = containerArchitecture(plan.platform), slug = arch.toLowerCase();
+                const matches = plan.images?.filter(i => i.service === "bonni-core");
+                const item = matches?.[0];
+                if (matches?.length !== 1 || item.file !== `Bonni-Core-v${version}-${arch}.tar`
+                  || item.tag !== localContainerImageTag(item.reference, version, plan.platform)) throw Error("BONNI_UPDATE_IMAGE_PLAN_INVALID");
+                const tar = path.resolve("compose-assets", item.file), hash = createHash("sha256");
+                const stat = await fs.lstat(tar);
+                if (!stat.isFile() || stat.isSymbolicLink()) throw Error("BONNI_UPDATE_TAR_INVALID");
+                for await (const bytes of createReadStream(tar)) hash.update(bytes);
+                if (await fs.readFile(tar + ".sha256", "utf8") !== hash.digest("hex") + "  " + item.file + "\n") throw Error("BONNI_UPDATE_TAR_CHECKSUM_MISMATCH");
+                const archive = path.join(scratch, slug + ".tar"), trust = path.join(scratch, slug + "-trust.json");
+                const updateTag = `bonni-update/${slug}:${env.VERSION}`;
+                let container, loaded = false, tagged = false;
+                try {
+                  await docker("image", "load", "--input", tar); loaded = true;
+                  const configs = JSON.parse(await docker("image", "inspect", item.tag));
+                  const config = configs[0], labels = config?.Config?.Labels || {};
+                  const platform = config?.Os + "/" + config?.Architecture + (config?.Architecture === "arm" ? "/" + config.Variant : "");
+                  if (configs.length !== 1 || !/^sha256:[a-f0-9]{64}$/.test(config?.Id || "") || platform !== plan.platform
+                    || labels["org.opencontainers.image.version"] !== version || labels["org.opencontainers.image.revision"] !== env.SOURCE_COMMIT
+                    || labels["io.bonni.source-package.sha256"] !== env.ASSET_SHA256) throw Error("BONNI_UPDATE_TESTED_IMAGE_MISMATCH");
+                  container = await docker("create", "--platform", plan.platform, "--entrypoint", "/bin/true", config.Id);
+                  if (!/^[a-f0-9]{12,64}$/.test(container)) throw Error("BONNI_UPDATE_CONTAINER_ID_INVALID");
+                  await docker("cp", container + ":/app/APP-INSTALL-TRUST.json", trust);
+                  await docker("image", "tag", config.Id, updateTag); tagged = true;
+                  await docker("image", "save", "--output", archive, updateTag);
+                  const result = await prepare({archive, version, privateKey: key, keyId: env.KEY_ID, trust, outputDir: path.join(output, arch)});
+                  if (result.architecture !== arch) throw Error("BONNI_UPDATE_SIGNED_PLATFORM_MISMATCH");
+                } finally {
+                  if (container && /^[a-f0-9]{12,64}$/.test(container)) await docker("rm", container);
+                  if (tagged) await docker("image", "rm", updateTag);
+                  if (loaded) await docker("image", "rm", item.tag);
+                  await fs.rm(archive, {force: true});
+                }
+              }
+            } finally { await fs.rm(scratch, {recursive: true, force: true}); }
+          }
+          await prepareContainerUpdateAssets();
+          
+          BONNI_CORE_UPDATE_PREPARE
+
+      - name: Verify complete download and signed update set
+        env:
+          BONNI_RELEASE_PHASE: verify
+        run: node bonni-release-reconcile.mjs
 
       - name: Update repository code and preserve any existing release tag
         env:
