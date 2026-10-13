@@ -18,6 +18,7 @@ enum InventorySessionStatus {
   REVIEW
   APPROVED
   CLOSED
+  REVERTED
   CANCELLED
 }
 
@@ -42,11 +43,13 @@ model InventorySession {
 
   startedAt   DateTime?
   closedAt    DateTime?
+  revertedAt  DateTime?
   createdAt   DateTime               @default(now())
   updatedAt   DateTime               @updatedAt
 
   createdByAccountId  String?
   approvedByAccountId String?
+  revertedByAccountId String?
 
   scopes      InventoryScope[]
   snapshots   InventorySnapshot[]

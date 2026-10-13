@@ -5,7 +5,6 @@ import path from "node:path";
 
 import {
   compareBonniReleaseVersion,
-  compareStrictSemVer,
 } from "../../src/system/update-runner/contract.mjs";
 
 const STAGE_SCHEMA = "bonni.candidate-update-stage/v1";
@@ -322,7 +321,7 @@ function validateVersionPair(value, label) {
   ) fail("CANDIDATE_UPDATE_STAGE_VERSION_INVALID", label);
   try {
     compareBonniReleaseVersion(value.coreVersion, value.coreVersion);
-    compareStrictSemVer(value.kontorAppVersion, value.kontorAppVersion);
+    compareBonniReleaseVersion(value.kontorAppVersion, value.kontorAppVersion);
   } catch {
     fail("CANDIDATE_UPDATE_STAGE_VERSION_INVALID", label);
   }

@@ -18,6 +18,8 @@ model KontorAccountingConfiguration {
   fiscalYearStartMonth Int       @default(1)
   organizationChartLabel String  @default("Organisation")
   organizationChartName  String  @default("Verein")
+  stueberlPostingProfile Json?
+  stueberlPostingRevision Int @default(0)
   setupCompletedAt     DateTime?
   createdAt            DateTime  @default(now())
   updatedAt            DateTime  @updatedAt
@@ -301,6 +303,8 @@ model KontorMeetingAttendance {
 }
 
 model KontorFinanceEntry {
+  // v2 Stüberl payment journals refer to the single receivable tax truth.
+  taxOriginEntryId   String?
   id                 String                 @id @default(cuid())
   sequenceNumber     Int                    @unique
   bookingNumberYear  Int?
@@ -592,6 +596,276 @@ model KontorSubledgerItem {
   @@index([memberId, occurredAt])
   @@index([memberId, status])
   @@index([financeEntryId])
+}
+
+// Kontor is the monetary source of truth once StueberlApp has explicitly
+// released a sealed tab snapshot. Only the aggregate amount and audit
+// references cross the app boundary; individual drinks remain in Stueberl.
+model KontorStueberlReceivable {
+  reversedAmountCents        Int @default(0)
+  creditAppliedCents         Int @default(0)
+  historySourceHash          String?
+  id                         String                    @id @default(cuid())
+  receivableExternalId       String                    @unique
+  correlationId              String                    @unique
+  requestMessageId           String?                   @unique
+  requestPayloadHash         String
+  memberId                   String
+  tabSessionGroupId          String?
+  amountCents                Int
+  currency                   String                    @default("EUR")
+  description                String
+  snapshotHash               String
+  bookingCount               Int
+  releasedAt                 DateTime
+  status                     String                    @default("OPEN")
+  receivedAmountCents        Int                       @default(0)
+  appliedAmountCents         Int                       @default(0)
+  openAmountCents            Int
+  creditGeneratedCents       Int                       @default(0)
+  revision                   Int                       @default(1)
+  lastPaymentMethod          String?
+  lastPaymentExternalId      String?
+  subledgerId                String
+  subledgerItemId            String                    @unique
+  postingSnapshot Json?
+  postingProfileRevision Int?
+  financeEntryId             String                    @unique
+  settlementMessageId        String?
+  createdByAccountId         String?
+  payments                   KontorStueberlPayment[]
+  creditEntries              KontorStueberlCreditEntry[]
+  settlementOutboxes         KontorStueberlSettlementOutbox[]
+  createdAt                  DateTime                  @default(now())
+  updatedAt                  DateTime                  @updatedAt
+
+  @@index([memberId, status])
+  @@index([status, releasedAt])
+}
+
+// Transactional outbox: the exact settlement snapshot is committed together
+// with its receivable revision. Core-level idempotency makes a retry after a
+// crash between publish and acknowledgement safe.
+model KontorStueberlSettlementOutbox {
+  id                String                    @id @default(cuid())
+  receivableId      String
+  receivable        KontorStueberlReceivable @relation(fields: [receivableId], references: [id], onDelete: Restrict)
+  revision          Int
+  correlationId     String
+  idempotencyKey    String                    @unique
+  sourceRecordId    String                    @unique
+  payload           Json
+  payloadHash       String
+  status            String                    @default("PENDING")
+  attemptCount      Int                       @default(0)
+  lastAttemptAt     DateTime?
+  lastError         String?
+  messageId         String?
+  publishedAt       DateTime?
+  createdAt         DateTime                  @default(now())
+  updatedAt         DateTime                  @updatedAt
+
+  @@unique([receivableId, revision])
+  @@index([status, createdAt])
+}
+
+// Immutable inbound-payment journal. paymentExternalId is global across
+// Stueberl, Jeld and internal SEPA so a payment can never be applied twice by
+// changing its reporting channel.
+model KontorStueberlPayment {
+  id                         String                    @id @default(cuid())
+  paymentExternalId          String                    @unique
+  receivableId               String
+  receivable                 KontorStueberlReceivable @relation(fields: [receivableId], references: [id], onDelete: Restrict)
+  correlationId              String
+  sourceDomain               String
+  sourceModuleKey            String
+  requestMessageId           String?                   @unique
+  requestPayloadHash         String
+  httpIdempotencyKey         String?                   @unique
+  httpRequestHash            String?
+  memberId                   String
+  amountCents                Int
+  currency                   String                    @default("EUR")
+  method                     String
+  providerReference          String?                   @unique
+  paidAt                     DateTime
+  appliedAmountCents         Int
+  creditGeneratedCents       Int                       @default(0)
+  financePaymentAllocationId String?                   @unique
+  createdByAccountId         String?
+  creditEntry                KontorStueberlCreditEntry?
+  createdAt                  DateTime                  @default(now())
+
+  @@index([receivableId, paidAt])
+  @@index([memberId, paidAt])
+  @@index([sourceDomain, paidAt])
+}
+
+// Positive cents always mean money belonging to the member. The immutable
+// entries below make every balance increase traceable to one payment.
+model KontorStueberlMemberCredit {
+  memberId     String                       @id
+  balanceCents Int                          @default(0)
+  revision     Int                          @default(1)
+  entries      KontorStueberlCreditEntry[]
+  createdAt    DateTime                     @default(now())
+  updatedAt    DateTime                     @updatedAt
+}
+
+model KontorStueberlCreditEntry {
+  id                String                       @id @default(cuid())
+  memberId          String
+  memberCredit      KontorStueberlMemberCredit   @relation(fields: [memberId], references: [memberId], onDelete: Restrict)
+  receivableId      String
+  receivable        KontorStueberlReceivable     @relation(fields: [receivableId], references: [id], onDelete: Restrict)
+  paymentId         String                       @unique
+  payment           KontorStueberlPayment        @relation(fields: [paymentId], references: [id], onDelete: Restrict)
+  amountCents       Int
+  balanceAfterCents Int
+  kind              String                       @default("OVERPAYMENT")
+  createdByAccountId String?
+  createdAt         DateTime                     @default(now())
+
+  @@index([memberId, createdAt])
+  @@index([receivableId, createdAt])
+}
+
+// Hocket transfers only an explicitly released aggregate event receivable.
+// Kontor remains the financial authority; no event line, cash command or
+// Stueberl member balance is reused at this boundary.
+model KontorHocketReceivable {
+  id                         String                    @id @default(cuid())
+  receivableExternalId       String                    @unique
+  correlationId              String                    @unique
+  requestMessageId           String?                   @unique
+  requestPayloadHash         String
+  eventId                    String
+  settlementId               String
+  creditorOrganizationId     String
+  debtorOrganizationId       String
+  amountCents                Int
+  currency                   String                    @default("EUR")
+  description                String
+  snapshotHash               String
+  lineCount                  Int
+  sourceReference            String                    @unique
+  releasedAt                 DateTime
+  status                     String                    @default("OPEN")
+  receivedAmountCents        Int                       @default(0)
+  appliedAmountCents         Int                       @default(0)
+  openAmountCents            Int
+  creditGeneratedCents       Int                       @default(0)
+  revision                   Int                       @default(1)
+  lastPaymentMethod          String?
+  lastPaymentExternalId      String?
+  reversalIdempotencyKey     String?                   @unique
+  reversalRequestHash        String?
+  reversalReason             String?
+  reversedAt                 DateTime?
+  reversedByAccountId        String?
+  subledgerId                String
+  subledgerItemId            String                    @unique
+  financeEntryId             String                    @unique
+  settlementMessageId        String?
+  createdByAccountId         String?
+  payments                   KontorHocketPayment[]
+  creditEntries              KontorHocketCreditEntry[]
+  settlementOutboxes         KontorHocketSettlementOutbox[]
+  createdAt                  DateTime                  @default(now())
+  updatedAt                  DateTime                  @updatedAt
+
+  @@unique([eventId, settlementId, creditorOrganizationId, debtorOrganizationId, currency])
+  @@index([creditorOrganizationId, debtorOrganizationId, status])
+  @@index([status, releasedAt])
+}
+
+// Every revision has one immutable status snapshot. Publishing happens after
+// the financial transaction and is safe to repeat through the Core key.
+model KontorHocketSettlementOutbox {
+  id                String                  @id @default(cuid())
+  receivableId      String
+  receivable        KontorHocketReceivable @relation(fields: [receivableId], references: [id], onDelete: Restrict)
+  revision          Int
+  correlationId     String
+  idempotencyKey    String                  @unique
+  sourceRecordId    String                  @unique
+  payload           Json
+  payloadHash       String
+  status            String                  @default("PENDING")
+  attemptCount      Int                     @default(0)
+  lastAttemptAt     DateTime?
+  lastError         String?
+  messageId         String?
+  publishedAt       DateTime?
+  createdAt         DateTime                @default(now())
+  updatedAt         DateTime                @updatedAt
+
+  @@unique([receivableId, revision])
+  @@index([status, createdAt])
+}
+
+// This journal is Kontor-internal. Hocket cannot publish payments. A caller
+// may append a row only after Kontor/Jeld has authoritative payment evidence.
+model KontorHocketPayment {
+  id                         String                    @id @default(cuid())
+  paymentExternalId          String                    @unique
+  idempotencyKey             String                    @unique
+  requestPayloadHash         String
+  expectedRevision           Int
+  receivableId               String
+  receivable                 KontorHocketReceivable   @relation(fields: [receivableId], references: [id], onDelete: Restrict)
+  creditorOrganizationId     String
+  debtorOrganizationId       String
+  amountCents                Int
+  currency                   String                    @default("EUR")
+  method                     String
+  evidenceReference          String                    @unique
+  paidAt                     DateTime
+  appliedAmountCents         Int
+  creditGeneratedCents       Int                       @default(0)
+  financePaymentAllocationId String?                   @unique
+  createdByAccountId         String?
+  creditEntry                KontorHocketCreditEntry?
+  createdAt                  DateTime                  @default(now())
+
+  @@index([receivableId, paidAt])
+  @@index([creditorOrganizationId, debtorOrganizationId, paidAt])
+}
+
+// Organization credit is scoped to the exact creditor/debtor pair and
+// currency. It is deliberately separate from Stueberl member credit.
+model KontorHocketOrganizationCredit {
+  id                       String                    @id @default(cuid())
+  creditorOrganizationId   String
+  debtorOrganizationId     String
+  currency                 String                    @default("EUR")
+  balanceCents             Int                       @default(0)
+  revision                 Int                       @default(1)
+  entries                  KontorHocketCreditEntry[]
+  createdAt                DateTime                  @default(now())
+  updatedAt                DateTime                  @updatedAt
+
+  @@unique([creditorOrganizationId, debtorOrganizationId, currency])
+  @@index([debtorOrganizationId, currency])
+}
+
+model KontorHocketCreditEntry {
+  id                         String                         @id @default(cuid())
+  organizationCreditId       String
+  organizationCredit         KontorHocketOrganizationCredit @relation(fields: [organizationCreditId], references: [id], onDelete: Restrict)
+  receivableId               String
+  receivable                 KontorHocketReceivable        @relation(fields: [receivableId], references: [id], onDelete: Restrict)
+  paymentId                  String                         @unique
+  payment                    KontorHocketPayment            @relation(fields: [paymentId], references: [id], onDelete: Restrict)
+  amountCents                Int
+  balanceAfterCents          Int
+  kind                       String                         @default("OVERPAYMENT")
+  createdByAccountId         String?
+  createdAt                  DateTime                       @default(now())
+
+  @@index([organizationCreditId, createdAt])
+  @@index([receivableId, createdAt])
 }
 
 model KontorFinanceReceipt {
@@ -4295,4 +4569,80 @@ model KontorDocumentTombstone {
   erasedAt                 DateTime             @default(now())
 
   @@index([erasedAt])
+}
+
+
+model KontorStueberlHistoryRun {
+  id String @id @default(cuid())
+  requestKey String @unique
+  requestHash String
+  fromDate String
+  toDate String
+  cutoffAt DateTime
+  cursor String @default("")
+  status String @default("COLLECTING")
+  revision Int @default(1)
+  createdByAccountId String
+  confirmedByAccountId String?
+  confirmKey String? @unique
+  confirmHash String?
+  confirmedAt DateTime?
+  requestMessageId String?
+  lastError String?
+  leaseUntil DateTime?
+  rows KontorStueberlHistoryRow[]
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  @@index([status, createdAt])
+}
+
+model KontorStueberlHistoryRow {
+  id String @id @default(cuid())
+  runId String
+  run KontorStueberlHistoryRun @relation(fields:[runId], references:[id], onDelete:Restrict)
+  sourceId String
+  receivableExternalId String
+  description String
+  paidAt DateTime
+  amountCents Int
+  status String
+  reason String?
+  sourceHash String?
+  planHash String?
+  payload Json
+  importedReceivableId String?
+  importedAt DateTime?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  @@unique([runId, receivableExternalId])
+  @@index([runId, status])
+}
+
+model KontorStueberlAccountOperation {
+  operationId String @id
+  requestHash String
+  memberId String
+  receivableExternalId String
+  owner String
+  kind String
+  amountCents Int
+  creditDeltaCents Int
+  occurredAt DateTime
+  reason String
+  actorAccountId String
+  command Json
+  result Json
+  responseMessageId String?
+  createdAt DateTime @default(now())
+  @@index([memberId, owner, createdAt])
+  @@index([receivableExternalId])
+}
+
+// Imported local balances remain separate from Kontor-led live balances.
+model KontorStueberlImportedCredit {
+  memberId String @id
+  balanceCents Int @default(0)
+  revision Int @default(0)
+  lastOperationId String?
+  updatedAt DateTime @updatedAt
 }

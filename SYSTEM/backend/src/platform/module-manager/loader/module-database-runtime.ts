@@ -1,5 +1,6 @@
 import type { ModuleManifestSummary } from "../types.js";
 import { dataDomainForModule, type DataDomain } from "../../../core/database/data-domains.js";
+import { normalizeLegacyPrivacyIdeaManifest } from "../manifests/manifest.service.js";
 
 const DELEGATE_NAME = /^[a-z][A-Za-z0-9]{0,99}$/;
 
@@ -8,7 +9,8 @@ type PrismaLike = Record<string, any> & {
 };
 
 function databaseDeclaration(manifest: ModuleManifestSummary | null) {
-  const database = (manifest?.metadata as any)?.database;
+  const normalizedManifest = normalizeLegacyPrivacyIdeaManifest(manifest);
+  const database = (normalizedManifest?.metadata as any)?.database;
   if (!database || !["none", "scoped-v1"].includes(database.mode)) {
     throw new Error("MODULE_DATABASE_SCOPE_REQUIRED");
   }

@@ -1,4 +1,5 @@
 import type { Express } from "express";
+import { presenceBridgeRouter } from "../../core/modules/security/presence/routes.js";
 
 import { clientLogRouter } from "../../core/logger/clientLog.routes.js";
 import {
@@ -32,6 +33,7 @@ import { systemRouter } from "./system.routes.js";
  */
 export function registerCoreRoutes(app: Express) {
   app.use("/api/health", healthRouter);
+  app.use("/api/bridge/presence", presenceBridgeRouter);
   registerPublicBrandingReadRoutes(app);
   app.use(resolveMediaPublicBasePath(), mediaFilesRouter);
   app.use("/api/terminals", terminalRouter);

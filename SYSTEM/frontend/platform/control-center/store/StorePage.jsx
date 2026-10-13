@@ -1,3 +1,4 @@
+import AppInstallPanel from "./AppInstallPanel.jsx";
 import { useEffect, useMemo, useState } from "react";
 
 import {
@@ -1144,6 +1145,7 @@ export default function StorePage({ token }) {
         </button>
       </header>
 
+      <AppInstallPanel token={token} onInstalled={() => loadPackages({preserveSelection:true})} />
       <SummaryBar counts={counts} />
 
       {error ? <div className="store-alert store-alert--error">{error}</div> : null}

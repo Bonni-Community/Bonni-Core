@@ -5,7 +5,6 @@ import path from "node:path";
 import { getProductRoot, getProjectRoot } from "../../../boot/run-system/run-system.paths.js";
 import {
   compareBonniReleaseVersion,
-  isStrictSemVer,
 } from "../../../update-release/semver.js";
 
 const SOURCE_SCHEMA = "bonni.local-source-update/v1";
@@ -228,7 +227,13 @@ function validCoreVersion(value: unknown): value is string {
 }
 
 function validAppVersion(value: unknown): value is string {
-  return typeof value === "string" && value.length <= 128 && isStrictSemVer(value);
+  if (typeof value !== "string" || !value || value.length > 128) return false;
+  try {
+    compareBonniReleaseVersion(value, value);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function canonicalTimestamp(value: unknown): value is string {

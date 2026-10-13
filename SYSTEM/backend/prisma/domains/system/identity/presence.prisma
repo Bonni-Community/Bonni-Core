@@ -1,0 +1,30 @@
+// Presence is inferred from a recent observation, or explicitly checked out.
+model SecurityMemberPresence {
+  memberId  String @id
+  member    MemberProfile @relation(fields: [memberId], references: [id], onDelete: Cascade)
+  status    String @default("UNKNOWN")
+  version   Int @default(1)
+  changedAt DateTime @default(now())
+  changedBy String
+  lastSeenAt DateTime?
+  @@index([status])
+}
+
+// Deduplicates confirmed booking observations; never stores raw scanner codes.
+model SecurityPresenceObservation {
+  id String @id
+  observedAt DateTime
+  createdAt DateTime @default(now())
+}
+
+// Separate read-only integration credential; never a Core login token.
+model SecurityPresenceBridge {
+  id        String @id @default(cuid())
+  label     String
+  tokenHash String @unique
+  scope     String @default("COUNT")
+  createdBy String
+  createdAt DateTime @default(now())
+  expiresAt DateTime
+  revokedAt DateTime?
+}

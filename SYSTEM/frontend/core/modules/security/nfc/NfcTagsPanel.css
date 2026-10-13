@@ -1,0 +1,15 @@
+.bonni-nfc-panel { display: grid; gap: 1rem; font-size: 1rem; }
+.bonni-nfc-panel h3, .bonni-nfc-panel p { margin: 0; }
+.bonni-nfc-panel__fields { display: grid; gap: .75rem; max-width: 36rem; }
+.bonni-nfc-panel__reader { display: flex; flex-wrap: wrap; gap: .75rem; align-items: center; }
+.bonni-nfc-panel__reader small { flex-basis: 100%; }
+.bonni-nfc-panel label { display: grid; gap: .4rem; }
+.bonni-nfc-panel input, .bonni-nfc-panel select { width: 100%; box-sizing: border-box; min-height: 2.75rem; padding: .65rem; font: inherit; }
+.bonni-nfc-panel button { min-height: 2.75rem; padding: .6rem 1rem; font: inherit; cursor: pointer; }
+.bonni-nfc-panel button:disabled { cursor: wait; opacity: .6; }
+.bonni-nfc-panel small { font-size: .875rem; }
+.bonni-nfc-panel__list { display: grid; gap: .75rem; padding: 0; margin: 0; list-style: none; }
+.bonni-nfc-panel__list li { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: .75rem; padding: .9rem; border: 1px solid #64748b66; border-radius: .5rem; }
+.bonni-nfc-panel__list li > div { display: grid; gap: .35rem; overflow-wrap: anywhere; }
+.bonni-nfc-panel__confirm { padding: 1rem; border: 1px solid #bc6221; display: flex; flex-wrap: wrap; gap: .75rem; }
+.bonni-nfc-panel__confirm p { flex-basis: 100%; }

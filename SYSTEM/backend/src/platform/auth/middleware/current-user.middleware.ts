@@ -2,6 +2,9 @@ import { createHash, timingSafeEqual } from "node:crypto";
 
 import { coreTokenService } from "../token/core-token.service.js";
 import { getServerPrismaClient } from "../../../core/database/database.js";
+import { listModuleManifests } from "../../module-manager/manifests/index.js";
+import type { ModuleManifestSummary } from "../../module-manager/types.js";
+import { scopeTerminalAccount } from "../terminal-accounts/terminal-account-access.js";
 import {
   isDatabaseAuthorizationFailure,
   isDatabaseConnectionFailure,
@@ -60,6 +63,7 @@ type ResolvedCurrentUserSession = {
 };
 
 type CurrentUserMiddlewareDependencies = {
+  listManifests?: () => Promise<ModuleManifestSummary[]>;
   verifyToken: (token: string) => {
     accountId: string;
     sessionId: string;
@@ -171,8 +175,13 @@ export function createCurrentUserMiddleware(dependencies: CurrentUserMiddlewareD
           && !session.endedAt
           && tokenMatchesSession(token, session.tokenHash)
         ) {
-          identity = requestIdentity(account);
-          assurance = sessionAssurance(account, session);
+          const scopedAccount = account.type === "TERMINAL"
+            ? scopeTerminalAccount(account, await (dependencies.listManifests || listModuleManifests)())
+            : account;
+          if (account.type !== "TERMINAL" || scopedAccount.roles.length) {
+            identity = requestIdentity(scopedAccount);
+            assurance = sessionAssurance(scopedAccount, session);
+          }
         }
       } catch (error) {
         dependencies.warn("Current user database lookup failed", error);

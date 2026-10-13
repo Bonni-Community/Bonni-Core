@@ -17,6 +17,7 @@ x-backend-environment: &backend_environment
   # Exactly one trusted hop: the closed runtime-proxy nginx container. Core
   # defaults to zero outside this topology and validates the configured count.
   EXPRESS_TRUST_PROXY_HOPS: "1"
+  BONNI_ALLOWED_BROWSER_ORIGINS: ${BONNI_ALLOWED_BROWSER_ORIGINS:-}
   BONNI_UPDATE_RUNNER_STATE_ROOT: /run/bonni-update/ipc
   BONNI_NETWORK_TRANSPORT_GATE_FILE: /run/bonni-update/ipc/network-transport-gate.json
   BONNI_UPDATE_REQUEST_SECRET_FILE: /run/secrets/bonni-update/request.key

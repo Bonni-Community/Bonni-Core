@@ -38,6 +38,12 @@ export const CONTROL_CENTER_NAV_ITEMS = [
     description: labels.navigationDescriptions.system,
   },
   {
+    key: "diagnostics",
+    label: labels.navigation.diagnostics,
+    targetModule: "diagnostics",
+    description: labels.navigationDescriptions.diagnostics,
+  },
+  {
     key: "explorer",
     label: labels.navigation.explorer,
     targetModule: "explorer",
@@ -60,6 +66,7 @@ export const CONTROL_CENTER_MAIN_AREAS = [
 export const CONTROL_CENTER_SECONDARY_AREAS = [
   area("provider", "☁"),
   area("interfaces", "⇄"),
+  area("diagnostics", "⌁"),
   area("explorer", "▤"),
 ];
 

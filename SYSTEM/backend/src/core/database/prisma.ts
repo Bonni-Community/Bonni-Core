@@ -57,6 +57,18 @@ const MODEL_PROPERTIES = new Map(
     model,
   ]),
 );
+const appClients = new Map<DataDomain, {constructor:any; models: typeof MODEL_PROPERTIES}>();
+function modelsFor(domain:DataDomain) {return appClients.get(domain)?.models || MODEL_PROPERTIES;}
+export async function registerAppDatabaseClient(domain:DataDomain, constructor:any, models:any[]) {
+  if(!['stueberl','hocket','kontor','meet','pos'].includes(domain))throw new Error('APP_DATABASE_DOMAIN_DENIED');
+  for(const [key,entry] of [...clients])if(key.endsWith(':'+domain)) {
+    clients.delete(key);await Promise.allSettled([entry.client.$disconnect(),entry.pool.end()]);
+  }
+  if(constructor)appClients.set(domain,{constructor,models:new Map(models.map(m=>[m.name[0].toLowerCase()+m.name.slice(1),m]))});
+  else appClients.delete(domain);
+  routedServerClients.delete(domain);
+  for(const key of delegateProxies.keys())if(key.startsWith(domain+':'))delegateProxies.delete(key);
+}
 const delegateProxies = new Map<string, object>();
 const routedServerClients = new Map<DataDomain, PrismaClient>();
 let jsonEmergencyReplayRunning = false;
@@ -130,7 +142,8 @@ function createPrismaClient(
   // schema option; without it Prisma falls back to `public` even when the
   // PostgreSQL role itself has the correct search_path.
   const adapter = new PrismaPg(pool, prismaPgOptionsForDomain(domain));
-  const client = new PrismaClient({ adapter });
+  const Constructor=appClients.get(domain)?.constructor || PrismaClient;
+  const client = new Constructor({ adapter });
   return { connectionString, pool, client };
 }
 
@@ -185,8 +198,8 @@ async function runDelegateOperation(
   return Reflect.apply(method, delegate, args);
 }
 
-function generatedStringId(modelProperty: string) {
-  const model = MODEL_PROPERTIES.get(modelProperty);
+function generatedStringId(domain: DataDomain, modelProperty: string) {
+  const model = modelsFor(domain).get(modelProperty);
   const id = model?.fields.find((field) => field.isId);
   const generated = id?.default && typeof id.default === "object"
     ? String((id.default as { name?: unknown }).name || "")
@@ -200,21 +213,21 @@ function mapObjectOrArray(value: unknown, mapper: (item: unknown) => unknown) {
   return Array.isArray(value) ? value.map(mapper) : mapper(value);
 }
 
-function prepareNestedRelationWrite(modelProperty: string, value: unknown): unknown {
+function prepareNestedRelationWrite(domain: DataDomain, modelProperty: string, value: unknown): unknown {
   if (!value || typeof value !== "object" || Array.isArray(value)) return value;
   const nested = { ...(value as Record<string, unknown>) };
 
   if ("create" in nested) {
     nested.create = mapObjectOrArray(
       nested.create,
-      (item) => prepareWriteData(modelProperty, item, true),
+      (item) => prepareWriteData(domain, modelProperty, item, true),
     );
   }
   if (nested.createMany && typeof nested.createMany === "object" && !Array.isArray(nested.createMany)) {
     const createMany = { ...(nested.createMany as Record<string, unknown>) };
     createMany.data = mapObjectOrArray(
       createMany.data,
-      (item) => prepareWriteData(modelProperty, item, true),
+      (item) => prepareWriteData(domain, modelProperty, item, true),
     );
     nested.createMany = createMany;
   }
@@ -222,7 +235,7 @@ function prepareNestedRelationWrite(modelProperty: string, value: unknown): unkn
     nested.connectOrCreate = mapObjectOrArray(nested.connectOrCreate, (item) => {
       if (!item || typeof item !== "object" || Array.isArray(item)) return item;
       const connectOrCreate = { ...(item as Record<string, unknown>) };
-      connectOrCreate.create = prepareWriteData(modelProperty, connectOrCreate.create, true);
+      connectOrCreate.create = prepareWriteData(domain, modelProperty, connectOrCreate.create, true);
       return connectOrCreate;
     });
   }
@@ -230,8 +243,8 @@ function prepareNestedRelationWrite(modelProperty: string, value: unknown): unkn
     nested.upsert = mapObjectOrArray(nested.upsert, (item) => {
       if (!item || typeof item !== "object" || Array.isArray(item)) return item;
       const upsert = { ...(item as Record<string, unknown>) };
-      upsert.create = prepareWriteData(modelProperty, upsert.create, true);
-      upsert.update = prepareWriteData(modelProperty, upsert.update, false);
+      upsert.create = prepareWriteData(domain, modelProperty, upsert.create, true);
+      upsert.update = prepareWriteData(domain, modelProperty, upsert.update, false);
       return upsert;
     });
   }
@@ -240,17 +253,17 @@ function prepareNestedRelationWrite(modelProperty: string, value: unknown): unkn
       if (!item || typeof item !== "object" || Array.isArray(item)) return item;
       const update = { ...(item as Record<string, unknown>) };
       if ("data" in update) {
-        update.data = prepareWriteData(modelProperty, update.data, false);
+        update.data = prepareWriteData(domain, modelProperty, update.data, false);
         return update;
       }
-      return prepareWriteData(modelProperty, update, false);
+      return prepareWriteData(domain, modelProperty, update, false);
     });
   }
   if ("updateMany" in nested) {
     nested.updateMany = mapObjectOrArray(nested.updateMany, (item) => {
       if (!item || typeof item !== "object" || Array.isArray(item)) return item;
       const updateMany = { ...(item as Record<string, unknown>) };
-      updateMany.data = prepareWriteData(modelProperty, updateMany.data, false);
+      updateMany.data = prepareWriteData(domain, modelProperty, updateMany.data, false);
       return updateMany;
     });
   }
@@ -258,36 +271,36 @@ function prepareNestedRelationWrite(modelProperty: string, value: unknown): unkn
   return nested;
 }
 
-function prepareWriteData(modelProperty: string, data: unknown, injectId: boolean): unknown {
+function prepareWriteData(domain: DataDomain, modelProperty: string, data: unknown, injectId: boolean): unknown {
   if (!data || typeof data !== "object" || Array.isArray(data)) return data;
-  const model = MODEL_PROPERTIES.get(modelProperty);
+  const model = modelsFor(domain).get(modelProperty);
   const row = { ...(data as Record<string, unknown>) };
-  const idField = generatedStringId(modelProperty);
+  const idField = generatedStringId(domain, modelProperty);
   if (injectId && idField && !row[idField]) row[idField] = randomUUID();
 
   for (const field of model?.fields || []) {
     if (field.kind !== "object" || !(field.name in row)) continue;
     const relatedProperty = `${field.type[0].toLowerCase()}${field.type.slice(1)}`;
-    row[field.name] = prepareNestedRelationWrite(relatedProperty, row[field.name]);
+    row[field.name] = prepareNestedRelationWrite(domain, relatedProperty, row[field.name]);
   }
   return row;
 }
 
-function prepareMirroredWriteArgs(modelProperty: string, operation: string, args: unknown[]) {
+function prepareMirroredWriteArgs(domain: DataDomain, modelProperty: string, operation: string, args: unknown[]) {
   if (!args.length || !args[0] || typeof args[0] !== "object") return args;
   const options = { ...(args[0] as Record<string, unknown>) };
 
   if (operation === "create") {
-    options.data = prepareWriteData(modelProperty, options.data, true);
+    options.data = prepareWriteData(domain, modelProperty, options.data, true);
   } else if (operation === "createMany" || operation === "createManyAndReturn") {
     options.data = Array.isArray(options.data)
-      ? options.data.map((row) => prepareWriteData(modelProperty, row, true))
-      : prepareWriteData(modelProperty, options.data, true);
+      ? options.data.map((row) => prepareWriteData(domain, modelProperty, row, true))
+      : prepareWriteData(domain, modelProperty, options.data, true);
   } else if (operation === "upsert") {
-    options.create = prepareWriteData(modelProperty, options.create, true);
-    options.update = prepareWriteData(modelProperty, options.update, false);
+    options.create = prepareWriteData(domain, modelProperty, options.create, true);
+    options.update = prepareWriteData(domain, modelProperty, options.update, false);
   } else if (operation === "update" || operation === "updateMany" || operation === "updateManyAndReturn") {
-    options.data = prepareWriteData(modelProperty, options.data, false);
+    options.data = prepareWriteData(domain, modelProperty, options.data, false);
   }
 
   return [options, ...args.slice(1)];
@@ -339,6 +352,9 @@ async function queueEmergencyWrite(
   // only in the live database transaction which produced the request.
   if (
     modelProperty.startsWith("securityTwoFactor")
+    || modelProperty.startsWith("securityNfc")
+    || modelProperty.startsWith("securityPresence")
+    || modelProperty === "securityMemberPresence"
     || modelProperty.startsWith("securityAccountRecovery")
     || (modelProperty === "$client" && operation === "$transaction")
   ) {
@@ -401,7 +417,7 @@ async function executeWrite(
   const targets = getDatabaseWriteOrder();
   const routing = getDatabaseRoutingStatus();
   const args = targets.length > 1 || routing.jsonEmergency.enabled
-    ? prepareMirroredWriteArgs(modelProperty, operation, originalArgs)
+    ? prepareMirroredWriteArgs(domain, modelProperty, operation, originalArgs)
     : originalArgs;
   const primary = targets[0];
 
@@ -556,7 +572,7 @@ async function replayJsonEmergencyWritesUnlocked(target: DatabaseTarget) {
         }
         await Reflect.apply(method, client, entry.args);
       } else {
-        if (!WRITE_OPERATIONS.has(entry.operation) || !MODEL_PROPERTIES.has(entry.modelProperty)) {
+        if (!WRITE_OPERATIONS.has(entry.operation) || !modelsFor(domain).has(entry.modelProperty)) {
           throw new Error(
             `JSON_EMERGENCY_OPERATION_NOT_ALLOWED:${entry.modelProperty}.${entry.operation}`,
           );
@@ -621,7 +637,7 @@ function routedServerClient(domain: DataDomain) {
   const routed = new Proxy({} as PrismaClient, {
     get(_target, property) {
       if (typeof property !== "string") return undefined;
-      if (MODEL_PROPERTIES.has(property)) return delegateProxy(domain, property);
+      if (modelsFor(domain).has(property)) return delegateProxy(domain, property);
       if (property === "$queryRaw" || property === "$queryRawUnsafe") {
         return (...args: unknown[]) => executeClientRead(domain, property, args);
       }

@@ -6,7 +6,6 @@ import { pathToFileURL } from "node:url";
 
 import {
   compareBonniReleaseVersion,
-  compareStrictSemVer,
 } from "../../src/system/update-runner/contract.mjs";
 
 import {
@@ -134,12 +133,19 @@ function isPathInside(relativePath, rootPath) {
   return relativePath === rootPath || relativePath.startsWith(`${rootPath}/`);
 }
 
+function compareBonniAppVersion(left, right) {
+  return compareBonniReleaseVersion(left, right);
+}
+
 function assertVersion(value, label, { core = false } = {}) {
   if (typeof value !== "string" || !value || value.length > 128) {
     fail("LOCAL_SOURCE_UPDATE_INVALID_VERSION", label);
   }
   try {
-    (core ? compareBonniReleaseVersion : compareStrictSemVer)(value, value);
+    // Kontor maintenance revisions use the same visible alphabetic ordering as
+    // Bonni Core (`0.19.3`, `0.19.3+a`, `0.19.3+b-DEV.5`, ...). Ordinary SemVer
+    // deliberately ignores build metadata and therefore cannot order them.
+    (core ? compareBonniReleaseVersion : compareBonniAppVersion)(value, value);
   } catch {
     fail("LOCAL_SOURCE_UPDATE_INVALID_VERSION", label);
   }
@@ -584,7 +590,7 @@ export async function createLocalSourceUpdate({
   }
   if (
     updatesKontor
-    && compareStrictSemVer(to.kontorAppVersion, from.kontorAppVersion) < 0
+    && compareBonniAppVersion(to.kontorAppVersion, from.kontorAppVersion) < 0
   ) {
     fail(
       "LOCAL_SOURCE_UPDATE_APP_DOWNGRADE_FORBIDDEN",

@@ -19,7 +19,6 @@ const MAX_HEALTH_BYTES = 512 * 1024;
 const MAX_PAGE_BYTES = 2 * 1024 * 1024;
 const EXIT_NOT_READY = 1;
 const EXIT_BACKEND_ENDED = 2;
-const EXIT_START_CANCELLED = 3;
 const EXIT_UNTRUSTED_SERVICE = 20;
 const TOKEN = /^[A-Za-z0-9_-]{32,128}$/u;
 const NONCE = /^[a-f0-9]{64}$/u;
@@ -272,113 +271,38 @@ function sameHostReceipt(left, right) {
     .every((field) => left?.[field] === right?.[field]);
 }
 
-function stableDiagnosticCode(error, fallback = "BONNI_LOCAL_START_NOT_READY") {
-  const candidate = String(error?.code || error?.message || "").trim();
-  return /^[A-Z][A-Z0-9_]{2,127}$/u.test(candidate) ? candidate : fallback;
-}
-
-function emitDiagnostic(phase, state, code) {
-  const acceptedPhases = new Set(["receipt", "proof", "health", "page", "binding", "ready"]);
-  const acceptedStates = new Set(["waiting", "failed", "ready"]);
-  const safePhase = acceptedPhases.has(phase) ? phase : "binding";
-  const safeState = acceptedStates.has(state) ? state : "failed";
-  const safeCode = /^[A-Z][A-Z0-9_]{2,127}$/u.test(String(code || ""))
-    ? String(code)
-    : "BONNI_LOCAL_START_DIAGNOSTIC_INVALID";
-  console.info(`[DIAGNOSE] phase=${safePhase}; state=${safeState}; code=${safeCode}`);
-}
-
-async function runReadinessPhase(phase, operation) {
-  try {
-    return await operation();
-  } catch (error) {
-    if (error && typeof error === "object" && !error.readinessPhase) {
-      error.readinessPhase = phase;
-    }
-    throw error;
-  }
-}
-
-async function checkReadiness({ report = null } = {}) {
-  const note = typeof report === "function" ? report : () => {};
+async function checkReadiness() {
   let receipt;
   try {
     receipt = await readVerifiedHostReceipt();
-  } catch (error) {
-    const open = await portIsOpen();
-    note("receipt", "failed", stableDiagnosticCode(error, "BONNI_LOCAL_START_RECEIPT_INVALID"));
-    return open ? EXIT_UNTRUSTED_SERVICE : EXIT_NOT_READY;
+  } catch {
+    return await portIsOpen() ? EXIT_UNTRUSTED_SERVICE : EXIT_NOT_READY;
   }
   if (!receipt || receipt.childPid === null) {
-    const open = await portIsOpen();
-    note(
-      "receipt",
-      open ? "failed" : "waiting",
-      open ? "BONNI_LOCAL_START_UNBOUND_SERVICE" : "BONNI_LOCAL_START_RECEIPT_NOT_READY",
-    );
-    return open ? EXIT_UNTRUSTED_SERVICE : EXIT_NOT_READY;
+    return await portIsOpen() ? EXIT_UNTRUSTED_SERVICE : EXIT_NOT_READY;
   }
-  note("receipt", "ready", "BONNI_LOCAL_START_RECEIPT_VALID");
-
   try {
-    const firstProof = await runReadinessPhase("proof", () => verifyProof(receipt));
-    if (!firstProof) {
-      note("proof", "waiting", "BONNI_LOCAL_START_PROOF_NOT_READY");
-      return EXIT_NOT_READY;
-    }
-    note("proof", "ready", "BONNI_LOCAL_START_PROOF_VALID");
-
-    const healthAndPage = await runReadinessPhase("health", () => verifyHealthAndPage(firstProof));
-    if (!healthAndPage) {
-      note("health", "waiting", "BONNI_LOCAL_START_HEALTH_NOT_READY");
-      return EXIT_NOT_READY;
-    }
-    note("health", "ready", "BONNI_LOCAL_START_HEALTH_VALID");
-    note("page", "ready", "BONNI_LOCAL_START_PAGE_VALID");
-
-    const secondProof = await runReadinessPhase("binding", () => verifyProof(receipt));
-    if (!secondProof || !sameProofRuntime(firstProof, secondProof)) {
-      note("binding", "failed", "BONNI_LOCAL_START_PROOF_BINDING_CHANGED");
-      return EXIT_NOT_READY;
-    }
-    const recheckedReceipt = await runReadinessPhase("binding", () => readVerifiedHostReceipt());
-    if (!recheckedReceipt || !sameHostReceipt(receipt, recheckedReceipt)) {
-      note("binding", "failed", "BONNI_LOCAL_START_RECEIPT_BINDING_CHANGED");
-      return EXIT_NOT_READY;
-    }
-    note("binding", "ready", "BONNI_LOCAL_START_BINDING_VALID");
-    note("ready", "ready", "BONNI_LOCAL_START_READY");
-    return 0;
+    const firstProof = await verifyProof(receipt);
+    if (!firstProof) return EXIT_NOT_READY;
+    if (!await verifyHealthAndPage(firstProof)) return EXIT_NOT_READY;
+    const secondProof = await verifyProof(receipt);
+    if (!secondProof || !sameProofRuntime(firstProof, secondProof)) return EXIT_NOT_READY;
+    const recheckedReceipt = await readVerifiedHostReceipt();
+    return recheckedReceipt && sameHostReceipt(receipt, recheckedReceipt)
+      ? 0
+      : EXIT_NOT_READY;
   } catch (error) {
-    const code = stableDiagnosticCode(error);
-    const reportedPhase = code.includes("_PAGE_")
-      ? "page"
-      : code.includes("_HEALTH_")
-        ? "health"
-        : error?.readinessPhase;
-    const phase = ["receipt", "proof", "health", "page", "binding", "ready"]
-      .includes(reportedPhase)
-      ? reportedPhase
-      : "binding";
-    const open = await portIsOpen();
-    note(phase, error?.transient ? "waiting" : "failed", code);
     if (error?.transient) return EXIT_NOT_READY;
-    return open ? EXIT_UNTRUSTED_SERVICE : EXIT_NOT_READY;
+    return await portIsOpen() ? EXIT_UNTRUSTED_SERVICE : EXIT_NOT_READY;
   }
 }
 
 function parseArguments(argv) {
-  const options = {
-    mode: "check",
-    waitSeconds: 0,
-    resultFile: null,
-    cancelFile: null,
-  };
+  const options = { mode: "check", waitSeconds: 0, resultFile: null };
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv[index];
     if (argument === "--check") options.mode = "check";
     else if (argument === "--port-open") options.mode = "port";
-    else if (argument === "--diagnose") options.mode = "diagnose";
     else if (argument === "--wait-seconds") {
       const value = Number(argv[++index]);
       if (!Number.isSafeInteger(value) || value < 1 || value > 600) {
@@ -392,38 +316,9 @@ function parseArguments(argv) {
         throw new Error("BONNI_LOCAL_START_RESULT_FILE_INVALID");
       }
       options.resultFile = path.resolve(value);
-    } else if (argument === "--cancel-file") {
-      const value = argv[++index];
-      if (!value || value.includes("\0") || !path.isAbsolute(value)) {
-        throw new Error("BONNI_LOCAL_START_CANCEL_FILE_INVALID");
-      }
-      const resolved = path.resolve(value);
-      const cancelRoot = path.join(productRoot, "RUN_SYSTEM", "windows-start");
-      const relative = path.relative(cancelRoot, resolved);
-      if (!relative
-        || path.isAbsolute(relative)
-        || relative.startsWith(`..${path.sep}`)
-        || relative === ".."
-        || !/^start-cancel-[a-f0-9]{32}\.cancel$/u.test(path.basename(resolved))) {
-        throw new Error("BONNI_LOCAL_START_CANCEL_FILE_INVALID");
-      }
-      options.cancelFile = resolved;
     } else throw new Error("BONNI_LOCAL_START_ARGUMENT_INVALID");
   }
   return options;
-}
-
-async function cancellationRequested(file) {
-  if (!file) return false;
-  const state = await fs.lstat(file).catch((error) => {
-    if (error?.code === "ENOENT") return null;
-    throw error;
-  });
-  if (!state) return false;
-  if (!state.isFile() || state.isSymbolicLink() || state.size <= 0 || state.size > 256) {
-    throw new Error("BONNI_LOCAL_START_CANCEL_FILE_UNSAFE");
-  }
-  return true;
 }
 
 async function resultFileExists(file) {
@@ -439,14 +334,11 @@ async function main() {
   const options = parseArguments(process.argv.slice(2));
   if (options.mode === "port") return await portIsOpen() ? 0 : EXIT_NOT_READY;
   if (options.mode === "check") return checkReadiness();
-  if (options.mode === "diagnose") return checkReadiness({ report: emitDiagnostic });
   const deadline = Date.now() + options.waitSeconds * 1_000;
   while (Date.now() < deadline) {
-    if (await cancellationRequested(options.cancelFile)) return EXIT_START_CANCELLED;
     if (await resultFileExists(options.resultFile)) return EXIT_BACKEND_ENDED;
     const result = await checkReadiness();
     if (result === 0 || result === EXIT_UNTRUSTED_SERVICE) return result;
-    if (await cancellationRequested(options.cancelFile)) return EXIT_START_CANCELLED;
     await new Promise((resolve) => setTimeout(resolve, 750));
   }
   return EXIT_NOT_READY;

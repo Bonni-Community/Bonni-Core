@@ -1,0 +1,23 @@
+.cc-web-bridge-summary { display: flex; flex-wrap: wrap; gap: 1rem; margin: 1rem 0; }
+.cc-web-bridge-summary span { display: grid; gap: .35rem; padding: .8rem 1rem; border: 1px solid rgba(255,255,255,.12); border-radius: .75rem; }
+.cc-web-bridge-content { display: grid; gap: 1rem; }
+.cc-web-bridge-content label { display: grid; gap: .45rem; }
+.cc-web-bridge-content textarea { min-height: 7rem; resize: vertical; }
+.cc-web-bridge-content input, .cc-web-bridge-content textarea { box-sizing: border-box; width: 100%; padding: .75rem; background: #1b1c20; color: inherit; border: 1px solid #555; border-radius: .5rem; font: inherit; }
+.cc-web-bridge-inbox { display: grid; gap: .75rem; }
+.cc-web-bridge-inbox details { border: 1px solid rgba(255,255,255,.12); border-radius: .5rem; padding: .85rem; overflow-wrap: anywhere; }
+.cc-web-bridge-inbox summary { cursor: pointer; }
+.cc-web-bridge-inbox table { width: 100%; border-collapse: collapse; margin-top: .75rem; }
+.cc-web-bridge-inbox th, .cc-web-bridge-inbox td { padding: .5rem; text-align: left; border-bottom: 1px solid rgba(255,255,255,.1); }
+.cc-web-bridge-guide .cc-system-card__header { flex-wrap: wrap; gap: 1rem; }
+.cc-web-bridge-guide .cc-system-card__header > div { flex: 1 1 16rem; min-width: 0; }
+.cc-web-bridge-guide__sections { display: grid; gap: .75rem; min-width: 0; overflow-wrap: anywhere; }
+.cc-web-bridge-guide details { min-width: 0; border: 1px solid rgba(255,255,255,.12); border-radius: .5rem; padding: .85rem; }
+.cc-web-bridge-guide summary { cursor: pointer; font-weight: 600; }
+.cc-web-bridge-guide li + li { margin-top: .5rem; }
+.cc-web-bridge-guide pre { max-width: 100%; box-sizing: border-box; overflow-x: auto; padding: 1rem; border: 1px solid rgba(255,255,255,.12); border-radius: .5rem; background: #15161a; color: #eee; font-size: .85rem; line-height: 1.6; }
+.cc-web-bridge-guide dt { margin-top: .75rem; }
+.cc-web-bridge-guide dd { margin: .25rem 0 0; }
+.cc-web-bridge-guide button:focus-visible, .cc-web-bridge-guide summary:focus-visible, .cc-web-bridge-guide pre:focus-visible { outline: 2px solid currentColor; outline-offset: 3px; }
+
+.cc-web-bridge-guide__sections[hidden] { display: none; }

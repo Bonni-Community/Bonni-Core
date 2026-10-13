@@ -108,12 +108,14 @@ export function compareStrictSemVer(left, right) {
 function bonniRevision(value) {
   const match = STRICT_SEMVER.exec(value);
   if (!match) throw new Error(`INVALID_STRICT_SEMVER:${String(value || "")}`);
-  const build = match[5]?.split(".") || [];
-  if (!build.length) return 0n;
-  if (build.length !== 1 || !/^[a-z]+$/.test(build[0])) throw new Error(`INVALID_BONNI_RELEASE_REVISION:${value}`);
-  let revision = 0n;
-  for (const character of build[0]) revision = revision * 26n + BigInt(character.charCodeAt(0) - 96);
-  return revision;
+  const build = match[5] || "";
+  if (!build) return { value: 0n, development: 0n };
+  const development = /^([a-z]+)-DEV\.([1-9]\d*)$/.exec(build);
+  const revision = development?.[1] || build;
+  if (!/^[a-z]+$/.test(revision)) throw new Error(`INVALID_BONNI_RELEASE_REVISION:${value}`);
+  let revisionValue = 0n;
+  for (const character of revision) revisionValue = revisionValue * 26n + BigInt(character.charCodeAt(0) - 96);
+  return { value: revisionValue, development: development ? BigInt(development[2]) : 0n };
 }
 
 export function compareBonniReleaseVersion(left, right) {
@@ -121,15 +123,18 @@ export function compareBonniReleaseVersion(left, right) {
   if (standard !== 0) return standard;
   const leftRevision = bonniRevision(left);
   const rightRevision = bonniRevision(right);
-  if (leftRevision < rightRevision) return -1;
-  if (leftRevision > rightRevision) return 1;
+  if (leftRevision.value < rightRevision.value) return -1;
+  if (leftRevision.value > rightRevision.value) return 1;
+  if (leftRevision.development < rightRevision.development) return -1;
+  if (leftRevision.development > rightRevision.development) return 1;
   return 0;
 }
 
 export function bonniReleaseImageTag(version) {
   const match = STRICT_SEMVER.exec(version);
   if (!match) throw new Error(`INVALID_STRICT_SEMVER:${String(version || "")}`);
-  bonniRevision(version);
+  const revision = bonniRevision(version);
+  if (revision.development > 0n) throw new Error(`INVALID_BONNI_RELEASE_REVISION:${version}`);
   const tag = `${match[1]}.${match[2]}.${match[3]}${match[4] ? `-${match[4]}` : ""}${match[5] ? `-${match[5]}` : ""}`;
   if (!/^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$/.test(tag)) throw new Error(`INVALID_BONNI_RELEASE_IMAGE_TAG:${version}`);
   return tag;

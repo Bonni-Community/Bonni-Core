@@ -1,5 +1,6 @@
 import type { Request, Response, NextFunction } from "express";
 import { getServerPrismaClient } from "../../../../core/database/database.js";
+import { getVerifiedRequestIdentity } from "../../../auth/request-identity/request-identity-context.js";
 
 const prisma = getServerPrismaClient("core");
 
@@ -19,7 +20,7 @@ function normalizePermissionVariants(permissionKey: string): Set<string> {
   ]);
 }
 
-function hasRequiredPermission(availablePermissions: string[], requiredPermission: string): boolean {
+function hasRequiredPermission(availablePermissions: readonly string[], requiredPermission: string): boolean {
   const requiredVariants = normalizePermissionVariants(requiredPermission);
 
   return availablePermissions.some((permission) => {
@@ -75,6 +76,20 @@ export function requireAnyPermission(...permissionKeys: string[]) {
 
     if (!account?.isActive) {
       return res.status(401).json({ error: "ACCOUNT_DISABLED" });
+    }
+
+    // Do not reintroduce legacy/admin permissions from raw role rows after
+    // Core has scoped this terminal's verified request identity.
+    if (account.type === "TERMINAL") {
+      const identity = getVerifiedRequestIdentity();
+      if (!identity || identity.type !== "TERMINAL" || identity.accountId !== account.id
+        || identity.credentialRevision !== account.credentialRevision) {
+        return res.status(401).json({ error: "INVALID_OR_ENDED_SESSION" });
+      }
+      if (!requiredPermissions.some((permission) => hasRequiredPermission(identity.permissions, permission))) {
+        return res.status(403).json({ error: "FORBIDDEN", permissions: requiredPermissions });
+      }
+      return next();
     }
 
     // Admin-Konten dürfen Systemfunktionen auch dann nutzen, wenn die Seed-Daten

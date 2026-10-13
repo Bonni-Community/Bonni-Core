@@ -2,8 +2,14 @@ import { getSystemRuntimeConfig } from "../../../system/runtime/runtime.config.j
 import { listModuleManifests } from "../manifests/index.js";
 import { listInstalledModules } from "../registry/index.js";
 import type { InstalledModuleSummary, ModuleManifestSummary } from "../types.js";
+import {
+  compareModuleVersions,
+  isValidModuleVersion,
+  validateCoreVersionCompatibility,
+  type VersionComparison,
+} from "./module-version.js";
 
-export type VersionComparison = -1 | 0 | 1;
+export type { VersionComparison } from "./module-version.js";
 
 export type ModuleDependencyStatus = {
   key: string;
@@ -36,6 +42,7 @@ const CORE_CAPABILITIES = new Set([
   "core.members",
   "core.module-settings",
   "core.two-factor",
+  "core.nfc",
   "core.two-factor-provider",
   "core.private-data",
   "core.domain-messages",
@@ -57,34 +64,8 @@ function cleanVersion(value: unknown): string | null {
   return normalized || null;
 }
 
-function versionParts(value: string): Array<number | string> {
-  const [main, prerelease = ""] = value.split("-", 2);
-  const numeric = main.split(".").map((part) => {
-    const parsed = Number.parseInt(part.replace(/[^0-9].*$/, ""), 10);
-    return Number.isFinite(parsed) ? parsed : 0;
-  });
-  while (numeric.length < 3) numeric.push(0);
-  return [...numeric.slice(0, 3), prerelease];
-}
-
 export function compareVersions(leftValue: string, rightValue: string): VersionComparison {
-  const left = versionParts(cleanVersion(leftValue) || "0.0.0");
-  const right = versionParts(cleanVersion(rightValue) || "0.0.0");
-
-  for (let index = 0; index < 3; index += 1) {
-    const leftPart = Number(left[index]);
-    const rightPart = Number(right[index]);
-    if (leftPart < rightPart) return -1;
-    if (leftPart > rightPart) return 1;
-  }
-
-  const leftPrerelease = String(left[3] || "");
-  const rightPrerelease = String(right[3] || "");
-  if (!leftPrerelease && rightPrerelease) return 1;
-  if (leftPrerelease && !rightPrerelease) return -1;
-  if (leftPrerelease < rightPrerelease) return -1;
-  if (leftPrerelease > rightPrerelease) return 1;
-  return 0;
+  return compareModuleVersions(leftValue, rightValue);
 }
 
 function firstVersion(...values: unknown[]) {
@@ -157,12 +138,19 @@ export function evaluateModuleCompatibility(
   const { minimumCoreVersion, maximumCoreVersion } = coreVersionRange(manifest);
   const reasons: string[] = [];
 
-  let coreVersionCompatible = true;
-  if (minimumCoreVersion && compareVersions(coreVersion, minimumCoreVersion) < 0) {
+  const canonicalCompatibility = validateCoreVersionCompatibility(source?.compatibility);
+  let coreVersionCompatible = canonicalCompatibility.ok && isValidModuleVersion(coreVersion.replace(/^v/i, ""));
+  if (!canonicalCompatibility.ok) {
+    reasons.push(...canonicalCompatibility.errors);
+  }
+  if (!isValidModuleVersion(coreVersion.replace(/^v/i, ""))) {
+    reasons.push("Die laufende Bonni-Core-Version ist ungültig und kann nicht sicher verglichen werden.");
+  }
+  if (coreVersionCompatible && minimumCoreVersion && compareVersions(coreVersion, minimumCoreVersion) < 0) {
     coreVersionCompatible = false;
     reasons.push(`Bonni Core ${minimumCoreVersion} oder neuer wird benötigt.`);
   }
-  if (maximumCoreVersion && compareVersions(coreVersion, maximumCoreVersion) > 0) {
+  if (coreVersionCompatible && maximumCoreVersion && compareVersions(coreVersion, maximumCoreVersion) > 0) {
     coreVersionCompatible = false;
     reasons.push(`Bonni Core ${coreVersion} ist neuer als die unterstützte Version ${maximumCoreVersion}.`);
   }

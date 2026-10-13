@@ -64,6 +64,8 @@ model MemberProfile {
 
   account     MemberAccount?
   presenceLog MemberPresenceLog[]
+  nfcTags     SecurityNfcTag[]
+  currentPresence SecurityMemberPresence?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt

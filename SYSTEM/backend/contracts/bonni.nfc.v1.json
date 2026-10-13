@@ -1,0 +1,40 @@
+{
+  "contractVersion": "bonni.nfc/v1",
+  "capability": "core.nfc",
+  "purpose": "Core-owned member-medium security capability",
+  "security": {
+    "level": "IDENTIFICATION_ONLY",
+    "assurance": "identification-only",
+    "cloneResistant": false,
+    "replacesPassword": false,
+    "replacesTwoFactor": false,
+    "requiresAuthenticatedOperator": true
+  },
+  "port": {
+    "name": "nfc",
+    "methods": {
+      "identify": {
+        "input": {
+          "code": "string"
+        },
+        "returns": {
+          "memberId": "string",
+          "personId": "string",
+          "accountId": "string|null",
+          "displayName": "string",
+          "assurance": "identification-only",
+          "securityLevel": "IDENTIFICATION_ONLY"
+        }
+      }
+    }
+  },
+  "rules": [
+    "The consuming module receives no raw tag storage, hash key or database client.",
+    "Registration and revocation remain Core-managed operations.",
+    "Core's user-management UI owns enrollment; a reader adapter only supplies the transient tag code.",
+    "A module depending on core.nfc must declare at least one metadata.nfcAccessProfiles entry.",
+    "The module binding and declared NFC access profiles come from the installed manifest.",
+    "A plain NFC UID or member barcode never replaces a password or 2FA and never creates a session.",
+    "Scanner hardware, attendance, booking and other domain workflows stay outside Core."
+  ]
+}

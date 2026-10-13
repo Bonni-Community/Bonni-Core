@@ -5,15 +5,8 @@ import os from "node:os";
 import path from "node:path";
 
 import { extractUpdateZip } from "../setup/safe-update-zip.mjs";
-import {
-  DEVELOPMENT_PACKAGE_VERSIONED_SCHEMA,
-  detectDevelopmentBranchConflicts,
-  normalizeDevelopmentMetadata,
-  stableDevelopmentVersioningJson,
-} from "../setup/development-versioning.mjs";
 
 export const DEVELOPMENT_PACKAGE_SCHEMA = "bonni.development-package/v1";
-export { DEVELOPMENT_PACKAGE_VERSIONED_SCHEMA };
 export const DEVELOPMENT_PACKAGE_MANIFEST_NAME = "DEVELOPMENT-MANIFEST.json";
 export const DEVELOPMENT_CHAIN_SCHEMA = "bonni.development-chain/v1";
 
@@ -196,32 +189,19 @@ function assertNoPathCollisions(entries) {
 }
 
 export function parseDevelopmentPackageManifest(raw) {
-  const versioned = raw?.schema === DEVELOPMENT_PACKAGE_VERSIONED_SCHEMA;
   assertExactKeys(
     raw,
-    versioned
-      ? new Set([
-        "schema", "candidateId", "targetVersion", "baseVersion", "branch", "devNumber",
-        "displayVersion", "createdAt", "requires", "dependencies", "operations",
-        "changedFiles", "conflicts", "resultingTreeSha256",
-      ])
-      : new Set([
-        "schema", "candidateId", "targetVersion", "createdAt", "requires",
-        "operations", "resultingTreeSha256",
-      ]),
-    versioned
-      ? new Set([
-        "schema", "candidateId", "targetVersion", "baseVersion", "branch", "devNumber",
-        "displayVersion", "createdAt", "requires", "dependencies", "operations",
-        "changedFiles", "conflicts", "resultingTreeSha256",
-      ])
-      : new Set([
-        "schema", "candidateId", "targetVersion", "createdAt", "requires",
-        "operations", "resultingTreeSha256",
-      ]),
+    new Set([
+      "schema", "candidateId", "targetVersion", "createdAt", "requires",
+      "operations", "resultingTreeSha256",
+    ]),
+    new Set([
+      "schema", "candidateId", "targetVersion", "createdAt", "requires",
+      "operations", "resultingTreeSha256",
+    ]),
     "manifest",
   );
-  if (raw.schema !== DEVELOPMENT_PACKAGE_SCHEMA && !versioned) {
+  if (raw.schema !== DEVELOPMENT_PACKAGE_SCHEMA) {
     fail("DEVELOPMENT_ASSEMBLY_PACKAGE_SCHEMA_UNSUPPORTED", String(raw.schema));
   }
   const candidateId = normalizeCandidateId(raw.candidateId, "manifest.candidateId");
@@ -300,54 +280,18 @@ export function parseDevelopmentPackageManifest(raw) {
     }
   }
 
-  const basic = {
-    schema: versioned ? DEVELOPMENT_PACKAGE_VERSIONED_SCHEMA : DEVELOPMENT_PACKAGE_SCHEMA,
+  return Object.freeze({
+    schema: DEVELOPMENT_PACKAGE_SCHEMA,
     candidateId,
     targetVersion: raw.targetVersion,
     createdAt,
     requires,
     operations,
     resultingTreeSha256: assertSha256(raw.resultingTreeSha256, "manifest.resultingTreeSha256"),
-  };
-  if (!versioned) return Object.freeze(basic);
-  let development;
-  try {
-    development = normalizeDevelopmentMetadata({
-      baseVersion: raw.baseVersion,
-      branch: raw.branch,
-      devNumber: raw.devNumber,
-      displayVersion: raw.displayVersion,
-      targetVersion: raw.targetVersion,
-      requires,
-      dependencies: raw.dependencies,
-      operations,
-      changedFiles: raw.changedFiles,
-      conflicts: raw.conflicts,
-    }, { requireChangedFiles: true });
-  } catch (error) {
-    fail(error?.code || "DEVELOPMENT_VERSION_METADATA_INVALID", error?.detail || error?.message || "manifest");
-  }
-  if (development.displayVersion !== raw.targetVersion) {
-    fail("DEVELOPMENT_ASSEMBLY_DEVELOPMENT_VERSION_MISMATCH", candidateId);
-  }
-  if (stableDevelopmentVersioningJson(development.dependencies)
-    !== stableDevelopmentVersioningJson(requires)) {
-    fail("DEVELOPMENT_ASSEMBLY_DEPENDENCIES_MISMATCH", candidateId);
-  }
-  return Object.freeze({
-    ...basic,
-    baseVersion: development.baseVersion,
-    branch: development.branch,
-    devNumber: development.devNumber,
-    displayVersion: development.displayVersion,
-    changedFiles: development.changedFiles,
-    dependencies: development.dependencies,
-    conflicts: development.conflicts,
-    development,
   });
 }
 
-export function parseApprovedDevelopmentChain(raw, { allowUnresolvedFinal = false } = {}) {
+export function parseApprovedDevelopmentChain(raw) {
   assertExactKeys(
     raw,
     new Set([
@@ -398,10 +342,8 @@ export function parseApprovedDevelopmentChain(raw, { allowUnresolvedFinal = fals
       resultingTreeSha256: assertSha256(entry.resultingTreeSha256, `${label}.resultingTreeSha256`),
     };
   });
-  const finalTreeSha256 = raw.finalTreeSha256 === null && allowUnresolvedFinal
-    ? null
-    : assertSha256(raw.finalTreeSha256, "chain.finalTreeSha256");
-  if (finalTreeSha256 !== null && entries.at(-1).resultingTreeSha256 !== finalTreeSha256) {
+  const finalTreeSha256 = assertSha256(raw.finalTreeSha256, "chain.finalTreeSha256");
+  if (entries.at(-1).resultingTreeSha256 !== finalTreeSha256) {
     fail("DEVELOPMENT_ASSEMBLY_CHAIN_FINAL_ENTRY_MISMATCH", entries.at(-1).candidateId);
   }
   return Object.freeze({
@@ -432,14 +374,12 @@ async function assertRealDirectory(target, code) {
   return state;
 }
 
-export async function collectDevelopmentTree(root, { onProgress } = {}) {
+export async function collectDevelopmentTree(root) {
   const resolvedRoot = path.resolve(root);
   await assertRealDirectory(resolvedRoot, "DEVELOPMENT_ASSEMBLY_TREE_ROOT_INVALID");
-  const pending = [];
   const files = [];
   const usedPaths = new Map();
-  const progress = (phase, count, total, bytes) => onProgress?.({phase, files:count, total, bytes});
-  progress('scan', 0, 0, 0);
+
   const visit = async (directory, relativeDirectory = "") => {
     const children = await fs.readdir(directory, { withFileTypes: true });
     children.sort((left, right) => bytewiseCompare(left.name, right.name));
@@ -453,47 +393,33 @@ export async function collectDevelopmentTree(root, { onProgress } = {}) {
       const absolutePath = path.join(directory, child.name);
       const state = await fs.lstat(absolutePath);
       if (state.isSymbolicLink()) fail("DEVELOPMENT_ASSEMBLY_TREE_SYMLINK_FORBIDDEN", normalizedPath);
-      if (state.isDirectory()) { await visit(absolutePath, normalizedPath); continue; }
-      if (!state.isFile() || state.nlink > 1) fail("DEVELOPMENT_ASSEMBLY_TREE_FILE_UNSAFE", normalizedPath);
-      pending.push({absolutePath, normalizedPath, state});
-      if (pending.length % 128 === 0) progress('scan', pending.length, 0, 0);
+      if (state.isDirectory()) {
+        await visit(absolutePath, normalizedPath);
+        continue;
+      }
+      if (!state.isFile() || state.nlink > 1) {
+        fail("DEVELOPMENT_ASSEMBLY_TREE_FILE_UNSAFE", normalizedPath);
+      }
+      const fileSha256 = await sha256File(absolutePath);
+      const rechecked = await fs.lstat(absolutePath);
+      if (
+        !rechecked.isFile()
+        || rechecked.isSymbolicLink()
+        || rechecked.nlink > 1
+        || rechecked.size !== state.size
+        || rechecked.dev !== state.dev
+        || rechecked.ino !== state.ino
+      ) fail("DEVELOPMENT_ASSEMBLY_TREE_CHANGED_DURING_READ", normalizedPath);
+      files.push({ path: normalizedPath, sizeBytes: state.size, sha256: fileSha256 });
     }
   };
   await visit(resolvedRoot);
-  progress('hash', 0, pending.length, 0);
-  let next = 0, bytes = 0, failure;
-  const stable = (a, b) => b.isFile() && !b.isSymbolicLink() && b.nlink === 1
-    && a.size === b.size && a.dev === b.dev && a.ino === b.ino && a.mtimeMs === b.mtimeMs && a.ctimeMs === b.ctimeMs;
-  await Promise.all(Array.from({length:Math.min(4, pending.length)}, async () => {
-    while (!failure && next < pending.length) {
-      const {absolutePath, normalizedPath, state} = pending[next++];
-      let handle;
-      try {
-        handle = await fs.open(absolutePath, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW || 0));
-        if (!stable(state, await handle.stat())) fail('DEVELOPMENT_ASSEMBLY_TREE_CHANGED_DURING_READ', normalizedPath);
-        const hash = createHash('sha256');
-        const buffer = Buffer.allocUnsafe(64 * 1024);
-        let length = 0;
-        for (;;) {
-          const {bytesRead} = await handle.read(buffer, 0, buffer.length, null);
-          if (!bytesRead) break;
-          length += bytesRead;
-          if (length > state.size) fail('DEVELOPMENT_ASSEMBLY_TREE_CHANGED_DURING_READ', normalizedPath);
-          hash.update(buffer.subarray(0, bytesRead));
-        }
-        if (length !== state.size || !stable(state, await handle.stat()) || !stable(state, await fs.lstat(absolutePath))) {
-          fail('DEVELOPMENT_ASSEMBLY_TREE_CHANGED_DURING_READ', normalizedPath);
-        }
-        files.push({path:normalizedPath, sizeBytes:length, sha256:hash.digest('hex')});
-        bytes += length;
-        if (files.length % 64 === 0 || files.length === pending.length) progress('hash', files.length, pending.length, bytes);
-      } catch (error) { failure ||= error; }
-      finally { try { await handle?.close(); } catch (error) { failure ||= error; } }
-    }
-  }));
-  if (failure) throw failure;
   files.sort((left, right) => bytewiseCompare(left.path, right.path));
-  return Object.freeze({root:resolvedRoot, files:Object.freeze(files.map(entry => Object.freeze(entry))), treeSha256:sha256(stableStringify(files))});
+  return Object.freeze({
+    root: resolvedRoot,
+    files: Object.freeze(files.map((entry) => Object.freeze(entry))),
+    treeSha256: sha256(stableStringify(files)),
+  });
 }
 
 function payloadObjectRelativePath(digest) {
@@ -680,14 +606,7 @@ function resolveApplicationOrder(chain, descriptors) {
     if (descriptor.manifest.candidateId !== candidateId) {
       fail("DEVELOPMENT_ASSEMBLY_PACKAGE_ID_MISMATCH", candidateId);
     }
-    const versioned = descriptor.manifest.schema === DEVELOPMENT_PACKAGE_VERSIONED_SCHEMA;
-    if (versioned && descriptor.manifest.baseVersion !== chain.baseVersion) {
-      fail(
-        "DEVELOPMENT_ASSEMBLY_BASE_VERSION_MISMATCH",
-        `${candidateId}:${descriptor.manifest.baseVersion}:${chain.baseVersion}`,
-      );
-    }
-    if (!versioned && descriptor.manifest.targetVersion !== chain.targetVersion) {
+    if (descriptor.manifest.targetVersion !== chain.targetVersion) {
       fail(
         "DEVELOPMENT_ASSEMBLY_PACKAGE_TARGET_VERSION_MISMATCH",
         `${candidateId}:${descriptor.manifest.targetVersion}:${chain.targetVersion}`,
@@ -735,7 +654,7 @@ function resolveApplicationOrder(chain, descriptors) {
   return order;
 }
 
-async function applyPackage(stagingRoot, descriptor, { validateResultTree = true } = {}) {
+async function applyPackage(stagingRoot, descriptor) {
   const manifest = descriptor.manifest;
   for (const operation of manifest.operations) {
     const target = path.join(stagingRoot, ...operation.path.split("/"));
@@ -779,7 +698,7 @@ async function applyPackage(stagingRoot, descriptor, { validateResultTree = true
     }
   }
   const result = await collectDevelopmentTree(stagingRoot);
-  if (validateResultTree && result.treeSha256 !== manifest.resultingTreeSha256) {
+  if (result.treeSha256 !== manifest.resultingTreeSha256) {
     fail("DEVELOPMENT_ASSEMBLY_PACKAGE_RESULT_TREE_MISMATCH", manifest.candidateId);
   }
   return result;
@@ -797,80 +716,31 @@ function assertSeparateRoots(baseRoot, stagingRoot, expectedFinalRoot) {
 
 async function assembleDevelopmentTree({
   baseRoot,
-  baseInventory = null,
   stagingRoot,
   chain: rawChain,
   packageDescriptors,
   expectedFinalRoot = null,
 }, { requireReviewedTree }) {
   if (requireReviewedTree && !expectedFinalRoot) fail("DEVELOPMENT_ASSEMBLY_REVIEWED_TREE_REQUIRED");
-  const chain = parseApprovedDevelopmentChain(rawChain, { allowUnresolvedFinal: !requireReviewedTree });
+  const chain = parseApprovedDevelopmentChain(rawChain);
   assertSeparateRoots(baseRoot, stagingRoot, expectedFinalRoot);
   const resolvedStaging = path.resolve(stagingRoot);
   if (await lstatOrNull(resolvedStaging)) fail("DEVELOPMENT_ASSEMBLY_STAGING_EXISTS", resolvedStaging);
-  const base = baseInventory && path.resolve(baseInventory.root || "") === path.resolve(baseRoot)
-    ? baseInventory
-    : await collectDevelopmentTree(baseRoot);
+  const base = await collectDevelopmentTree(baseRoot);
   if (base.treeSha256 !== chain.baseTreeSha256) {
     fail("DEVELOPMENT_ASSEMBLY_BASE_TREE_MISMATCH", `${base.treeSha256}:${chain.baseTreeSha256}`);
   }
   const applicationOrder = resolveApplicationOrder(chain, packageDescriptors);
-  const versionedPackages = applicationOrder
-    .filter((entry) => entry.descriptor.manifest.schema === DEVELOPMENT_PACKAGE_VERSIONED_SCHEMA)
-    .map((entry) => ({
-      ...entry.descriptor,
-      candidateId: entry.candidateId,
-      packageSha256: entry.packageSha256,
-    }));
-  const developmentMerge = versionedPackages.length
-    ? detectDevelopmentBranchConflicts(versionedPackages, { baseVersion: chain.baseVersion })
-    : null;
-  if (developmentMerge && !developmentMerge.mergeable) {
-    const detail = developmentMerge.conflicts
-      .map((entry) => `${entry.path}[${entry.branches.join(",")}]`)
-      .join(",");
-    fail("DEVELOPMENT_ASSEMBLY_BRANCH_CONFLICT", detail);
-  }
   const temporaryStaging = path.join(
     path.dirname(resolvedStaging),
     `.${path.basename(resolvedStaging)}.${randomUUID()}.partial`,
   );
-  let branchValidationRoot = null;
   await fs.mkdir(path.dirname(resolvedStaging), { recursive: true });
   try {
     await copyInventory(base.root, temporaryStaging, base);
-    if (versionedPackages.length) {
-      // Versioned DEV packages describe a branch result relative to the
-      // common base. Validate each branch on its own copy first; the final
-      // staging tree below may contain other, non-conflicting branches and
-      // therefore cannot equal every package's branch-local tree hash.
-      branchValidationRoot = path.join(
-        path.dirname(resolvedStaging),
-        `.${path.basename(resolvedStaging)}.${randomUUID()}.branches.partial`,
-      );
-      await fs.mkdir(branchValidationRoot, { recursive: false });
-      const branchRoots = new Map();
-      for (const entry of applicationOrder) {
-        if (entry.descriptor.manifest.schema !== DEVELOPMENT_PACKAGE_VERSIONED_SCHEMA) continue;
-        const branch = entry.descriptor.manifest.development.branch;
-        let branchRoot = branchRoots.get(branch);
-        if (!branchRoot) {
-          branchRoot = path.join(branchValidationRoot, branch);
-          await copyInventory(base.root, branchRoot, base);
-          branchRoots.set(branch, branchRoot);
-        }
-        await applyPackage(branchRoot, entry.descriptor);
-      }
-      await fs.rm(branchValidationRoot, { recursive: true, force: true });
-      branchValidationRoot = null;
-    }
     let current = base;
-    for (const entry of applicationOrder) {
-      current = await applyPackage(temporaryStaging, entry.descriptor, {
-        validateResultTree: entry.descriptor.manifest.schema !== DEVELOPMENT_PACKAGE_VERSIONED_SCHEMA,
-      });
-    }
-    if (chain.finalTreeSha256 !== null && current.treeSha256 !== chain.finalTreeSha256) {
+    for (const entry of applicationOrder) current = await applyPackage(temporaryStaging, entry.descriptor);
+    if (current.treeSha256 !== chain.finalTreeSha256) {
       fail("DEVELOPMENT_ASSEMBLY_FINAL_TREE_MISMATCH", `${current.treeSha256}:${chain.finalTreeSha256}`);
     }
     if (expectedFinalRoot) {
@@ -887,7 +757,6 @@ async function assembleDevelopmentTree({
       finalTreeSha256: current.treeSha256,
       fileCount: current.files.length,
       totalBytes: current.files.reduce((sum, entry) => sum + entry.sizeBytes, 0),
-      developmentMerge,
       appliedPackages: Object.freeze(applicationOrder.map((entry) => Object.freeze({
         candidateId: entry.candidateId,
         packageSha256: entry.packageSha256,
@@ -897,7 +766,6 @@ async function assembleDevelopmentTree({
       }))),
     });
   } catch (error) {
-    await fs.rm(branchValidationRoot, { recursive: true, force: true }).catch(() => {});
     await fs.rm(temporaryStaging, { recursive: true, force: true }).catch(() => {});
     throw error;
   }

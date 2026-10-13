@@ -21,7 +21,7 @@ Optionen:
 
 Das Skript liest die sichtbare Version aus SYSTEM/backend/package.json.
 Ein SemVer-Buildsuffix wird fuer den Docker-Tag umgeschrieben, zum Beispiel:
-  0.1.20+e -> 0.1.20-e
+  0.1.20+f -> 0.1.20-f
 
 Private Signaturschluessel werden weder gelesen noch in das Image uebernommen.
 EOF

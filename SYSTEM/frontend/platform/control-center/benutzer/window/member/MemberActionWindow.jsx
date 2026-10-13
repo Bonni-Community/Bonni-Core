@@ -6,6 +6,7 @@ import FunctionsTab from "./tab/FunctionsTab.jsx";
 import SessionsTab from "./tab/SessionsTab.jsx";
 import ProtocolTab from "./tab/ProtocolTab.jsx";
 import AdminEnrollmentPanel from "../../../../../core/modules/security/two-factor/components/AdminEnrollmentPanel.jsx";
+import NfcTagsPanel from "../../../../../core/modules/security/nfc/NfcTagsPanel.jsx";
 import { updateControlCenterLocalMemberProfile } from "../../../../../system/api/controlCenterUsersApi.js";
 import { isBootstrapAdminLoginName } from "../../../../../system/auth/systemAccountPolicy.js";
 import {
@@ -19,19 +20,19 @@ import {
   buildNewMemberModuleAccess,
   getNewMemberDefaultPermissions,
   getNewMemberModule,
+  getNewMemberModulePermissions,
   getNewMemberModulesForSurface,
   getNewMemberSelectedRoles,
   getSelectedNewMemberModules,
-  isTechnicalOnlySurface,
 } from "../new-member/newMemberWindowUtils.js";
 import {
   getAccounts,
   getLoginName,
   getSurfaceLabels,
   getSurfaceRoles,
-  getUsageLabels,
   normalizeMemberRoleList,
 } from "./memberWindowUtils.js";
+import { getAccountModuleCatalog, getAccountPermissions, getAccountSurfaces, getFixedAccountUsage } from "./memberAccountPolicy.js";
 
 const TABS = [
   { key: "uebersicht", label: "Übersicht" },
@@ -39,6 +40,7 @@ const TABS = [
   { key: "funktionen", label: "Funktion" },
   { key: "zugang", label: "Zugänge" },
   { key: "two-factor", label: "2FA" },
+  { key: "nfc", label: "NFC-Tag" },
   { key: "sessions", label: "Sessions" },
   { key: "protokoll", label: "Protokolle" },
 ];
@@ -49,8 +51,6 @@ const MEMBER_SURFACES = [
   ADD_ON_SURFACE,
   PLUG_IN_SURFACE,
 ];
-
-const MEMBER_USAGES = [LOCAL_USAGE, TECHNICAL_USAGE];
 
 const SURFACE_TO_KIND = {
   [CONTROL_CENTER_SURFACE]: "control-center",
@@ -105,15 +105,6 @@ function getSelectableSurfaceLabels(member) {
   const firstSurface = MEMBER_SURFACES.find((surface) => surfaces.includes(surface));
 
   return firstSurface ? [firstSurface] : [];
-}
-
-function getSelectableUsageLabels(member) {
-  const usages = getUsageLabels(member).filter((usage) => MEMBER_USAGES.includes(usage));
-
-  if (usages.includes(TECHNICAL_USAGE)) return [TECHNICAL_USAGE];
-  if (usages.includes(LOCAL_USAGE)) return [LOCAL_USAGE];
-
-  return [];
 }
 
 function mergeModuleAccess(assignments) {
@@ -200,14 +191,16 @@ function findCatalogModule(moduleCatalog, assignment) {
 function createAccessDraft(member, moduleCatalog) {
   const assignments = getMemberModuleAccess(member);
   let surface = getSelectableSurfaceLabels(member)[0] || "";
-  let usage = getSelectableUsageLabels(member)[0] || LOCAL_USAGE;
+  const usage = getFixedAccountUsage(member);
 
   if (assignments.length) {
     const assignmentsForSurface = assignments.filter((assignment) => SURFACE_TO_KIND[surface] === assignment.kind);
     if (!surface || !assignmentsForSurface.length) surface = KIND_TO_SURFACE[assignments[0].kind] || surface;
   }
 
-  if (isTechnicalOnlySurface(surface)) usage = TECHNICAL_USAGE;
+  if (!getAccountSurfaces(usage).includes(surface)) {
+    surface = usage === TECHNICAL_USAGE ? APP_SURFACE : CONTROL_CENTER_SURFACE;
+  }
 
   const selectedModuleKeys = [];
   const permissionsByModule = {};
@@ -235,6 +228,10 @@ function createAccessDraft(member, moduleCatalog) {
         ? legacyPermissions
         : getNewMemberDefaultPermissions(module, usage);
     }
+  }
+
+  for (const key of selectedModuleKeys) {
+    permissionsByModule[key] = getAccountPermissions(getNewMemberModule(moduleCatalog, key), usage, permissionsByModule[key]);
   }
 
   return {
@@ -361,7 +358,7 @@ export default function MemberActionWindow({
   member,
   activeTab,
   token,
-  moduleCatalog = [],
+  moduleCatalog: availableModuleCatalog = [],
   moduleCatalogError = "",
   moduleCatalogLoading = false,
   onTabChange,
@@ -369,6 +366,11 @@ export default function MemberActionWindow({
   onMemberChange,
   onMemberDelete,
 }) {
+  const fixedUsage = getFixedAccountUsage(member);
+  const moduleCatalog = useMemo(
+    () => getAccountModuleCatalog(availableModuleCatalog, fixedUsage),
+    [availableModuleCatalog, fixedUsage],
+  );
   const [draftMember, setDraftMember] = useState(() => normalizeDraftMember(member, moduleCatalog));
   const [savedSnapshot, setSavedSnapshot] = useState(() => createSnapshot(normalizeDraftMember(member, moduleCatalog)));
   const [actionBusy, setActionBusy] = useState(false);
@@ -420,9 +422,10 @@ export default function MemberActionWindow({
     setDraftMember((currentMember) => {
       const currentAccessDraft = currentMember?.accessDraft || createAccessDraft(currentMember, moduleCatalog);
       const nextAccessDraft = typeof updater === "function" ? updater(currentAccessDraft) : updater;
+      if (nextAccessDraft.usage !== fixedUsage || !getAccountSurfaces(fixedUsage).includes(nextAccessDraft.surface)) return currentMember;
       return applyAccessDraftToMember(currentMember, nextAccessDraft, moduleCatalog);
     });
-  }, [bootstrapAdmin, moduleCatalog]);
+  }, [bootstrapAdmin, fixedUsage, moduleCatalog]);
 
   const handleLoginNameChange = useCallback((nextLoginName) => {
     if (bootstrapAdmin) return;
@@ -445,29 +448,10 @@ export default function MemberActionWindow({
     });
   }, [bootstrapAdmin]);
 
-  const handleUsageSelect = useCallback((usage) => {
-    updateAccessDraft((currentDraft) => {
-      if (isTechnicalOnlySurface(currentDraft.surface) && usage !== TECHNICAL_USAGE) return currentDraft;
-
-      const permissionsByModule = Object.fromEntries(asArray(currentDraft.selectedModuleKeys).map((moduleKey) => {
-        const module = getNewMemberModule(moduleCatalog, moduleKey);
-        return [moduleKey, getNewMemberDefaultPermissions(module, usage)];
-      }));
-
-      return {
-        ...currentDraft,
-        usage,
-        permissionsByModule,
-        roles: Object.values(permissionsByModule).flat(),
-      };
-    });
-  }, [moduleCatalog, updateAccessDraft]);
-
   const handleSurfaceSelect = useCallback((surface) => {
+    if (!getAccountSurfaces(fixedUsage).includes(surface)) return;
     updateAccessDraft((currentDraft) => {
-      const usage = isTechnicalOnlySurface(surface)
-        ? TECHNICAL_USAGE
-        : (currentDraft.usage || LOCAL_USAGE);
+      const usage = fixedUsage;
       const availableModules = getNewMemberModulesForSurface(moduleCatalog, surface);
       const selectedModuleKeys = surface === CONTROL_CENTER_SURFACE && availableModules[0]
         ? [availableModules[0].key]
@@ -486,7 +470,7 @@ export default function MemberActionWindow({
         roles: Object.values(permissionsByModule).flat(),
       };
     });
-  }, [moduleCatalog, updateAccessDraft]);
+  }, [fixedUsage, moduleCatalog, updateAccessDraft]);
 
   const handleModuleToggle = useCallback((moduleKey) => {
     updateAccessDraft((currentDraft) => {
@@ -496,6 +480,11 @@ export default function MemberActionWindow({
       const selectedKeys = asArray(currentDraft.selectedModuleKeys);
       const selected = selectedKeys.includes(moduleKey);
       if (selected && module.kind === "control-center") return currentDraft;
+      if (currentDraft.usage === TECHNICAL_USAGE && currentDraft.surface === APP_SURFACE) {
+        if (selected && selectedKeys.length === 1) return currentDraft;
+        const permissions = asArray(currentDraft.permissionsByModule?.[moduleKey]);
+        return { ...currentDraft, selectedModuleKeys: [moduleKey], permissionsByModule: { [moduleKey]: permissions }, roles: permissions };
+      }
 
       const selectedModuleKeys = selected
         ? selectedKeys.filter((key) => key !== moduleKey)
@@ -516,6 +505,10 @@ export default function MemberActionWindow({
 
   const handlePermissionToggle = useCallback((moduleKey, permission) => {
     updateAccessDraft((currentDraft) => {
+      if (!getNewMemberModulePermissions(getNewMemberModule(moduleCatalog, moduleKey), fixedUsage).includes(permission)) return currentDraft;
+      if (fixedUsage === TECHNICAL_USAGE && currentDraft.surface === APP_SURFACE) {
+        return { ...currentDraft, selectedModuleKeys: [moduleKey], permissionsByModule: { [moduleKey]: [permission] }, roles: [permission] };
+      }
       const currentPermissions = asArray(currentDraft.permissionsByModule?.[moduleKey]);
       const nextPermissions = currentPermissions.includes(permission)
         ? currentPermissions.filter((item) => item !== permission)
@@ -531,7 +524,7 @@ export default function MemberActionWindow({
         roles: Object.values(permissionsByModule).flat(),
       };
     });
-  }, [updateAccessDraft]);
+  }, [fixedUsage, moduleCatalog, updateAccessDraft]);
 
   const getPrimaryAccountId = useCallback((memberDraft) => {
     const accounts = getAccounts(memberDraft);
@@ -552,17 +545,25 @@ export default function MemberActionWindow({
     }
 
     const profilePayload = buildProfilePayload(draftMember, moduleCatalog);
-    if (!profilePayload.moduleAccess.length) {
+    const accessChanged = ["usage", "surface", "selectedModuleKeys", "permissionsByModule"]
+      .some((key) => savedSnapshot[key] !== currentSnapshot[key]);
+    if (accessChanged && !profilePayload.moduleAccess.length) {
       setActionError("Bitte zuerst eine installierte App, ein Add-on oder Plug-in auswählen.");
       onTabChange("uebersicht");
       return;
     }
 
     const assignmentWithoutPermission = profilePayload.moduleAccess.find((assignment) => !assignment.permissions.length);
-    if (assignmentWithoutPermission) {
+    if (accessChanged && assignmentWithoutPermission) {
       setActionError(`Bitte unter Funktionen eine Berechtigung für „${assignmentWithoutPermission.moduleName}“ auswählen.`);
       onTabChange("funktionen");
       return;
+    }
+    if (!accessChanged) {
+      delete profilePayload.moduleAccess;
+      delete profilePayload.usageLabels;
+      delete profilePayload.surfaceLabels;
+      delete profilePayload.rolesBySurface;
     }
 
     const nextMember = { ...draftMember, statusTone: getStatusTone(draftMember?.status) };
@@ -579,7 +580,7 @@ export default function MemberActionWindow({
     } finally {
       setActionBusy(false);
     }
-  }, [draftMember, getPrimaryAccountId, hasChanges, moduleCatalog, onClose, onMemberChange, onTabChange, token]);
+  }, [currentSnapshot, draftMember, getPrimaryAccountId, hasChanges, moduleCatalog, onClose, onMemberChange, onTabChange, savedSnapshot, token]);
 
   const handleFooterButtonClick = useCallback(() => {
     if (isAccessFooterActionActive) {
@@ -687,7 +688,6 @@ export default function MemberActionWindow({
                   onLoginNameChange={handleLoginNameChange}
                   onModuleToggle={handleModuleToggle}
                   onSurfaceSelect={handleSurfaceSelect}
-                  onUsageSelect={handleUsageSelect}
                   bootstrapAdmin={bootstrapAdmin}
                 />
               ) : null}
@@ -711,6 +711,7 @@ export default function MemberActionWindow({
               ) : null}
               {tab === "sessions" ? <SessionsTab member={draftMember} /> : null}
               {tab === "two-factor" ? <AdminEnrollmentPanel token={token} member={draftMember} /> : null}
+              {tab === "nfc" ? <NfcTagsPanel key={draftMember.memberId || draftMember.id} token={token} member={draftMember} /> : null}
               {tab === "protokoll" ? <ProtocolTab member={draftMember} /> : null}
             </div>
           </main>

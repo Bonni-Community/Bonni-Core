@@ -120,6 +120,10 @@ function usagePermissions(modulePackage, kind, usage) {
     ...asObject(manifest.metadata),
     ...asObject(modulePackage?.metadata),
   };
+  if (Array.isArray(metadata.accessProfiles)) {
+    const profileUsage = usage === TECHNICAL_USAGE ? "technical" : "local";
+    return permissionList(metadata.accessProfiles.filter((profile) => profile?.usage === profileUsage));
+  }
   const accessGroups = [
     asObject(metadata.accessPermissions),
     asObject(metadata.permissionsByUsage),
@@ -209,6 +213,7 @@ function normalizeModulePackage(modulePackage, index) {
     status,
     installed,
     enabled,
+    accessProfiles: asArray(modulePackage?.metadata?.accessProfiles || manifest.metadata?.accessProfiles),
     permissionsByUsage: {
       [LOCAL_USAGE]: usagePermissions(modulePackage, kind, LOCAL_USAGE),
       [TECHNICAL_USAGE]: usagePermissions(modulePackage, kind, TECHNICAL_USAGE),

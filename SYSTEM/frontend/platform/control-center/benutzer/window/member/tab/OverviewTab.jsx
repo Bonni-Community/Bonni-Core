@@ -2,11 +2,9 @@ import {
   ADD_ON_SURFACE,
   APP_SURFACE,
   CONTROL_CENTER_SURFACE,
-  LOCAL_USAGE,
   PLUG_IN_SURFACE,
   TECHNICAL_USAGE,
   getNewMemberModulesForSurface,
-  isTechnicalOnlySurface,
 } from "../../new-member/newMemberWindowUtils.js";
 import {
   NewMemberChoiceButton,
@@ -14,6 +12,7 @@ import {
   NewMemberModuleRows,
 } from "../../new-member/components/NewMemberFormParts.jsx";
 import { getLoginName } from "../memberWindowUtils.js";
+import { getAccountSurfaces } from "../memberAccountPolicy.js";
 
 function moduleSelectionLabel(surface) {
   if (surface === APP_SURFACE) return "Installierte App auswählen";
@@ -35,11 +34,9 @@ export default function OverviewTab({
   onLoginNameChange,
   onModuleToggle,
   onSurfaceSelect,
-  onUsageSelect,
   bootstrapAdmin = false,
 }) {
   const modules = getNewMemberModulesForSurface(moduleCatalog, draft.surface);
-  const technicalOnly = isTechnicalOnlySurface(draft.surface);
 
   return (
     <div className="cc-member-window-stack">
@@ -70,29 +67,16 @@ export default function OverviewTab({
 
         <div className="cc-member-window-field cc-member-window-field--usage-select">
           <span>Verwendung</span>
-          <div className="cc-member-window-usage-grid" role="group" aria-label="Verwendung auswählen">
-            {[LOCAL_USAGE, TECHNICAL_USAGE].map((usage) => (
-              <NewMemberChoiceButton
-                key={usage}
-                label={usage}
-                name="member-usage"
-                selected={draft.usage === usage}
-                onSelect={onUsageSelect}
-                disabled={bootstrapAdmin || (technicalOnly && usage === LOCAL_USAGE)}
-              />
-            ))}
-          </div>
-          {technicalOnly ? (
-            <small className="cc-member-window-field-hint">
-              Add-ons und Plug-ins verwenden einen technischen Schnittstellen-Account.
-            </small>
-          ) : null}
+          <strong>{draft.usage}</strong>
+          <small className="cc-member-window-field-hint">
+            Die Kontoart ist seit der Anlage festgelegt. Passende Funktionen und Zugänge kannst du weiterhin bearbeiten.
+          </small>
         </div>
 
         <div className="cc-member-window-field cc-member-window-field--surface-select">
           <span>Oberfläche</span>
           <div className="cc-member-window-surface-grid" role="group" aria-label="Oberfläche auswählen">
-            {[CONTROL_CENTER_SURFACE, APP_SURFACE, ADD_ON_SURFACE, PLUG_IN_SURFACE].map((surface) => (
+            {getAccountSurfaces(draft.usage).map((surface) => (
               <NewMemberChoiceButton
                 key={surface}
                 label={surface}
@@ -108,6 +92,7 @@ export default function OverviewTab({
         <div className="cc-member-window-field cc-member-window-field--modules">
           <span>{moduleSelectionLabel(draft.surface)}</span>
           <NewMemberModuleRows
+            singleSelection={draft.usage === TECHNICAL_USAGE && draft.surface === APP_SURFACE}
             modules={modules}
             selectedModuleKeys={draft.selectedModuleKeys}
             onModuleToggle={onModuleToggle}

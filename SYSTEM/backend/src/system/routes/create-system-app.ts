@@ -1,5 +1,4 @@
 import express, { type Express, type NextFunction, type Request, type Response } from "express";
-import cors from "cors";
 import helmet from "helmet";
 import path from "node:path";
 import { existsSync } from "node:fs";
@@ -19,6 +18,8 @@ import { createDatabaseContextMiddleware } from "../../core/database/database.js
 import { assertRunContainerMatchesDatabase } from "../runtime/run-container/index.js";
 import { updateProbeGuard } from "../runtime/update-probe/index.js";
 import { emergencyReadOnlyMethodGuard } from "../../../scripts/runtime/emergency-read-only-guard.mjs";
+import { browserCors, createBrowserOriginGuard } from "../../core/http/browser-origin.js";
+import { boundedAuthJson, createAuthIpGuard, createAuthSubjectGuard } from "../../core/http/auth-ingress.js";
 
 const DEFAULT_JSON_BODY_LIMIT = "50mb";
 const MAX_JSON_BODY_BYTES = 50 * 1024 * 1024;
@@ -49,30 +50,6 @@ export function resolveExpressTrustProxyHops(value: string | undefined): number 
   return hops;
 }
 
-function applyPreflightHeaders(req: Request, res: Response) {
-  const origin = req.headers.origin;
-  const requestedHeaders = req.headers["access-control-request-headers"];
-
-  // Development and local fallback must work without a frontend .env. We echo
-  // the browser origin instead of using "*" so Authorization preflights are
-  // accepted by Firefox/Chromium for localhost and 127.0.0.1.
-  if (origin) {
-    res.setHeader("Access-Control-Allow-Origin", origin);
-    res.setHeader("Vary", "Origin");
-  } else {
-    res.setHeader("Access-Control-Allow-Origin", "*");
-  }
-
-  res.setHeader("Access-Control-Allow-Methods", "GET,POST,PUT,PATCH,DELETE,OPTIONS");
-  res.setHeader(
-    "Access-Control-Allow-Headers",
-    typeof requestedHeaders === "string"
-      ? requestedHeaders
-      : "Authorization, Content-Type, X-Requested-With",
-  );
-  res.setHeader("Access-Control-Max-Age", "86400");
-}
-
 function createBaseExpressApp(surface: "platform" | "local" = "platform"): Express {
   const app = express();
   const trustedProxyHops = resolveExpressTrustProxyHops(process.env.EXPRESS_TRUST_PROXY_HOPS);
@@ -80,22 +57,18 @@ function createBaseExpressApp(surface: "platform" | "local" = "platform"): Expre
   // Runtime Compose explicitly enables exactly its one nginx hop.
   app.set("trust proxy", trustedProxyHops === 0 ? false : trustedProxyHops);
 
-  app.use((req, res, next) => {
-    applyPreflightHeaders(req, res);
-
-    if (req.method === "OPTIONS") {
-      res.status(204).end();
-      return;
-    }
-
-    next();
-  });
-
   // CSP frame-ancestors is the authoritative, modern framing policy. Sending
   // X-Frame-Options as well is ignored by browsers and creates a misleading
   // console warning for intentionally embedded opaque feature modules.
   app.use(helmet({ frameguard: false }));
-  app.use(cors({ origin: true, credentials: false, optionsSuccessStatus: 204 }));
+  app.use(requestLogger);
+  app.use(createBrowserOriginGuard());
+  app.use(browserCors);
+  // Limit expensive public authentication work before parsing large bodies or
+  // opening a database context. Aliases and local listeners share counters.
+  app.use(createAuthIpGuard());
+  app.use(boundedAuthJson);
+  app.use(createAuthSubjectGuard());
   app.use(express.json({ limit: resolveExpressJsonLimit(process.env.EXPRESS_JSON_LIMIT) }));
   app.use((req, res, next) => {
     res.locals.timecapsuleSurface = surface;
@@ -103,7 +76,6 @@ function createBaseExpressApp(surface: "platform" | "local" = "platform"): Expre
     next();
   });
   app.use(createDatabaseContextMiddleware(surface));
-  app.use(requestLogger);
 
   return app;
 }

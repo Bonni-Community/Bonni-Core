@@ -10,9 +10,6 @@ import {
 } from "./safe-update-zip.mjs";
 import { readAndVerifyUpdatePackageManifest } from "./update-package-manifest.mjs";
 import { loadProductionUpdateVerificationPolicy } from "./update-package-trust.mjs";
-import { resolveUpdateInputSelection, assertUpdateInputHash, UPDATE_INPUT_SELECTION_SCHEMA } from "./update-input-selection.mjs";
-
-export { UPDATE_INPUT_SELECTION_SCHEMA };
 
 export const UPDATE_PACKAGE_INTAKE_RECEIPT_SCHEMA = "bonni.update-prepared/v1";
 export const UPDATE_PACKAGE_INTAKE_CLAIM_SCHEMA = "bonni.update-zip-claim/v1";
@@ -413,7 +410,6 @@ async function claimUpdateZip({ candidate, claimsRoot, now, onPhase }) {
   const temporaryClaimFile = path.join(temporaryClaimRoot, "package.zip");
   try {
     const identity = await copyAndHashRegularFile(candidate.path, temporaryClaimFile);
-    assertUpdateInputHash(candidate.expectedSha256, identity.sha256);
     const claim = buildClaim({ candidate, identity, now });
     await writeFileSyncedExclusive(
       path.join(temporaryClaimRoot, "CLAIM.json"),
@@ -446,15 +442,12 @@ async function claimUpdateZip({ candidate, claimsRoot, now, onPhase }) {
 }
 
 function manifestSummary(verified, manifestHash) {
-  const manifest = new Set(["bonni.update/v2", "bonni.update/v3"]).has(verified.manifest.schema)
-    ? verified.manifest.signed
-    : verified.manifest;
   return {
     schema: verified.manifest.schema,
-    updateId: manifest.updateId,
-    createdAt: manifest.createdAt,
+    updateId: verified.manifest.updateId,
+    createdAt: verified.manifest.createdAt,
     manifestSha256: manifestHash,
-    payloads: manifest.payloads.map((payload) => ({
+    payloads: verified.manifest.payloads.map((payload) => ({
       component: payload.component,
       ...(payload.platform === undefined ? {} : { platform: payload.platform }),
       version: payload.version,
@@ -524,11 +517,8 @@ async function verifyPreparedReceipt({ receipt, runInstallRoot, verifyManifest }
   if (path.resolve(verified.packageRoot) !== path.resolve(expectedPackageRoot)) {
     fail("UPDATE_PACKAGE_INTAKE_PACKAGE_ROOT_CHANGED", expectedPackageRoot);
   }
-  const verifiedManifest = new Set(["bonni.update/v2", "bonni.update/v3"]).has(
-    verified.manifest.schema,
-  ) ? verified.manifest.signed : verified.manifest;
   if (
-    verifiedManifest.updateId !== receipt.manifest.updateId
+    verified.manifest.updateId !== receipt.manifest.updateId
     || staging.manifestIdentity.sha256 !== receipt.manifest.manifestSha256
   ) fail("UPDATE_PACKAGE_INTAKE_PREPARED_PACKAGE_CHANGED", stagingRoot);
   return verified;
@@ -649,8 +639,6 @@ async function prepareOrRecoverStaging({
  */
 export async function prepareUpdatePackage({
   productRoot,
-  zipFile,
-  expectedSha256,
   now = () => new Date(),
   extractZip = extractUpdateZip,
   verifyManifest = readAndVerifyUpdatePackageManifest,
@@ -667,15 +655,8 @@ export async function prepareUpdatePackage({
   await assertPlainDirectory(updateRoot, "UPDATE_PACKAGE_INTAKE_UPDATE_ROOT_MISSING");
   await assertPlainDirectory(runInstallRoot, "UPDATE_PACKAGE_INTAKE_RUN_INSTALL_MISSING");
 
-  const explicitSelection = zipFile !== undefined || expectedSha256 !== undefined;
-  const candidate = explicitSelection
-    ? await resolveUpdateInputSelection({ updateRoot, zipFile, expectedSha256 })
-    : await scanDirectUpdateZip(updateRoot);
+  const candidate = await scanDirectUpdateZip(updateRoot);
   if (!candidate) return { status: "no-update-zip", originalPreserved: true };
-  if (explicitSelection) {
-    // Before any staging writes; claimUpdateZip repeats this check on its copy.
-    assertUpdateInputHash(expectedSha256, (await hashRegularFile(candidate.path)).sha256);
-  }
 
   const effectiveVerificationPolicy = verificationPolicy === undefined
     && verifyManifest === readAndVerifyUpdatePackageManifest
@@ -754,8 +735,6 @@ export async function prepareUpdatePackage({
 
 function parseArguments(argv) {
   let productRoot = "";
-  let zipFile;
-  let expectedSha256;
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv[index];
     if (argument === "--product-root") {
@@ -763,18 +742,10 @@ function parseArguments(argv) {
       index += 1;
       continue;
     }
-    if (argument === "--zip" && zipFile === undefined && argv[index + 1]) {
-      zipFile = argv[++index];
-      continue;
-    }
-    if (argument === "--sha256" && expectedSha256 === undefined && argv[index + 1]) {
-      expectedSha256 = argv[++index];
-      continue;
-    }
     fail("UPDATE_PACKAGE_INTAKE_ARGUMENT_UNKNOWN", argument);
   }
   if (!productRoot) fail("UPDATE_PACKAGE_INTAKE_PRODUCT_ROOT_REQUIRED");
-  return { productRoot, zipFile, expectedSha256 };
+  return { productRoot };
 }
 
 async function runCli() {
@@ -788,7 +759,7 @@ async function runCli() {
       ...argumentsValue,
       verifyManifest: verifyProductionManifest,
     });
-    const updateId = new Set(["bonni.update/v2", "bonni.update/v3"]).has(result.manifest?.schema)
+    const updateId = result.manifest?.schema === "bonni.update/v2"
       ? result.manifest.signed.updateId
       : result.manifest?.updateId;
     if (result.status === "no-update-zip") {

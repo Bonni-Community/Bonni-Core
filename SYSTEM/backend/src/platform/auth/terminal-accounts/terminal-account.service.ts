@@ -168,8 +168,8 @@ async function reconcileOneDeclaredAccount(
     const typeChanged = account.type !== AccountType.TERMINAL;
     const securityCleanupRequired = await technicalAccountSecurityCleanupRequired(transaction, account.id);
     if (typeChanged || securityCleanupRequired) {
-      // Identity/profile ownership remains stable, but a technical principal
-      // must never inherit a browser password, live session or 2FA secret.
+      // Conversion must not inherit personal credentials. An already managed
+      // terminal keeps its centrally configured password and valid sessions.
       await transitionAccountSecurity(transaction, {
         accountId: account.id,
         previousRevision: account.credentialRevision,

@@ -108,9 +108,6 @@ export async function runDevelopmentTestRuntimeCli(argv = process.argv.slice(2),
   switch (options.action) {
     case "prepare":
       return prepareDevelopmentTestRuntime(options, dependencies);
-    // RUN_DEV uses the same local database connection and data as RUN_SYSTEM.
-    // The URL is forwarded only through the worker's dedicated environment;
-    // no database dump, restore or candidate LOGIN role is created.
     case "start": {
       const environment = await loadStableBackendEnvironment({
         backendRoot: path.join(options.productRoot, "SYSTEM", "backend"),
@@ -130,13 +127,10 @@ export async function runDevelopmentTestRuntimeCli(argv = process.argv.slice(2),
       return cleanupDevelopmentTestRuntime({ ...options, environment }, dependencies);
     }
     case "__worker":
-      // The worker receives the shared database URL and the stable database
-      // encryption/authentication keys only through its dedicated environment.
-      // Runtime control remains candidate-scoped.
       return runDevelopmentTestRuntimeWorker({
         ...options,
-        ownerInstanceId: process.env.BONNI_DEVELOPMENT_TEST_OWNER_INSTANCE_ID,
-        candidateRuntimeDatabaseUrl: process.env.BONNI_DEVELOPMENT_TEST_CANDIDATE_DATABASE_URL,
+        sourceDatabaseUrl: process.env.BONNI_DEVELOPMENT_TEST_SOURCE_DATABASE_URL,
+        candidateDatabaseUrl: process.env.BONNI_DEVELOPMENT_TEST_DATABASE_URL,
       }, dependencies);
     default:
       fail("DEVELOPMENT_TEST_RUNTIME_CLI_ACTION_INVALID", options.action);
@@ -149,11 +143,7 @@ async function main() {
     if (process.argv[2] !== "__worker") process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
   } catch (error) {
     const code = String(error?.code || "DEVELOPMENT_TEST_RUNTIME_CLI_FAILED");
-    const detail = String(error?.detail || error?.message || "")
-      .replace(/[\r\n\t]+/gu, " ")
-      .replace(/postgres(?:ql)?:\/\/[^\s@/]+:[^\s@/]+@/giu, "postgresql://***:***@")
-      .slice(0, 2_000);
-    process.stderr.write(`${JSON.stringify({ ok: false, code, ...(detail ? { detail } : {}) })}\n`);
+    process.stderr.write(`${JSON.stringify({ ok: false, code })}\n`);
     process.exitCode = 1;
   }
 }

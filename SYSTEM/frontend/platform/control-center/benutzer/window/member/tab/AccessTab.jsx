@@ -12,14 +12,24 @@ import {
 import { getAccounts, getPrimaryAccount } from "../memberWindowUtils.js";
 
 function generatePassword(length = 14) {
+  function randomIndex(size) {
+    const limit = 0x100000000 - (0x100000000 % size);
+    const sample = new Uint32Array(1);
+    do { globalThis.crypto.getRandomValues(sample); } while (sample[0] >= limit);
+    return sample[0] % size;
+  }
   const letters = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
   const numbers = "23456789";
   const symbols = "!?#%+-";
   const all = `${letters}${numbers}${symbols}`;
-  const required = [letters, numbers, symbols].map((pool) => pool[Math.floor(Math.random() * pool.length)]);
-  const rest = Array.from({ length: Math.max(0, length - required.length) }, () => all[Math.floor(Math.random() * all.length)]);
-
-  return [...required, ...rest].sort(() => Math.random() - 0.5).join("");
+  const required = [letters, numbers, symbols].map((pool) => pool[randomIndex(pool.length)]);
+  const rest = Array.from({ length: Math.max(0, length - required.length) }, () => all[randomIndex(all.length)]);
+  const characters = [...required, ...rest];
+  for (let index = characters.length - 1; index > 0; index--) {
+    const other = randomIndex(index + 1);
+    [characters[index], characters[other]] = [characters[other], characters[index]];
+  }
+  return characters.join("");
 }
 
 function getEmailCandidate(member, account) {
@@ -93,11 +103,14 @@ function AccessPanel({
   const [deleting, setDeleting] = useState(false);
 
   const accountId = account?.accountId || account?.id;
+  const accountType = String(account?.type || "").toUpperCase();
+  const terminal = accountType === "TERMINAL";
+  const passwordAllowed = ["MEMBER", "ADMIN", "TERMINAL"].includes(accountType);
   const loginName = account?.loginName || member?.loginName || member?.name || "";
   const originalEmail = useMemo(() => getEmailCandidate(member, account), [account, member]);
   const cleanEmail = email.trim();
   const emailChanged = cleanEmail !== originalEmail;
-  const passwordChanged = Boolean(password || passwordRepeat);
+  const passwordChanged = passwordAllowed && Boolean(password || passwordRepeat);
   const hasAccessChanges = emailChanged || passwordChanged;
 
   useEffect(() => {
@@ -115,6 +128,10 @@ function AccessPanel({
   }, [onBusyChange]);
 
   const handleGenerate = useCallback(() => {
+    if (!globalThis.crypto?.getRandomValues) {
+      setError("Sichere Passwortgenerierung ist in diesem Browser nicht verfügbar. Bitte ein eigenes Passwort eingeben.");
+      return;
+    }
     const nextPassword = generatePassword();
     setPassword(nextPassword);
     setPasswordRepeat(nextPassword);
@@ -260,6 +277,17 @@ function AccessPanel({
       {error ? <div className="cc-member-error" role="status">{error}</div> : null}
       {message ? <div className="cc-member-success" role="status">{message}</div> : null}
 
+      {terminal ? (
+        <p className="cc-member-window-note" role="note">
+          Terminal-Zugang: Das Passwort wird zentral in Bonni Core verwaltet und bleibt beim Modulabgleich erhalten.
+          Die Anmeldung benötigt ein aktives Konto, ein Passwort und eine unter „Funktion“ zugewiesene technische App-Oberfläche.
+        </p>
+      ) : !passwordAllowed ? (
+        <p className="cc-member-window-note" role="note">
+          Für diesen Zugang ist keine normale Passwortanmeldung vorgesehen. Reine Dienstkonten werden durch das zuständige Modul verwaltet.
+        </p>
+      ) : null}
+
       <div className="cc-member-window-grid cc-member-window-grid--single">
         <label className="cc-member-window-field cc-member-window-field--editable">
           <span>E-Mail-Adresse</span>
@@ -273,6 +301,7 @@ function AccessPanel({
           />
         </label>
 
+        {passwordAllowed ? <>
         <div className="cc-member-window-field cc-member-window-field--editable">
           <div className="cc-member-window-password-row">
             <ExactSecretInput
@@ -315,8 +344,10 @@ function AccessPanel({
             />
           </div>
         </div>
+        </> : null}
       </div>
 
+      {passwordAllowed ? <>
       <div className="cc-member-window-access-actions">
         <button type="button" className="cc-member-window__secondary" onClick={handleGenerate} disabled={saving || deleting}>
           Passwort generieren
@@ -328,7 +359,9 @@ function AccessPanel({
 
       <p className="cc-member-window-note">
         Das Passwort wird nur in diesem Fenster angezeigt. Speichern läuft über den unteren Button „Passwort ändern“.
+        {terminal ? " Ein Passwortwechsel beendet bestehende Sitzungen. Es gibt kein vorgegebenes Standardpasswort." : ""}
       </p>
+      </> : null}
 
       {bootstrapAdmin ? (
         <p className="cc-member-window-note">

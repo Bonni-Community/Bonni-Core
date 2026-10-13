@@ -41,7 +41,7 @@ export async function resolveActiveSlotBackend(options = {}) {
   );
   const productionLogRoot = ensureAbsoluteSafeRoot(
     options.productionLogRoot || options.logRoot
-      || environment.BONNI_LOG_ROOT || path.join(productionRunSystemRoot, "logs"),
+      || environment.BONNI_LOG_ROOT || path.join(productionRunSystemRoot, "LOGS", "CORE"),
     "production-log-root",
   );
   const internalPort = Number(options.internalPort || environment.BONNI_ACTIVE_INTERNAL_PORT || 4100);

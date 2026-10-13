@@ -143,6 +143,9 @@ ENV BONNI_LICENSE_ROOT=/app/run_system/storage/licenses
 COPY SYSTEM/backend/package*.json ./
 RUN . /opt/bonni-engines/environment.sh && npm ci --omit=dev
 
+COPY SYSTEM/APP-INSTALL-TRUST.json /app/APP-INSTALL-TRUST.json
+COPY SYSTEM/backend/scripts/apps ./scripts/apps
+
 # SYSTEM backend runtime.
 COPY --from=backend-build /app/backend/dist ./dist
 COPY --from=backend-build /app/backend/prisma ./prisma

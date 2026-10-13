@@ -5,10 +5,6 @@ import path from "node:path";
 
 import { parseEd25519SpkiPublicKey } from "../../src/system/update-runner/trusted-keys.mjs";
 import { verifyUpdatePackageAuthenticity } from "./update-package-manifest.mjs";
-import {
-  BONNI_APP_REGISTRY_FILE_NAME,
-  readBonniAppRegistryFile,
-} from "./app-registry.mjs";
 
 export const UPDATE_PUBLIC_TRUST_SCHEMA = "bonni.public-trust/v1";
 export const UPDATE_SEQUENCE_SCHEMA = "bonni.update-sequence/v1";
@@ -17,14 +13,12 @@ export const UPDATE_SEQUENCE_COMMIT_OWNER_SCHEMA = "bonni.update-sequence-commit
 const TRUST_RELATIVE_PATH = path.join("RUN_INSTALL", "trust", "UPDATE-PUBLIC-TRUST.json");
 const SEQUENCE_RELATIVE_PATH = path.join("RUN_INSTALL", "trust", "UPDATE-SEQUENCE.json");
 const SEQUENCE_LOCK_RELATIVE_PATH = path.join("RUN_INSTALL", "trust", ".UPDATE-SEQUENCE.commit-lock");
-const INSTALLED_APP_REGISTRY_RELATIVE_PATH = path.join("SYSTEM", BONNI_APP_REGISTRY_FILE_NAME);
 const CANONICAL_TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u;
 const KEY_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u;
 const SHA256_HEX = /^[a-f0-9]{64}$/u;
 const STORE_ID = /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/u;
 const UPDATE_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$/u;
 const TRUST_SCOPE = /^(?:offline-root|release-set|component:(?:SYSTEM|WINDOWS|LINUX|CONTAINER)|app:[a-z0-9][a-z0-9._-]{1,63})$/u;
-const MAX_TRUST_KEY_COUNT = 256;
 const SCOPE_MAP = Object.freeze({
   "release-set": "RELEASE",
   "component:SYSTEM": "SYSTEM",
@@ -181,7 +175,7 @@ export function parseUpdatePublicTrust(raw) {
     fail("UPDATE_TRUST_STORE_ID_INVALID");
   }
   const createdAt = canonicalTimestamp(raw.createdAt, "UPDATE_TRUST_CREATED_AT_INVALID");
-  if (!Array.isArray(raw.keys) || raw.keys.length < 2 || raw.keys.length > MAX_TRUST_KEY_COUNT) {
+  if (!Array.isArray(raw.keys) || raw.keys.length < 2 || raw.keys.length > 128) {
     fail("UPDATE_TRUST_KEYS_INVALID");
   }
 
@@ -287,20 +281,6 @@ export async function loadProductionUpdateVerificationPolicy(productRoot) {
     acceptedSequenceState = parseSequenceState(rawSequence, trust.storeId);
     lastAcceptedReleaseSequence = acceptedSequenceState.lastAcceptedReleaseSequence;
   }
-  const installedRegistryFile = path.join(resolvedProductRoot, INSTALLED_APP_REGISTRY_RELATIVE_PATH);
-  const installedRegistryState = await fs.lstat(installedRegistryFile).catch((error) => {
-    if (error?.code === "ENOENT") return null;
-    throw error;
-  });
-  let previousAppRegistry = null;
-  if (installedRegistryState) {
-    const systemRoot = path.join(resolvedProductRoot, "SYSTEM");
-    const systemState = await fs.lstat(systemRoot).catch(() => null);
-    if (!systemState?.isDirectory() || systemState.isSymbolicLink()) {
-      fail("UPDATE_TRUST_APP_REGISTRY_PATH_UNSAFE", systemRoot);
-    }
-    previousAppRegistry = (await readBonniAppRegistryFile(installedRegistryFile)).registry;
-  }
   return {
     verificationMode: "production",
     packageSource: "local",
@@ -310,7 +290,6 @@ export async function loadProductionUpdateVerificationPolicy(productRoot) {
     trustFile,
     sequenceFile,
     acceptedSequenceState,
-    previousAppRegistry,
   };
 }
 
@@ -520,10 +499,8 @@ async function releaseSequenceCommitLock(lockRoot, expectedOwner) {
   return true;
 }
 
-async function authenticateSequenceManifest(manifest, policy, productRoot) {
-  const signed = new Set(["bonni.update/v2", "bonni.update/v3"]).has(manifest?.schema)
-    ? manifest.signed
-    : null;
+function authenticateSequenceManifest(manifest, policy) {
+  const signed = manifest?.schema === "bonni.update/v2" ? manifest.signed : null;
   if (!signed || signed.channel !== "stable" || !Number.isSafeInteger(signed.releaseSequence)) {
     fail("UPDATE_SEQUENCE_MANIFEST_INVALID");
   }
@@ -533,22 +510,10 @@ async function authenticateSequenceManifest(manifest, policy, productRoot) {
   const verificationLastSequence = signed.releaseSequence === policy.lastAcceptedReleaseSequence
     ? Math.max(0, policy.lastAcceptedReleaseSequence - 1)
     : policy.lastAcceptedReleaseSequence;
-  let appRegistryPolicy = {};
-  if (manifest.schema === "bonni.update/v3") {
-    const liveRegistry = await readBonniAppRegistryFile(
-      path.join(productRoot, INSTALLED_APP_REGISTRY_RELATIVE_PATH),
-    );
-    appRegistryPolicy = {
-      appRegistry: liveRegistry.registry,
-      appRegistryBytes: liveRegistry.bytes,
-      previousAppRegistry: policy.previousAppRegistry,
-    };
-  }
   const authenticated = verifyUpdatePackageAuthenticity(manifest, {
     verificationMode: "production",
     trustedKeys: policy.trustedKeys,
     lastAcceptedReleaseSequence: verificationLastSequence,
-    ...appRegistryPolicy,
   });
   if (authenticated.authenticated !== true) fail("UPDATE_SEQUENCE_MANIFEST_NOT_AUTHENTICATED");
   if (
@@ -580,11 +545,7 @@ export async function recordAcceptedUpdateSequence({
   }
   const resolvedProductRoot = path.resolve(productRoot);
   const initialPolicy = await loadProductionUpdateVerificationPolicy(resolvedProductRoot);
-  const initialAuthentication = await authenticateSequenceManifest(
-    manifest,
-    initialPolicy,
-    resolvedProductRoot,
-  );
+  const initialAuthentication = authenticateSequenceManifest(manifest, initialPolicy);
   const { signed } = initialAuthentication.manifest;
   if (signed.releaseSequence === initialPolicy.lastAcceptedReleaseSequence) {
     const existingLock = await fs.lstat(path.join(resolvedProductRoot, SEQUENCE_LOCK_RELATIVE_PATH))
@@ -610,7 +571,7 @@ export async function recordAcceptedUpdateSequence({
   if (policy.trustStoreId !== lock.owner.storeId) {
     fail("UPDATE_SEQUENCE_COMMIT_TRUST_STORE_CHANGED");
   }
-  const authenticated = await authenticateSequenceManifest(manifest, policy, resolvedProductRoot);
+  const authenticated = authenticateSequenceManifest(manifest, policy);
   if (sha256(stableStringify(authenticated.manifest)) !== lock.owner.manifestSha256) {
     fail("UPDATE_SEQUENCE_COMMIT_MANIFEST_CHANGED");
   }

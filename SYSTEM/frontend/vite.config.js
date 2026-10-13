@@ -224,6 +224,7 @@ export default defineConfig(({ mode }) => {
         "/api": {
           target: backendTarget,
           changeOrigin: true,
+          ws: true,
         },
         // Die App-Frontends werden im Entwicklungsbetrieb vom Core-Backend
         // aus ihren manifest-definierten dist-Ordnern ausgeliefert. Der Proxy

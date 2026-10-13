@@ -58,6 +58,7 @@ model Account {
   twoFactorLockouts         SecurityTwoFactorLockout[]
   twoFactorEnrollment       SecurityTwoFactorEnrollment?
   passwordRecoveryRequests  SecurityAccountRecoveryRequest[]
+  nfcTags                   SecurityNfcTag[]
 
   archiveGrantsCreated ArchiveFolderGrant[] @relation("ArchiveFolderGrantor")
   accountLinksRequested AccountPersonLinkRequest[] @relation("AccountLinkRequester")

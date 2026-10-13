@@ -9,6 +9,7 @@ import {
   updateMemberById,
   UserMutationError,
 } from "./users.mutations.service.js";
+import { AccountSecurityTransitionError } from "../../../core/modules/security/two-factor/account-security-transition.js";
 import { getSystemUsersOverview } from "./users.service.js";
 
 export async function getUsersOverviewController(
@@ -159,6 +160,10 @@ export async function updateLocalMemberAccessController(
   try {
     res.json(await updateLocalMemberAccess(req.params.accountId, req.body || {}, (req as any).user));
   } catch (error) {
+    if (error instanceof AccountSecurityTransitionError) {
+      res.status(error.statusCode).json({ ok: false, code: error.code, message: error.message });
+      return;
+    }
     if (error instanceof UserMutationError) {
       res.status(error.status).json({
         ok: false,

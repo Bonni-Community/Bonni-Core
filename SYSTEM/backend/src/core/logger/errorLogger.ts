@@ -15,3 +15,13 @@ export function logError(error: unknown, context: Record<string, unknown> = {}) 
     error
   });
 }
+
+export function logCriticalError(error: unknown, context: Record<string, unknown> = {}) {
+  const message = error instanceof Error ? error.message : String(error);
+  logger.log("critical", message, {
+    ...context,
+    severity: "critical",
+    errorName: error instanceof Error ? error.name : undefined,
+    stack: error instanceof Error ? error.stack : undefined,
+  });
+}

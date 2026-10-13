@@ -1,4 +1,6 @@
 import { Component, lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
+import { MODULE_OUTBOX_REQUEST, MODULE_OUTBOX_CAPABILITY, handleModuleOutbox } from "./moduleOutbox.js";
+import { BONNI_CORE_VERSION } from "../version.js";
 
 import FeatureModuleUnavailable from "./FeatureModuleUnavailable.jsx";
 import {
@@ -64,7 +66,7 @@ function createLazyComponent(entry, exportName = "default") {
   });
 }
 
-function FeatureModuleFrame({
+export function FeatureModuleFrame({
   entry,
   moduleId,
   token,
@@ -125,6 +127,8 @@ function FeatureModuleFrame({
     const payload = opaqueRpc
       ? sanitizeOpaqueModuleContext({
           transport: OPAQUE_RPC_TRANSPORT,
+          coreVersion: BONNI_CORE_VERSION,
+          localOutbox: moduleId === "app.stueberlapp" ? MODULE_OUTBOX_CAPABILITY : null,
           user: current.user,
           shell: current.shell,
           branding: current.branding,
@@ -247,6 +251,20 @@ function FeatureModuleFrame({
         }
         if (event.data?.type === OPAQUE_RPC_REQUEST) {
           handleOpaqueRequest(event.data);
+          return;
+        }
+        if (event.data?.type === MODULE_OUTBOX_REQUEST) {
+          const expectedToken = contextRef.current?.token;
+          const sourceFrame = event.source;
+          void handleModuleOutbox(event.data, { ...contextRef.current, moduleId }).then(
+            (payload) => ({ ok: true, status: 200, payload }),
+            (error) => ({ ok: false, status: 400, payload: { code: error?.code || "OUTBOX_WRITE_FAILED",
+              message: error?.message || "Die lokale Bestellablage ist nicht verfügbar." } }),
+          ).then((result) => {
+            if (contextRef.current?.token === expectedToken && frameRef.current?.contentWindow === sourceFrame) {
+              sendOpaqueResponse(event.data.requestId, result);
+            }
+          });
           return;
         }
         if (event.data?.type === OPAQUE_RPC_CANCEL) {

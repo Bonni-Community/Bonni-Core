@@ -34,7 +34,7 @@ export async function loginWithPassword({
     ...SENSITIVE_REQUEST_OPTIONS,
     method: "POST",
     body: {
-      login: loginName,
+      ...(/^BONNI:(NFC|MEMBER):/i.test(String(loginName || "")) ? { nfcCode: loginName } : { login: loginName }),
       password,
     },
   });

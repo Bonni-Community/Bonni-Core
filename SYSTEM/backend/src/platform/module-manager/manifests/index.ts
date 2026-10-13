@@ -1,6 +1,8 @@
 export {
   findModuleManifest,
+  isLegacyPrivacyIdeaCompatibilityManifest,
   listModuleManifests,
+  normalizeLegacyPrivacyIdeaManifest,
   validateModuleManifest,
 } from "./manifest.service.js";
 

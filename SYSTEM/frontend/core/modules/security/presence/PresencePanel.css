@@ -1,0 +1,8 @@
+.bonni-presence-panel { display: grid; gap: .85rem; padding: 1rem; margin-bottom: 1rem; font-size: 1rem; }
+.bonni-presence-panel > header { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 1rem; }
+.bonni-presence-panel h3, .bonni-presence-panel p { margin: 0; }
+.bonni-presence-panel small { font-size: .875rem; }
+.bonni-presence-panel button { font: inherit; min-height: 2.75rem; padding: .5rem .85rem; }
+.bonni-presence-actions { display: flex !important; flex-wrap: wrap; gap: .5rem; }
+.bonni-presence-secret { display: grid; gap: .75rem; border: 1px solid #bc6221; padding: 1rem; }
+.bonni-presence-panel code { overflow-wrap: anywhere; }

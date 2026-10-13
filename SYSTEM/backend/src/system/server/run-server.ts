@@ -15,7 +15,9 @@ import {
   stopEmergencyBackend,
 } from "../../platform/security/control/emergency-backend/index.js";
 import { startCoreUpdateScheduler } from "../routes/control-api/update-center/index.js";
+import { startWebBridgeWorker, stopWebBridgeWorker } from "../../core/web-bridge/service.js";
 import { seedSystemDatabase } from "../database/seed-system.js";
+import { applyHttpServerPolicy } from "./http-server-policy.js";
 import {
   beginBoundedServerDrain,
   completeLocalSupervisorShutdown,
@@ -46,6 +48,7 @@ const localUpdateSupervisorChild = isLocalUpdateSupervisorProcess({
 });
 
 function registerServer(server: Server) {
+  applyHttpServerPolicy(server);
   servers.push(server);
   return server;
 }
@@ -76,6 +79,7 @@ async function shutdown(signal: ShutdownTrigger, requestId?: string) {
   }
 
   shuttingDown = true;
+  await stopWebBridgeWorker();
 
   const metadata = {
     signal,
@@ -287,6 +291,7 @@ try {
     }
 
     if (runtime.slotRole === "active") {
+      startWebBridgeWorker();
       const updateScheduler = startCoreUpdateScheduler();
       logger.info("Bonni-Core-Updateprüfung geplant", {
         module: "core-update",

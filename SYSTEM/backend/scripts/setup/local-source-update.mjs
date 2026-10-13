@@ -203,16 +203,21 @@ function compareStrictSemVer(left, right) {
 function bonniRevision(value) {
   const match = STRICT_SEMVER.exec(value);
   if (!match) fail("SOURCE_UPDATE_INVALID_VERSION", String(value || ""));
-  const build = match[5]?.split(".") || [];
-  if (!build.length) return 0n;
-  if (build.length !== 1 || !/^[a-z]+$/u.test(build[0])) {
+  const build = match[5] || "";
+  if (!build) return { value: 0n, development: 0n };
+  const development = /^([a-z]+)-DEV\.([1-9]\d*)$/u.exec(build);
+  const revision = development?.[1] || build;
+  if (!/^[a-z]+$/u.test(revision)) {
     fail("SOURCE_UPDATE_INVALID_VERSION", value);
   }
-  let revision = 0n;
-  for (const character of build[0]) {
-    revision = revision * 26n + BigInt(character.charCodeAt(0) - 96);
+  let revisionValue = 0n;
+  for (const character of revision) {
+    revisionValue = revisionValue * 26n + BigInt(character.charCodeAt(0) - 96);
   }
-  return revision;
+  return {
+    value: revisionValue,
+    development: development ? BigInt(development[2]) : 0n,
+  };
 }
 
 function compareBonniReleaseVersion(left, right) {
@@ -220,8 +225,10 @@ function compareBonniReleaseVersion(left, right) {
   if (standard !== 0) return standard;
   const leftRevision = bonniRevision(left);
   const rightRevision = bonniRevision(right);
-  if (leftRevision < rightRevision) return -1;
-  if (leftRevision > rightRevision) return 1;
+  if (leftRevision.value < rightRevision.value) return -1;
+  if (leftRevision.value > rightRevision.value) return 1;
+  if (leftRevision.development < rightRevision.development) return -1;
+  if (leftRevision.development > rightRevision.development) return 1;
   return 0;
 }
 
@@ -238,7 +245,7 @@ function isValidCoreVersion(value) {
 function isValidAppVersion(value) {
   if (typeof value !== "string" || !value || value.length > 128) return false;
   try {
-    compareStrictSemVer(value, value);
+    compareBonniReleaseVersion(value, value);
     return true;
   } catch {
     return false;
@@ -3215,7 +3222,7 @@ async function assertLocalSourceVersionTransition({
     manifest.from.coreVersion,
   );
   const kontorOrder = manifestManagesKontor(manifest)
-    ? compareStrictSemVer(manifest.to.kontorAppVersion, manifest.from.kontorAppVersion)
+    ? compareBonniReleaseVersion(manifest.to.kontorAppVersion, manifest.from.kontorAppVersion)
     : 0;
   const exactLifecycleRollback = lifecycle?.status === "rolling-back";
 

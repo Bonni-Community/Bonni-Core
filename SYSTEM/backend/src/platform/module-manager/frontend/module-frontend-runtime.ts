@@ -5,6 +5,7 @@ import path from "node:path";
 import { listModuleManifests } from "../manifests/index.js";
 import { resolveBonniProjectRoot } from "../project-root.js";
 import { findInstalledModule } from "../registry/index.js";
+import { registerPublicModuleAssetMount } from "../../../core/http/browser-origin.js";
 
 async function isModuleEnabled(key: string) {
   const installed = await findInstalledModule(key);
@@ -99,6 +100,7 @@ export async function registerModuleFrontends(app: Express) {
     }
 
     const mountPath = safeMountPath(frontend.mountPath, manifest.key);
+    if (!/^\/api(?:\/|$)/i.test(mountPath)) registerPublicModuleAssetMount(app, mountPath);
     const serveStaticFrontend = express.static(publicRoot, {
       index: "index.html",
       // App-Builds werden separat aktualisiert. Nach einer frueheren

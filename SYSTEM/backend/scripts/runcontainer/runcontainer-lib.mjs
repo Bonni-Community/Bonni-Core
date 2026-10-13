@@ -1070,6 +1070,11 @@ export function planSlotRuntimeEnvironments(options = {}) {
         || inherited.RUN_SYSTEM_ROOT
         || path.join(installationRoot, "run_system"),
     );
+    const runSystemRoot = path.resolve(
+      options.runSystemRoot
+        || inherited.BONNI_RUN_SYSTEM_ROOT
+        || path.join(installationRoot, "RUN_SYSTEM"),
+    );
     const stateRoot = role === "active" ? productionRunSystemRoot : generationStateRoot;
     const storageRoot = role === "active"
       ? path.resolve(options.productionStorageRoot || inherited.BONNI_STORAGE_ROOT || path.join(productionRunSystemRoot, "storage"))
@@ -1077,6 +1082,11 @@ export function planSlotRuntimeEnvironments(options = {}) {
     const mediaStorageRoot = role === "active"
       ? path.resolve(options.productionMediaStorageRoot || inherited.MEDIA_STORAGE_ROOT || path.join(storageRoot, "media"))
       : generationStateRoot ? path.join(generationStateRoot, "media") : null;
+    const logRoot = role === "active"
+      ? path.resolve(options.productionLogRoot || inherited.BONNI_LOG_ROOT || path.join(runSystemRoot, "LOGS", "CORE"))
+      : generationStateRoot
+        ? path.join(generationStateRoot, "LOGS", "CORE")
+        : path.join(installationRoot, "RUN_DEV", "LOGS", "CORE");
     const productRoot = role === "active" ? installationRoot : programRoot;
     const pathEnvironment = programRoot && stateRoot && productRoot
       ? {
@@ -1086,6 +1096,9 @@ export function planSlotRuntimeEnvironments(options = {}) {
         // Apps/Module sind produktweiter Bestand und werden nicht als Teil
         // eines Core-only-Slots kopiert oder durch ein Core-Update ersetzt.
         BONNI_MODULE_PACKAGE_ROOT: path.join(installationRoot, "SYSTEM"),
+        BONNI_RUN_INSTALL_ROOT: path.join(installationRoot, "RUN_INSTALL"),
+        BONNI_RUN_SYSTEM_ROOT: runSystemRoot,
+        BONNI_RUN_DEV_ROOT: path.join(installationRoot, "RUN_DEV"),
         BONNI_PROGRAM_SLOTS_ROOT: root,
         BONNI_RUNTIME_STATE_ROOT: stateRoot,
         RUN_SYSTEM_ROOT: stateRoot,
@@ -1094,8 +1107,10 @@ export function planSlotRuntimeEnvironments(options = {}) {
         RUN_SYSTEM_ARCHIV_ROOT: role === "active"
           ? path.resolve(options.productionArchivRoot || path.join(productionRunSystemRoot, "archiv"))
           : path.join(stateRoot, "archiv"),
+        RUN_SYSTEM_LOG_ROOT: logRoot,
         RUNCONTAINER_ROOT: root,
         BONNI_STORAGE_ROOT: storageRoot,
+        BONNI_LOG_ROOT: logRoot,
         MEDIA_STORAGE_ROOT: mediaStorageRoot,
         FRONTEND_DIST_ROOT: path.join(programRoot, "SYSTEM", "backend", "public"),
         BONNI_PROGRAM_SLOT_ROOT: slotRoot,

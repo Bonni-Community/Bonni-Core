@@ -7,6 +7,7 @@ import ProtocolTab from "./tab/Protocol.jsx";
 import SessionsTab from "./tab/Sessions.jsx";
 import {
   CONTROL_CENTER_SURFACE,
+  APP_SURFACE,
   LOCAL_USAGE,
   TECHNICAL_USAGE,
   asArray,
@@ -123,6 +124,11 @@ export default function NewMemberWindow({
       const selectedKeys = asArray(currentDraft.selectedModuleKeys);
       const selected = selectedKeys.includes(moduleKey);
       if (selected && module.kind === "control-center") return currentDraft;
+      if (currentDraft.usage === TECHNICAL_USAGE && currentDraft.surface === APP_SURFACE) {
+        if (selected && selectedKeys.length === 1) return currentDraft;
+        const permissions = asArray(currentDraft.permissionsByModule?.[moduleKey]);
+        return { ...currentDraft, selectedModuleKeys: [moduleKey], permissionsByModule: { [moduleKey]: permissions }, roles: permissions };
+      }
 
       const nextSelectedKeys = selected
         ? selectedKeys.filter((key) => key !== moduleKey)
@@ -149,6 +155,9 @@ export default function NewMemberWindow({
 
   const handlePermissionToggle = useCallback((moduleKey, permission) => {
     onDraftChange((currentDraft) => {
+      if (currentDraft.usage === TECHNICAL_USAGE && currentDraft.surface === APP_SURFACE) {
+        return { ...currentDraft, selectedModuleKeys: [moduleKey], permissionsByModule: { [moduleKey]: [permission] }, roles: [permission] };
+      }
       const currentPermissions = asArray(currentDraft.permissionsByModule?.[moduleKey]);
       const nextPermissions = currentPermissions.includes(permission)
         ? currentPermissions.filter((item) => item !== permission)

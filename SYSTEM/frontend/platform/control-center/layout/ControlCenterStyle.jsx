@@ -183,7 +183,7 @@ const FALLBACK_SHELL_LINES = [
   "control-center ~ #",
 ];
 
-export default function ControlCenterStyle({ modules, overview, onOpenModule }) {
+export default function ControlCenterStyle({ modules, overview, onOpenModule, onOpenDiagnostics }) {
   function handleTileClick(tile) {
     const target = tile.targetModule ? findModule(modules, tile.targetModule) : null;
 
@@ -218,8 +218,8 @@ export default function ControlCenterStyle({ modules, overview, onOpenModule }) 
               <h2>Shell</h2>
             </div>
             <div className="cc-shell-card__actions">
-              <button type="button">Shell</button>
-              <button type="button">Export</button>
+              <button type="button" onClick={() => onOpenDiagnostics?.("terminal")}>Shell</button>
+              <button type="button" onClick={() => onOpenDiagnostics?.("log")}>Export</button>
             </div>
           </div>
           <div className="cc-shell-output">

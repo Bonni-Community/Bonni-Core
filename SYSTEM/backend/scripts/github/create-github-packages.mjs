@@ -139,6 +139,10 @@ function sha256(data) {
   return createHash("sha256").update(data).digest("hex");
 }
 
+function visibleArtifactVersion(value) {
+  return String(value).replace(/^(\d+\.\d+\.\d+)\+([A-Za-z])$/u, "$1$2");
+}
+
 async function sha256File(file) {
   const hash = createHash("sha256");
   await new Promise((resolve, reject) => {
@@ -470,19 +474,22 @@ async function readPreviouslyOwnedArchives(outputRoot) {
   for (const entry of manifest.packages) {
     const definition = COMPONENTS[entry?.component];
     const version = String(entry?.version || "");
-    const expectedArchive = definition && VERSION_PATTERN.test(version)
-      ? `${definition.archiveBase}-${version}.zip`
+    const expectedArchives = definition && VERSION_PATTERN.test(version)
+      ? new Set([
+        `${definition.archiveBase}-${visibleArtifactVersion(version)}.zip`,
+        `${definition.archiveBase}-${version}.zip`,
+      ])
       : null;
     if (
-      !expectedArchive
-      || entry.archive !== expectedArchive
+      !expectedArchives
+      || !expectedArchives.has(entry.archive)
       || typeof entry.sha256 !== "string"
       || !/^[a-f0-9]{64}$/u.test(entry.sha256)
-      || owned.has(expectedArchive)
+      || owned.has(entry.archive)
     ) {
       return new Map();
     }
-    owned.set(expectedArchive, entry.sha256);
+    owned.set(entry.archive, entry.sha256);
   }
   return owned;
 }
@@ -590,8 +597,9 @@ export async function createGitHubPackages({
       missing.push({ component: key, label: definition.label, expectedPath: posixPath(path.relative(path.dirname(resolvedSystemRoot), state.componentRoot)) });
       continue;
     }
-    const collected = await collectComponentFiles(definition, state.componentRoot, state.version);
-    const archiveName = `${definition.archiveBase}-${state.version}.zip`;
+    const artifactVersion = visibleArtifactVersion(state.version);
+    const collected = await collectComponentFiles(definition, state.componentRoot, artifactVersion);
+    const archiveName = `${definition.archiveBase}-${artifactVersion}.zip`;
     const result = {
       component: key,
       label: definition.label,

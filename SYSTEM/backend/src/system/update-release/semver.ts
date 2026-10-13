@@ -85,12 +85,29 @@ function alphabeticRevisionValue(value: string) {
   return result;
 }
 
-function bonniRevision(value: ParsedStrictSemVer) {
-  if (value.build.length === 0) return 0n;
-  if (value.build.length !== 1 || !/^[a-z]+$/.test(value.build[0])) {
+type BonniRevision = { value: bigint; development: bigint };
+
+function bonniRevision(value: ParsedStrictSemVer): BonniRevision {
+  if (value.build.length === 0) return { value: 0n, development: 0n };
+  const build = value.build.join(".");
+  const development = /^([a-z]+)-DEV\.([1-9]\d*)$/.exec(build);
+  const revision = development?.[1] || build;
+  if (!/^[a-z]+$/.test(revision)) {
     throw new Error(`INVALID_BONNI_RELEASE_REVISION:${value.raw}`);
   }
-  return alphabeticRevisionValue(value.build[0]);
+  return {
+    value: alphabeticRevisionValue(revision),
+    development: development ? BigInt(development[2]) : 0n,
+  };
+}
+
+export function isBonniDevelopmentVersion(value: unknown): value is string {
+  if (!isStrictSemVer(value)) return false;
+  try {
+    return bonniRevision(parseStrictSemVer(value)).development > 0n;
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -105,8 +122,11 @@ export function compareBonniReleaseVersion(leftValue: string, rightValue: string
   if (standardComparison !== 0) return standardComparison;
   const left = parseStrictSemVer(leftValue);
   const right = parseStrictSemVer(rightValue);
-  const comparison = compareBigInt(bonniRevision(left), bonniRevision(right));
-  return comparison;
+  const leftRevision = bonniRevision(left);
+  const rightRevision = bonniRevision(right);
+  const revisionComparison = compareBigInt(leftRevision.value, rightRevision.value);
+  if (revisionComparison !== 0) return revisionComparison;
+  return compareBigInt(leftRevision.development, rightRevision.development);
 }
 
 /** Maps the visible Bonni revision to a Docker-compatible immutable tag. */
@@ -114,7 +134,10 @@ export function bonniReleaseImageTag(versionValue: string) {
   const version = parseStrictSemVer(versionValue);
   // Validation is deliberate even though the result would be syntactically
   // usable: official releases must have one unambiguous alphabetic revision.
-  bonniRevision(version);
+  const revision = bonniRevision(version);
+  if (revision.development > 0n) {
+    throw new Error(`INVALID_BONNI_RELEASE_REVISION:${versionValue}`);
+  }
   const tag = [
     `${version.major}.${version.minor}.${version.patch}`,
     version.prerelease.length ? `-${version.prerelease.join(".")}` : "",

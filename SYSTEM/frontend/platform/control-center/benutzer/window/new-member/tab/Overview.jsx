@@ -97,6 +97,7 @@ export default function OverviewTab({
         <div className="cc-member-window-field cc-member-window-field--modules">
           <span>{moduleSelectionLabel(draft.surface)}</span>
           <NewMemberModuleRows
+            singleSelection={draft.usage === TECHNICAL_USAGE && draft.surface === APP_SURFACE}
             modules={modules}
             selectedModuleKeys={draft.selectedModuleKeys}
             onModuleToggle={handleModuleToggle}

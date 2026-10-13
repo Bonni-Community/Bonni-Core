@@ -12,7 +12,7 @@ const ZIP64_END_LOCATOR_SIGNATURE = 0x07064b50;
 const GENERAL_PURPOSE_ENCRYPTED = 0x0001;
 const GENERAL_PURPOSE_DATA_DESCRIPTOR = 0x0008;
 const GENERAL_PURPOSE_UTF8 = 0x0800;
-const GENERAL_PURPOSE_COMPRESSION_OPTIONS = 0x0006;
+const GENERAL_PURPOSE_DEFLATE_OPTIONS = 0x0006;
 
 const UNIX_FILE_TYPE_MASK = 0o170000;
 const UNIX_REGULAR_FILE = 0o100000;
@@ -295,12 +295,9 @@ function validateFlags(flags, compressionMethod, entryName) {
   if (flags & GENERAL_PURPOSE_ENCRYPTED) {
     throw zipError("ZIP_ENCRYPTION_UNSUPPORTED", "encrypted entries are forbidden", { entryName });
   }
-  // Some ZIP producers preserve the Deflate option bits on stored entries.
-  // These bits do not change decoded bytes and are not security capabilities;
-  // encryption remains rejected separately above.
   const allowed = GENERAL_PURPOSE_DATA_DESCRIPTOR
     | GENERAL_PURPOSE_UTF8
-    | GENERAL_PURPOSE_COMPRESSION_OPTIONS;
+    | (compressionMethod === 8 ? GENERAL_PURPOSE_DEFLATE_OPTIONS : 0);
   if (flags & ~allowed) {
     throw zipError("ZIP_FEATURE_UNSUPPORTED", `unsupported general-purpose flags 0x${flags.toString(16)}`, { entryName });
   }

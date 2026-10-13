@@ -215,7 +215,7 @@ function activeManifestRequiresLifecycle(value: unknown) {
   }
 
   // Only the exact historic 0.1.19+a bootstrap predates lifecycle receipts.
-  // Every later maintenance revision, including 0.1.20+e, must remain bound
+  // Every later maintenance revision, including 0.1.20+e and 0.1.20+f, must remain bound
   // to the ordinary 14-day lifecycle contract.
   return localSourceVersionRequiresLifecycle(
     (record.versions as Record<string, unknown> | undefined)?.coreVersion,

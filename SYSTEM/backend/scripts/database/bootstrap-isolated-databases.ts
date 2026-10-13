@@ -8,7 +8,8 @@ import pg from "pg";
 
 import { env } from "../../src/core/config/env.js";
 import { configureDatabaseRouting } from "../../src/core/database/database-routing.js";
-import { configureDataDomainRouting } from "../../src/core/database/data-domain-routing.js";
+import { configureDataDomainRouting, getDataDomainConnectionString, getDataDomainRoutingStatus } from "../../src/core/database/data-domain-routing.js";
+import { planModuleRoutingExtension } from "./module-routing-extension.mjs";
 import {
   dataDomainDatabase,
   dataDomainOwnerRoles,
@@ -366,6 +367,21 @@ async function main() {
   const databases = databaseNames(primaryDatabase);
   const routingFile = path.join(path.resolve(env.RUN_SYSTEM_ROOT), "system", "data-domain-routing.json");
   const routingExists = await fs.access(routingFile).then(() => true).catch(() => false);
+  const existingStatus = getDataDomainRoutingStatus();
+  if (existingStatus.lastError) throw new Error("DATABASE_DOMAIN_EXISTING_ROUTING_UNREADABLE");
+  const existingConnections: Partial<Record<DataDomain, Partial<Record<DatabaseTarget | "local", string>>>> = {};
+  if (routingExists) {
+    for (const domain of dataDomains) {
+      for (const target of ["normal", "redundant", "local"] as const) {
+        if (!existingStatus.configured[domain]?.[target]) continue;
+        existingConnections[domain] ||= {};
+        existingConnections[domain]![target] = getDataDomainConnectionString(domain, target, "");
+      }
+    }
+    if (!existingConnections.core) throw new Error("DATABASE_CORE_EXISTING_ROUTING_MISSING");
+  }
+  const routingPlan = planModuleRoutingExtension(activeDomains, existingConnections);
+  const newDomains = new Set<DataDomain>(routingPlan.missingDomains);
   const passwords = Object.fromEntries(
     activeDomains.map((domain) => [domain, randomBytes(36).toString("base64url")]),
   ) as Partial<Record<DataDomain, string>>;
@@ -382,7 +398,7 @@ async function main() {
         clusterClient,
         dataDomainRuntimeRoles[domain],
         passwords[domain]!,
-        !routingExists,
+        newDomains.has(domain),
       );
     }
     await ensureDatabase(clusterClient, databases.main.redundant);
@@ -410,8 +426,8 @@ async function main() {
     await verifyDomainIsolation(adminUrl, databases.pos.redundant, posDomains);
   }
 
-  if (!routingExists) {
-    const connections = Object.fromEntries(activeDomains.map((domain) => {
+  if (newDomains.size) {
+    const connections = { ...routingPlan.connections, ...Object.fromEntries([...newDomains].map((domain) => {
       const databaseGroup = dataDomainDatabase(domain);
       const schema = dataDomainSchemas[domain];
       const role = dataDomainRuntimeRoles[domain];
@@ -419,16 +435,18 @@ async function main() {
         normal: withCredentials(adminUrl, databases[databaseGroup].normal, schema, role, passwords[domain]!),
         redundant: withCredentials(adminUrl, databases[databaseGroup].redundant, schema, role, passwords[domain]!),
       }];
-    })) as Partial<Record<DataDomain, Record<DatabaseTarget, string>>>;
+    })) } as Partial<Record<DataDomain, Record<DatabaseTarget, string>>>;
 
     if (!connections.core) throw new Error("DATABASE_CORE_DOMAIN_CONNECTION_MISSING");
 
-    await configureDatabaseRouting({
-      mode: "both",
-      jsonEmergencyEnabled: true,
-      normalUrl: connections.core.normal,
-      redundantUrl: connections.core.redundant,
-    });
+    if (!routingExists) {
+      await configureDatabaseRouting({
+        mode: "both",
+        jsonEmergencyEnabled: true,
+        normalUrl: connections.core.normal,
+        redundantUrl: connections.core.redundant,
+      });
+    }
     await configureDataDomainRouting({
       mode: "isolated",
       connections,

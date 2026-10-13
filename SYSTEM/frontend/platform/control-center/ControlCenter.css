@@ -3567,6 +3567,9 @@
 }
 
 .cc-member-window-role-option {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
   min-height: 28px;
   border-radius: 999px;
   border: 1px solid rgba(255,255,255,0.10);
@@ -3580,11 +3583,16 @@
 }
 
 .cc-member-window-role-option:hover,
-.cc-member-window-role-option:focus-visible {
+.cc-member-window-role-option:focus-visible,
+.cc-member-window-role-option:focus-within {
   border-color: rgba(255, 107, 47, 0.46);
   background: rgba(255, 107, 47, 0.12);
   color: #fff;
   outline: none;
+}
+
+.cc-member-window-role-option:focus-within {
+  box-shadow: 0 0 0 3px rgba(255, 107, 47, 0.18);
 }
 
 .cc-member-window-role-option.is-selected {

@@ -13,40 +13,31 @@ import {
   UPDATE_PACKAGE_MANIFEST_NAME,
   computePayloadTreeSha256,
   readAndVerifyUpdatePackageManifest,
-  signRegistryUpdatePackageManifest,
   signUpdatePackageManifest,
   verifyUpdatePackageManifest,
 } from "../setup/update-package-manifest.mjs";
-import {
-  BONNI_APP_REGISTRY_FILE_NAME,
-  appIdFromDirectory,
-  appManifestScope,
-  appTrustScope,
-  createBonniAppRegistry,
-  createBonniAppRegistryBinding,
-  readBonniAppRegistryFile,
-  serializeBonniAppRegistry,
-} from "../setup/app-registry.mjs";
 import {
   keyForScope,
   publicTrustExport,
   unlockBonniKeystore,
 } from "./bonni-keystore.mjs";
-import {
-  assertDeveloperBuildAuthorized,
-  assertDeveloperGitHubRequestAuthorizedForProfile,
-} from "../setup/developer-build-capability.mjs";
-import {
-  getLocalSecretVaultStatus,
-  withLocalSecretVaultEntry,
-} from "../setup/local-secret-vault.mjs";
 
 export const CERTIFIED_GITHUB_RELEASE_REQUEST_SCHEMA = "bonni.github-release-request/v1";
 export const CERTIFIED_GITHUB_RELEASE_SEQUENCE_SCHEMA = "bonni.github-release-sequence/v1";
 
 const UPDATE_COMPONENT_SET = new Set(UPDATE_PACKAGE_COMPONENTS);
-const APPLICATION_COMPONENT = /^[A-Z][A-Z0-9._-]{1,63}$/u;
-const MAX_RELEASE_COMPONENTS = UPDATE_PACKAGE_COMPONENTS.length + 128;
+const APPLICATION_COMPONENTS = Object.freeze({
+  STUEBERLAPP: "app/stueberlapp",
+  KONTORAPP: "app/kontorapp",
+  HOCKETAPP: "app/hocketapp",
+  KASSENAPP: "app/kassenapp",
+});
+const APPLICATION_COMPONENT_SET = new Set(Object.keys(APPLICATION_COMPONENTS));
+const ALL_COMPONENT_SET = new Set([...UPDATE_PACKAGE_COMPONENTS, ...APPLICATION_COMPONENT_SET]);
+const COMPONENT_ORDER = Object.freeze([
+  ...UPDATE_PACKAGE_COMPONENTS,
+  ...Object.keys(APPLICATION_COMPONENTS),
+]);
 const COMPONENT_ROOTS = Object.freeze({
   SYSTEM: "SYSTEM",
   WINDOWS: "WINDOWS",
@@ -58,17 +49,7 @@ const CANONICAL_REQUEST_TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d
 const SHA256 = /^[a-f0-9]{64}$/u;
 const SECRET_FILE_EXTENSION = /\.(?:bonni|jwk|key|kdbx|p12|pfx|pkcs8)$/iu;
 const SECRET_FILE_BASENAME = /^(?:credentials?|secrets?)(?:\.json)?$|^(?:id_(?:dsa|ecdsa|ed25519|rsa)|(?:private|master)[._-]?key(?:\.pem)?)$/iu;
-const SECRET_DOTFILE_BASENAME = /^(?:\.env|\.git-credentials|\.netrc|\.npmrc|\.pypirc)$/iu;
-const SECRET_BEARING_PATH = /(?:^|\/)(?:\.aws\/(?:config|credentials)|\.azure\/(?:accessTokens|azureProfile)\.json|\.config\/gcloud\/application_default_credentials\.json|\.docker\/config\.json|\.kube\/config)$/iu;
-const PRIVATE_KEY_BLOCK = /(?:^|\r?\n)-----BEGIN (?:(?:(?:DSA|EC|ENCRYPTED|OPENSSH|RSA) )?PRIVATE KEY|PGP PRIVATE KEY BLOCK)-----\r?\n/u;
-const KNOWN_CREDENTIAL_TOKEN = /(?:github_pat_[A-Za-z0-9_]{20,255}|gh[pousr]_[A-Za-z0-9]{20,255}|AKIA[0-9A-Z]{16}|AIza[0-9A-Za-z_-]{30,}|xox[baprs]-[0-9A-Za-z-]{10,255})/u;
-const UNQUOTED_CREDENTIAL_ASSIGNMENT = /\b([A-Za-z_][A-Za-z0-9_.-]{0,127})\s*[:=]\s*(["'`])([^\r\n]{1,2048}?)\2/gmu;
-const QUOTED_CREDENTIAL_ASSIGNMENT = /(["'])([A-Za-z_][A-Za-z0-9_.-]{0,127})\1\s*:\s*(["'`])([^\r\n]{1,2048}?)\3/gmu;
-const CONFIG_CREDENTIAL_ASSIGNMENT = /(?:^|\r?\n)\s*(?:-\s*)?(?:export\s+)?([A-Za-z_][A-Za-z0-9_.-]{0,127})\s*[:=]\s*([^\s#"'`][^\r\n#]{0,2047})/gmu;
-const SAFE_CREDENTIAL_PLACEHOLDER = /^(?:\*{3,}|\[REDACTED\]|<REDACTED>|REDACTED|\$\{[A-Z][A-Z0-9_]*(?::[-?][^}\r\n]*)?\}|<[A-Z][A-Z0-9_-]*>)$/u;
-const DOCUMENTED_ENV_EXAMPLE = "backend/.env.example";
-const DOCUMENTED_RUNTIME_COMPOSE = "backend/docker-compose.runtime.yml";
-const SECRET_SCAN_OVERLAP_BYTES = 8 * 1024;
+const RAW_PRIVATE_KEY = /^\s*-----BEGIN (?:(?:EC|RSA|OPENSSH) )?PRIVATE KEY-----/u;
 const MAX_REQUEST_BYTES = 1024 * 1024;
 const MAX_DESCRIPTION_BYTES = 64 * 1024;
 const MAX_KEYSTORE_BYTES = 4 * 1024 * 1024;
@@ -79,12 +60,6 @@ const COMPONENT_PLATFORMS = Object.freeze({
   LINUX: new Set(["linux-x86", "linux-x64", "linux-armv7", "linux-arm64"]),
   CONTAINER: new Set(["linux-x86", "linux-x64", "linux-armv7", "linux-arm64"]),
 });
-const MAX_APPLICATION_PACKAGE_JSON_BYTES = MAX_REQUEST_BYTES;
-const MAX_APPLICATION_VERSION_LENGTH = 128;
-// SemVer 2.0.0 without a leading "v", whitespace, leading zeroes or partial
-// versions. Bonni's package metadata is intentionally stricter than the
-// product release label (which also accepts the visible 0.1.20h spelling).
-const STRICT_SEMVER = /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-(?:(?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*))*))?(?:\+(?:[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$/u;
 
 export class CertifiedGitHubReleaseError extends Error {
   constructor(code, detail = "", options = undefined) {
@@ -211,27 +186,20 @@ function canonicalRequestTimestamp(value) {
 }
 
 function normalizeComponents(raw) {
-  if (!Array.isArray(raw) || !raw.length || raw.length > MAX_RELEASE_COMPONENTS) {
+  if (!Array.isArray(raw) || !raw.length || raw.length > ALL_COMPONENT_SET.size) {
     fail("CERTIFIED_RELEASE_COMPONENTS_INVALID");
   }
   const used = new Set();
   for (const value of raw) {
-    if (
-      typeof value !== "string"
-      || (!UPDATE_COMPONENT_SET.has(value) && !APPLICATION_COMPONENT.test(value))
-      || used.has(value)
-    ) {
+    if (typeof value !== "string" || !ALL_COMPONENT_SET.has(value) || used.has(value)) {
       fail("CERTIFIED_RELEASE_COMPONENT_INVALID", String(value));
     }
     used.add(value);
   }
-  if ([...used].some((entry) => !UPDATE_COMPONENT_SET.has(entry)) && !used.has("SYSTEM")) {
+  if ([...used].some((entry) => APPLICATION_COMPONENT_SET.has(entry)) && !used.has("SYSTEM")) {
     fail("CERTIFIED_RELEASE_APPLICATION_REQUIRES_SYSTEM");
   }
-  return [
-    ...UPDATE_PACKAGE_COMPONENTS.filter((entry) => used.has(entry)),
-    ...[...used].filter((entry) => !UPDATE_COMPONENT_SET.has(entry)).sort(bytewiseCompare),
-  ];
+  return COMPONENT_ORDER.filter((entry) => used.has(entry));
 }
 
 function normalizeRelativeRequestPath(value, label) {
@@ -291,7 +259,7 @@ export function parseCertifiedGitHubReleaseRequest(raw, { productRoot } = {}) {
     fail("CERTIFIED_RELEASE_KEYSTORE_PATH_INVALID");
   }
   const developmentChain = normalizeRelativeRequestPath(raw.developmentChain, "request.developmentChain");
-  if (developmentChain !== "RUN_DEV/APPROVED-CHAIN.json") {
+  if (developmentChain !== "DEVELOPMENT/APPROVED-CHAIN.json") {
     fail("CERTIFIED_RELEASE_DEVELOPMENT_CHAIN_PATH_INVALID", developmentChain);
   }
   const outputDirectory = normalizeRelativeRequestPath(raw.outputDirectory, "request.outputDirectory");
@@ -346,6 +314,14 @@ export async function readCertifiedGitHubReleaseRequest(requestFile, { productRo
   return parseCertifiedGitHubReleaseRequest(raw, { productRoot });
 }
 
+function appManifestScope(app) {
+  return `APP:${app}`;
+}
+
+function appKeystoreScope(app) {
+  return `app:${app.toLowerCase()}`;
+}
+
 function trustedKeysFromKeystore(releaseKey, componentKeys, appKeys) {
   const trusted = new Map();
   trusted.set(releaseKey.keyId, {
@@ -378,8 +354,8 @@ async function unlockReleaseKeys(request, masterPassword) {
     componentKeys.set(component, keyForScope(unlocked, `component:${component}`));
   }
   const appKeys = new Map();
-  for (const app of request.components.filter((entry) => !UPDATE_COMPONENT_SET.has(entry))) {
-    appKeys.set(app, keyForScope(unlocked, appTrustScope(app)));
+  for (const app of request.components.filter((entry) => APPLICATION_COMPONENT_SET.has(entry))) {
+    appKeys.set(app, keyForScope(unlocked, appKeystoreScope(app)));
   }
   return { unlocked, releaseKey, componentKeys, appKeys };
 }
@@ -389,14 +365,6 @@ export async function ensureCertifiedReleasePublicTrust(productRoot, unlocked) {
   await ensurePlainDirectory(trustDirectory, productRoot);
   const trustFile = path.join(trustDirectory, "UPDATE-PUBLIC-TRUST.json");
   const publicTrust = publicTrustExport(unlocked);
-  const coreTrustIdentity = (value) => stableStringify({
-    schema: value?.schema,
-    storeId: value?.storeId,
-    createdAt: value?.createdAt,
-    keys: Array.isArray(value?.keys)
-      ? value.keys.filter((entry) => typeof entry?.scope === "string" && !entry.scope.startsWith("app:"))
-      : [],
-  });
   const existing = await lstatOrNull(trustFile);
   if (existing) {
     const observed = await readRegularJson(
@@ -404,10 +372,10 @@ export async function ensureCertifiedReleasePublicTrust(productRoot, unlocked) {
       "CERTIFIED_RELEASE_PUBLIC_TRUST_INVALID",
       MAX_REQUEST_BYTES,
     );
-    if (coreTrustIdentity(observed) !== coreTrustIdentity(publicTrust)) {
+    if (stableStringify(observed) !== stableStringify(publicTrust)) {
       fail("CERTIFIED_RELEASE_PUBLIC_TRUST_CONFLICT", trustFile);
     }
-    return Object.freeze({ trustFile, initialized: false, publicTrust: observed });
+    return Object.freeze({ trustFile, initialized: false, publicTrust });
   }
   let handle;
   try {
@@ -421,10 +389,10 @@ export async function ensureCertifiedReleasePublicTrust(productRoot, unlocked) {
         "CERTIFIED_RELEASE_PUBLIC_TRUST_INVALID",
         MAX_REQUEST_BYTES,
       );
-      if (coreTrustIdentity(observed) !== coreTrustIdentity(publicTrust)) {
+      if (stableStringify(observed) !== stableStringify(publicTrust)) {
         fail("CERTIFIED_RELEASE_PUBLIC_TRUST_CONFLICT", trustFile);
       }
-      return Object.freeze({ trustFile, initialized: false, publicTrust: observed });
+      return Object.freeze({ trustFile, initialized: false, publicTrust });
     }
     throw cause;
   } finally {
@@ -433,107 +401,28 @@ export async function ensureCertifiedReleasePublicTrust(productRoot, unlocked) {
   return Object.freeze({ trustFile, initialized: true, publicTrust });
 }
 
-function normalizedCredentialName(value) {
-  return value
-    .replace(/([a-z0-9])([A-Z])/gu, "$1_$2")
-    .replace(/[^A-Za-z0-9]+/gu, "_")
-    .replace(/^_+|_+$/gu, "")
-    .toLowerCase();
-}
-
-function isCredentialName(value) {
-  return /(?:^|_)(?:access_key|api_key|auth_token|client_secret|credential|credentials|database_url|master_key|passwd|passphrase|password|private_key(?:_pem)?|secret|token)$/u
-    .test(normalizedCredentialName(value));
-}
-
-function isDocumentedSafeCredentialValue(relativePath, name, value) {
-  const trimmed = value.trim();
-  if (!trimmed || /^(?:null|undefined)$/u.test(trimmed)) return true;
-  if (SAFE_CREDENTIAL_PLACEHOLDER.test(trimmed)) return true;
-  const normalizedName = normalizedCredentialName(name);
-  if (
-    relativePath === DOCUMENTED_ENV_EXAMPLE
-    && normalizedName === "database_url"
-    && /^postgres(?:ql)?:\/\/[^:\s/]+:<[A-Z][A-Z0-9_-]*>@(?:127\.0\.0\.1|localhost):[0-9]{2,5}\/[A-Za-z0-9_-]+$/u.test(trimmed)
-  ) return true;
-  return relativePath === DOCUMENTED_RUNTIME_COMPOSE
-    && /^(?:database_url|server_database_url)$/u.test(normalizedName)
-    && /^postgres(?:ql)?:\/\/\$\{POSTGRES_USER(?::-[^}\r\n]*)?\}:\$\{POSTGRES_PASSWORD(?::[-?][^}\r\n]*)?\}@[^\s]+$/u.test(trimmed);
-}
-
-function unsafeCredentialAssignment(contents, relativePath) {
-  const assignmentScannable = /\.(?:conf|config|ini|json|properties|toml)$/iu.test(relativePath)
-    || relativePath === DOCUMENTED_ENV_EXAMPLE;
-  if (!assignmentScannable) return null;
-  for (const [expression, nameIndex, valueIndex] of [
-    [UNQUOTED_CREDENTIAL_ASSIGNMENT, 1, 3],
-    [QUOTED_CREDENTIAL_ASSIGNMENT, 2, 4],
-  ]) {
-    expression.lastIndex = 0;
-    let match;
-    while ((match = expression.exec(contents)) !== null) {
-      if (
-        isCredentialName(match[nameIndex])
-        && !isDocumentedSafeCredentialValue(relativePath, match[nameIndex], match[valueIndex])
-      ) return match[nameIndex];
-    }
-  }
-  CONFIG_CREDENTIAL_ASSIGNMENT.lastIndex = 0;
-  let match;
-  while ((match = CONFIG_CREDENTIAL_ASSIGNMENT.exec(contents)) !== null) {
-    if (
-      isCredentialName(match[1])
-      && !isDocumentedSafeCredentialValue(relativePath, match[1], match[2])
-    ) return match[1];
-  }
-  return null;
-}
-
-async function assertFileHasNoSecretContent(absolutePath, relativePath) {
-  let overlap = Buffer.alloc(0);
-  try {
-    for await (const chunk of createReadStream(absolutePath, { highWaterMark: 64 * 1024 })) {
-      const combined = Buffer.concat([overlap, chunk]);
-      const contents = combined.toString("utf8");
-      if (PRIVATE_KEY_BLOCK.test(contents)) {
-        fail("CERTIFIED_RELEASE_PRIVATE_KEY_FORBIDDEN", relativePath);
-      }
-      if (KNOWN_CREDENTIAL_TOKEN.test(contents)) {
-        fail("CERTIFIED_RELEASE_CREDENTIAL_TOKEN_FORBIDDEN", relativePath);
-      }
-      if (unsafeCredentialAssignment(contents, relativePath)) {
-        fail("CERTIFIED_RELEASE_CREDENTIAL_ASSIGNMENT_FORBIDDEN", relativePath);
-      }
-      const retainedBytes = Math.min(SECRET_SCAN_OVERLAP_BYTES, combined.length);
-      const nextOverlap = Buffer.from(combined.subarray(combined.length - retainedBytes));
-      overlap.fill(0);
-      combined.fill(0);
-      overlap = nextOverlap;
-    }
-  } finally {
-    overlap.fill(0);
-  }
-}
-
 async function assertNoSecretMaterial(root, inventory, keyStore) {
   const resolvedKeyStore = await fs.realpath(keyStore).catch(() => path.resolve(keyStore));
   for (const entry of inventory.files) {
     const absolutePath = path.join(root, ...entry.path.split("/"));
     const basename = path.posix.basename(entry.path);
     const lowerBasename = basename.toLowerCase();
-    const environmentSecret = lowerBasename.startsWith(".env")
-      && entry.path !== DOCUMENTED_ENV_EXAMPLE;
+    const environmentSecret = lowerBasename === ".env"
+      || (lowerBasename.startsWith(".env.") && !lowerBasename.endsWith(".example"));
     if (
       path.resolve(absolutePath) === resolvedKeyStore
       || environmentSecret
-      || SECRET_DOTFILE_BASENAME.test(basename)
-      || SECRET_BEARING_PATH.test(entry.path)
       || SECRET_FILE_EXTENSION.test(basename)
       || SECRET_FILE_BASENAME.test(basename)
     ) {
       fail("CERTIFIED_RELEASE_SECRET_FILE_FORBIDDEN", entry.path);
     }
-    await assertFileHasNoSecretContent(absolutePath, entry.path);
+    if (entry.sizeBytes <= 1024 * 1024) {
+      const beginning = (await fs.readFile(absolutePath)).subarray(0, 4096).toString("utf8");
+      if (RAW_PRIVATE_KEY.test(beginning)) {
+        fail("CERTIFIED_RELEASE_PRIVATE_KEY_FORBIDDEN", entry.path);
+      }
+    }
   }
 }
 
@@ -578,28 +467,15 @@ async function readComponentVersion(component, root, request) {
       path.join(root, "VERSION.json"),
       "CERTIFIED_RELEASE_WINDOWS_VERSION_FILE_INVALID",
     );
-    if (!isPlainObject(versionFile)) {
-      fail("CERTIFIED_RELEASE_WINDOWS_VERSION_FILE_INVALID");
-    }
-    const windowsVersionKeys = Object.keys(versionFile).sort().join("\0");
-    const compactVersionKeys = ["schema", "version"].sort().join("\0");
-    const displayVersionKeys = ["schema", "version", "displayVersion"].sort().join("\0");
-    if (windowsVersionKeys !== compactVersionKeys && windowsVersionKeys !== displayVersionKeys) {
-      fail("CERTIFIED_RELEASE_WINDOWS_VERSION_FILE_INVALID");
-    }
+    assertDocumentKeys(
+      versionFile,
+      new Set(["schema", "version"]),
+      "CERTIFIED_RELEASE_WINDOWS_VERSION_FILE_INVALID",
+    );
     if (versionFile.schema !== "bonni.windows-version/v1") {
       fail("CERTIFIED_RELEASE_WINDOWS_VERSION_SCHEMA_INVALID");
     }
     const observed = normalizeVersion(versionFile.version, "WINDOWS/VERSION.json");
-    if (Object.hasOwn(versionFile, "displayVersion")) {
-      const display = normalizeVersion(
-        versionFile.displayVersion,
-        "WINDOWS/VERSION.json.displayVersion",
-      );
-      if (display.technical !== observed.technical) {
-        fail("CERTIFIED_RELEASE_WINDOWS_DISPLAY_VERSION_MISMATCH");
-      }
-    }
     if (observed.technical !== request.windowsVersion.technical) {
       fail("CERTIFIED_RELEASE_WINDOWS_VERSION_MISMATCH");
     }
@@ -625,252 +501,11 @@ async function readComponentVersion(component, root, request) {
   return Object.freeze({ version: observed.technical, platform: versionFile.platform });
 }
 
-async function assertSafeApplicationTree(applicationRoot) {
-  let fileCount = 0;
-  const pending = [applicationRoot];
-  while (pending.length > 0) {
-    const directory = pending.pop();
-    let names;
-    try {
-      names = await fs.readdir(directory);
-    } catch (cause) {
-      fail("CERTIFIED_RELEASE_APPLICATION_UNSAFE", directory, { cause });
-    }
-    names.sort(bytewiseCompare);
-    for (const name of names) {
-      if (
-        typeof name !== "string"
-        || !name
-        || name !== name.normalize("NFC")
-        || name === "."
-        || name === ".."
-        || /[\\/\u0000-\u001f\u007f]/u.test(name)
-      ) fail("CERTIFIED_RELEASE_APPLICATION_UNSAFE", path.join(directory, String(name)));
-      const entry = path.join(directory, name);
-      const state = await lstatOrNull(entry);
-      if (!state || state.isSymbolicLink()) {
-        fail("CERTIFIED_RELEASE_APPLICATION_UNSAFE", entry);
-      }
-      if (state.isDirectory()) {
-        pending.push(entry);
-        continue;
-      }
-      if (!state.isFile() || state.nlink !== 1) {
-        fail("CERTIFIED_RELEASE_APPLICATION_UNSAFE", entry);
-      }
-      fileCount += 1;
-    }
+async function assertSelectedApplications(systemRoot, components) {
+  for (const component of components.filter((entry) => APPLICATION_COMPONENT_SET.has(entry))) {
+    const applicationRoot = path.join(systemRoot, ...APPLICATION_COMPONENTS[component].split("/"));
+    await assertPlainDirectory(applicationRoot, "CERTIFIED_RELEASE_APPLICATION_MISSING");
   }
-  if (fileCount < 1) fail("CERTIFIED_RELEASE_APPLICATION_EMPTY", applicationRoot);
-}
-
-async function assertApplicationPackageJson(applicationRoot, component) {
-  const packageFile = path.join(applicationRoot, "package.json");
-  const packageJson = await readRegularJson(
-    packageFile,
-    "CERTIFIED_RELEASE_APPLICATION_PACKAGE_JSON_INVALID",
-    MAX_APPLICATION_PACKAGE_JSON_BYTES,
-  );
-  if (
-    !isPlainObject(packageJson)
-    || typeof packageJson.name !== "string"
-    || !packageJson.name.trim()
-    || packageJson.name !== packageJson.name.trim()
-    || packageJson.name !== packageJson.name.normalize("NFC")
-    || Buffer.byteLength(packageJson.name, "utf8") > 128
-    || /[\u0000-\u001f\u007f]/u.test(packageJson.name)
-    || typeof packageJson.version !== "string"
-    || packageJson.version.length > MAX_APPLICATION_VERSION_LENGTH
-    || !STRICT_SEMVER.test(packageJson.version)
-  ) fail("CERTIFIED_RELEASE_APPLICATION_VERSION_INVALID", component);
-  return Object.freeze({ name: packageJson.name, version: packageJson.version });
-}
-
-async function discoverReleaseApplications(systemRoot) {
-  const appContainer = path.join(systemRoot, "app");
-  const containerState = await lstatOrNull(appContainer);
-  if (!containerState) return Object.freeze([]);
-  if (!containerState.isDirectory() || containerState.isSymbolicLink()) {
-    fail("CERTIFIED_RELEASE_APPLICATION_CONTAINER_UNSAFE", appContainer);
-  }
-  let names;
-  try {
-    names = await fs.readdir(appContainer);
-  } catch (cause) {
-    fail("CERTIFIED_RELEASE_APPLICATION_CONTAINER_UNSAFE", appContainer, { cause });
-  }
-  names.sort(bytewiseCompare);
-  const applications = [];
-  for (const directory of names) {
-    let id;
-    try {
-      id = appIdFromDirectory(directory);
-    } catch (cause) {
-      fail("CERTIFIED_RELEASE_APPLICATION_ID_INVALID", directory, { cause });
-    }
-    const applicationRoot = path.join(appContainer, directory);
-    const applicationState = await lstatOrNull(applicationRoot);
-    if (!applicationState || !applicationState.isDirectory() || applicationState.isSymbolicLink()) {
-      fail("CERTIFIED_RELEASE_APPLICATION_UNSAFE", applicationRoot);
-    }
-    await assertSafeApplicationTree(applicationRoot);
-    const packageMetadata = await assertApplicationPackageJson(applicationRoot, id);
-    const inventory = await collectDevelopmentTree(applicationRoot);
-    if (!inventory.files.length) fail("CERTIFIED_RELEASE_APPLICATION_EMPTY", id);
-    applications.push(Object.freeze({
-      id,
-      directory,
-      applicationRoot,
-      displayName: packageMetadata.name,
-      version: packageMetadata.version,
-      inventory,
-    }));
-  }
-  return Object.freeze(applications);
-}
-
-function registryEntryForApplication(application, key) {
-  return Object.freeze({
-    id: application.id,
-    directory: application.directory,
-    displayName: application.displayName,
-    keyId: key.keyId,
-    algorithm: "Ed25519",
-    publicKeyPem: key.publicKeyPem,
-    fingerprintSha256: key.fingerprintSha256,
-  });
-}
-
-function sameRegistryEntry(left, right) {
-  return stableStringify(left) === stableStringify(right);
-}
-
-async function writeExclusiveRegistrySource(file, bytes, productRoot) {
-  const parent = path.dirname(file);
-  await ensurePlainDirectory(parent, productRoot);
-  let handle;
-  try {
-    handle = await fs.open(file, "wx", 0o600);
-    await handle.writeFile(bytes);
-    await handle.sync();
-  } catch (cause) {
-    if (cause?.code !== "EEXIST") throw cause;
-  } finally {
-    await handle?.close();
-  }
-}
-
-async function prepareReleaseAppRegistry({ systemRoot, request, appKeys }) {
-  const applications = await discoverReleaseApplications(systemRoot);
-  const selectedApps = request.components
-    .filter((entry) => !UPDATE_COMPONENT_SET.has(entry))
-    .sort(bytewiseCompare);
-  const observedIds = applications.map((entry) => entry.id).sort(bytewiseCompare);
-  if (stableStringify(observedIds) !== stableStringify(selectedApps)) {
-    const missing = selectedApps.find((entry) => !observedIds.includes(entry));
-    const unselected = observedIds.find((entry) => !selectedApps.includes(entry));
-    if (missing) fail("CERTIFIED_RELEASE_APPLICATION_MISSING", missing);
-    fail("CERTIFIED_RELEASE_APPLICATION_NOT_SELECTED", unselected || "unknown");
-  }
-
-  const sourceFile = path.join(request.productRoot, "SIGNATUR", "TRUST", BONNI_APP_REGISTRY_FILE_NAME);
-  const stagedFile = path.join(systemRoot, BONNI_APP_REGISTRY_FILE_NAME);
-  const sourceState = await lstatOrNull(sourceFile);
-  const stagedState = await lstatOrNull(stagedFile);
-  let source;
-  if (sourceState) {
-    source = await readBonniAppRegistryFile(sourceFile);
-  } else if (stagedState) {
-    source = await readBonniAppRegistryFile(stagedFile);
-    await writeExclusiveRegistrySource(sourceFile, source.bytes, request.productRoot);
-    const published = await readBonniAppRegistryFile(sourceFile);
-    if (!published.bytes.equals(source.bytes)) {
-      fail("CERTIFIED_RELEASE_APP_REGISTRY_CONCURRENT_CHANGE");
-    }
-    source = published;
-  } else {
-    const apps = applications.map((application) => {
-      const key = appKeys.get(application.id);
-      if (!key) fail("CERTIFIED_RELEASE_APPLICATION_KEY_MISSING", application.id);
-      return registryEntryForApplication(application, key);
-    });
-    const registry = createBonniAppRegistry({
-      registryId: "bonni-official",
-      sequence: 1,
-      apps,
-    });
-    const bytes = serializeBonniAppRegistry(registry);
-    await writeExclusiveRegistrySource(sourceFile, bytes, request.productRoot);
-    source = await readBonniAppRegistryFile(sourceFile);
-    if (!source.bytes.equals(bytes)) {
-      fail("CERTIFIED_RELEASE_APP_REGISTRY_CONCURRENT_CHANGE");
-    }
-  }
-  if (stagedState) {
-    const staged = await readBonniAppRegistryFile(stagedFile);
-    if (staged.registry.registryId !== source.registry.registryId) {
-      fail("CERTIFIED_RELEASE_APP_REGISTRY_IDENTITY_MISMATCH");
-    }
-    const same = staged.bytes.equals(source.bytes);
-    if (!same) {
-      const nextById = new Map(source.registry.apps.map((entry) => [entry.id, entry]));
-      for (const existing of staged.registry.apps) {
-        const next = nextById.get(existing.id);
-        if (!next || !sameRegistryEntry(existing, next)) {
-          fail("CERTIFIED_RELEASE_APP_REGISTRY_IDENTITY_CHANGED", existing.id);
-        }
-      }
-      const addedApps = source.registry.apps.length - staged.registry.apps.length;
-      const sequenceDelta = source.registry.sequence - staged.registry.sequence;
-      if (addedApps < 1 || sequenceDelta !== addedApps) {
-        fail("CERTIFIED_RELEASE_APP_REGISTRY_SEQUENCE_INVALID");
-      }
-    }
-  }
-
-  const registryById = new Map(source.registry.apps.map((entry) => [entry.id, entry]));
-  for (const application of applications) {
-    const registered = registryById.get(application.id);
-    if (!registered || registered.directory !== application.directory) {
-      fail("CERTIFIED_RELEASE_APPLICATION_NOT_REGISTERED", application.id);
-    }
-    const key = appKeys.get(application.id);
-    if (
-      !key
-      || key.keyId !== registered.keyId
-      || key.fingerprintSha256 !== registered.fingerprintSha256
-      || key.publicKeyPem !== registered.publicKeyPem
-    ) fail("CERTIFIED_RELEASE_APPLICATION_KEY_MISMATCH", application.id);
-  }
-
-  await fs.writeFile(stagedFile, source.bytes, { mode: 0o600 });
-  const readBack = await readBonniAppRegistryFile(stagedFile);
-  if (!readBack.bytes.equals(source.bytes)) fail("CERTIFIED_RELEASE_APP_REGISTRY_WRITEBACK_MISMATCH");
-  return Object.freeze({
-    sourceFile,
-    registry: readBack.registry,
-    bytes: readBack.bytes,
-    binding: createBonniAppRegistryBinding(readBack.registry, readBack.bytes),
-    applications,
-  });
-}
-
-export async function assertCompleteApplicationSelection(systemRoot, components, registry = undefined) {
-  const applications = await discoverReleaseApplications(systemRoot);
-  const selectedApps = components.filter((entry) => !UPDATE_COMPONENT_SET.has(entry)).sort(bytewiseCompare);
-  const observedIds = applications.map((entry) => entry.id).sort(bytewiseCompare);
-  if (stableStringify(observedIds) !== stableStringify(selectedApps)) {
-    fail("CERTIFIED_RELEASE_APPLICATION_SELECTION_MISMATCH");
-  }
-  if (registry) {
-    const registered = new Map(registry.apps.map((entry) => [entry.id, entry.directory]));
-    for (const application of applications) {
-      if (registered.get(application.id) !== application.directory) {
-        fail("CERTIFIED_RELEASE_APPLICATION_NOT_REGISTERED", application.id);
-      }
-    }
-  }
-  return Object.freeze(selectedApps);
 }
 
 function payloadDescriptor(component, version, platform, inventory) {
@@ -888,22 +523,6 @@ function payloadDescriptor(component, version, platform, inventory) {
     totalBytes: files.reduce((sum, entry) => sum + entry.sizeBytes, 0),
     treeSha256: computePayloadTreeSha256(files),
     files,
-  });
-}
-
-function appReleaseDescriptor(application) {
-  const files = application.inventory.files.map(({ path: filePath, sizeBytes, sha256: fileSha256 }) => ({
-    path: filePath,
-    sizeBytes,
-    sha256: fileSha256,
-  }));
-  return Object.freeze({
-    id: application.id,
-    version: application.version,
-    path: `app/${application.directory}`,
-    fileCount: files.length,
-    totalBytes: files.reduce((sum, entry) => sum + entry.sizeBytes, 0),
-    treeSha256: computePayloadTreeSha256(files),
   });
 }
 
@@ -930,7 +549,7 @@ function normalizeAppliedPackages(value) {
 }
 
 function versionedDevelopmentBaseRoot(productRoot, baseVersion) {
-  return path.join(productRoot, "RUN_DEV", "BASES", baseVersion, "SYSTEM");
+  return path.join(productRoot, "DEVELOPMENT", "BASES", baseVersion, "SYSTEM");
 }
 
 export async function resolveCertifiedDevelopmentBase({
@@ -954,8 +573,8 @@ export async function resolveCertifiedDevelopmentBase({
   ));
   const baseRoot = path.join(baseEnvelopeRoot, "SYSTEM");
   for (const directory of [
-    path.join(request.productRoot, "RUN_DEV"),
-    path.join(request.productRoot, "RUN_DEV", "BASES"),
+    path.join(request.productRoot, "DEVELOPMENT"),
+    path.join(request.productRoot, "DEVELOPMENT", "BASES"),
     baseEnvelopeRoot,
     baseRoot,
   ]) {
@@ -1001,7 +620,7 @@ export async function assembleCertifiedSystemFromApprovedChain({
     productRoot: request.productRoot,
     baseRoot: base.baseRoot,
     stagingRoot,
-    expectedFinalRoot: path.join(request.productRoot, "RUN_DEV", "CURRENT"),
+    expectedFinalRoot: path.join(request.productRoot, "DEVELOPMENT", "CURRENT"),
   });
   if (
     result?.baseTreeSha256 !== base.chain.baseTreeSha256
@@ -1312,7 +931,7 @@ function progress(callback, message) {
   if (typeof callback === "function") callback(message);
 }
 
-async function createCertifiedGitHubReleaseCore({
+export async function createCertifiedGitHubRelease({
   rawRequest,
   request: parsedRequest,
   productRoot,
@@ -1345,25 +964,11 @@ async function createCertifiedGitHubReleaseCore({
     await ensurePlainDirectory(path.dirname(runRoot), request.productRoot);
     await fs.mkdir(runRoot, { mode: 0o700 });
     let developmentPackages = [];
-    let includedApps = Object.freeze([]);
-    let appRegistryState = null;
-    let appReleases = Object.freeze([]);
     if (needsSystemAssembly) {
       progress(onProgress, "Bestaetigte Entwicklungsstaende aus sauberer Basis zusammensetzen ...");
       const assembly = await assembleSystem({ request, stagingRoot: assembledSystemRoot });
       developmentPackages = normalizeAppliedPackages(assembly?.appliedPackages);
-      // The complete SYSTEM tree stays intact. Its authoritative public app
-      // registry is copied into the staged SYSTEM before the tree inventory is
-      // built. App versions remain outside the registry and come from each
-      // app's package.json, so a version update never changes Core code or the
-      // stable app identity.
-      appRegistryState = await prepareReleaseAppRegistry({
-        systemRoot: assembledSystemRoot,
-        request,
-        appKeys,
-      });
-      includedApps = Object.freeze(appRegistryState.applications.map((app) => app.id));
-      appReleases = Object.freeze(appRegistryState.applications.map(appReleaseDescriptor));
+      await assertSelectedApplications(assembledSystemRoot, request.components);
     } else {
       progress(onProgress, "Ausgewaehlte installierte Plattformkomponenten pruefen ...");
     }
@@ -1396,57 +1001,33 @@ async function createCertifiedGitHubReleaseCore({
       fail("CERTIFIED_RELEASE_SEQUENCE_INVALID");
     }
     const updateId = releaseUpdateId(request, releaseSequence, payloads, developmentPackages);
-    if (needsSystemAssembly) {
-      // Re-bind the contract to the actual bytes that are about to be signed,
-      // rather than trusting only the earlier assembled source inspection.
-      const copiedSystemRoot = path.join(packageRoot, "PAYLOAD", "SYSTEM");
-      const copiedInventory = await collectDevelopmentTree(copiedSystemRoot);
-      const systemPayload = payloads.find((payload) => payload.component === "SYSTEM");
-      if (
-        !systemPayload
-        || copiedInventory.treeSha256 !== systemPayload.treeSha256
-        || stableStringify(copiedInventory.files) !== stableStringify(systemPayload.files)
-      ) fail("CERTIFIED_RELEASE_SYSTEM_PAYLOAD_CHANGED");
-      const copiedIncludedApps = await assertCompleteApplicationSelection(
-        copiedSystemRoot,
-        request.components,
-        appRegistryState.registry,
-      );
-      if (stableStringify(copiedIncludedApps) !== stableStringify(includedApps)) {
-        fail("CERTIFIED_RELEASE_APPLICATION_SELECTION_CHANGED");
-      }
-      const copiedApplications = await discoverReleaseApplications(copiedSystemRoot);
-      const copiedAppReleases = copiedApplications.map(appReleaseDescriptor);
-      if (stableStringify(copiedAppReleases) !== stableStringify(appReleases)) {
-        fail("CERTIFIED_RELEASE_APPLICATION_PAYLOAD_CHANGED");
-      }
-    }
-    const signers = [
-      { keyId: releaseKey.keyId, scope: "RELEASE", privateKey: releaseKey.privateKey },
-      ...payloads.map((payload) => {
-        const key = componentKeys.get(payload.component);
-        return { keyId: key.keyId, scope: payload.component, privateKey: key.privateKey };
-      }),
-      ...includedApps.map((app) => {
-        const key = appKeys.get(app);
-        return { keyId: key.keyId, scope: appManifestScope(app), privateKey: key.privateKey };
-      }),
-    ];
-    const commonSigned = {
+    const manifest = signUpdatePackageManifest({
       updateId,
       channel: "stable",
       releaseSequence,
       createdAt: request.requestedAt,
       payloads,
       releaseNotes: request.description,
-    };
-    const manifest = needsSystemAssembly
-      ? signRegistryUpdatePackageManifest({
-          ...commonSigned,
-          appRegistry: appRegistryState.binding,
-          apps: appReleases,
-        }, signers)
-      : signUpdatePackageManifest(commonSigned, signers);
+      ...(request.components.some((entry) => APPLICATION_COMPONENT_SET.has(entry))
+        ? {
+            includedApps: request.components
+              .filter((entry) => APPLICATION_COMPONENT_SET.has(entry))
+              .sort(bytewiseCompare),
+          }
+        : {}),
+    }, [
+      { keyId: releaseKey.keyId, scope: "RELEASE", privateKey: releaseKey.privateKey },
+      ...payloads.map((payload) => {
+        const key = componentKeys.get(payload.component);
+        return { keyId: key.keyId, scope: payload.component, privateKey: key.privateKey };
+      }),
+      ...request.components
+        .filter((entry) => APPLICATION_COMPONENT_SET.has(entry))
+        .map((app) => {
+          const key = appKeys.get(app);
+          return { keyId: key.keyId, scope: appManifestScope(app), privateKey: key.privateKey };
+        }),
+    ]);
     const manifestBytes = Buffer.from(`${JSON.stringify(manifest, null, 2)}\n`, "utf8");
     await fs.writeFile(path.join(packageRoot, UPDATE_PACKAGE_MANIFEST_NAME), manifestBytes, { flag: "wx", mode: 0o600 });
 
@@ -1494,9 +1075,6 @@ async function createCertifiedGitHubReleaseCore({
       version: request.version.visible,
       windowsVersion: request.windowsVersion?.visible || null,
       components: request.components,
-      includedApps,
-      appRegistry: appRegistryState ? appRegistryState.binding : null,
-      apps: appReleases,
       developmentPackages,
       verifiedScopes: verifiedZip.verifiedScopes,
       authenticated: verifiedStaging.authenticated && verifiedZip.authenticated,
@@ -1508,80 +1086,4 @@ async function createCertifiedGitHubReleaseCore({
     await fs.rm(runRoot, { recursive: true, force: true }).catch(() => {});
     await releaseLock().catch(() => {});
   }
-}
-
-// This is the only exported production release entry point. The keystore
-// password is never accepted directly: it must be read from a community-
-// enrolled local vault entry after the signed product capability has been
-// checked. The exact parsed request used by both checks is passed unchanged to
-// the private release core, so there is no later request-path re-read.
-export async function createCertifiedGitHubRelease(options = {}) {
-  if (!isPlainObject(options)) fail("CERTIFIED_RELEASE_OPTIONS_INVALID");
-  const allowed = new Set([
-    "rawRequest",
-    "productRoot",
-    "vaultEntryId",
-    "vaultPassword",
-    "onProgress",
-  ]);
-  for (const key of Object.keys(options)) {
-    if (!allowed.has(key)) fail("CERTIFIED_RELEASE_DIRECT_CORE_ACCESS_FORBIDDEN", key);
-  }
-  const {
-    rawRequest,
-    productRoot,
-    vaultEntryId,
-    vaultPassword,
-    onProgress,
-  } = options;
-  if (typeof vaultEntryId !== "string" || !vaultEntryId) {
-    fail("CERTIFIED_RELEASE_VAULT_ENTRY_REQUIRED");
-  }
-  if (!(typeof vaultPassword === "string" || Buffer.isBuffer(vaultPassword))) {
-    fail("CERTIFIED_RELEASE_VAULT_PASSWORD_REQUIRED");
-  }
-  const request = parseCertifiedGitHubReleaseRequest(rawRequest, { productRoot });
-  const vaultStatus = await getLocalSecretVaultStatus({ productRoot: request.productRoot });
-  if (!vaultStatus.configured || typeof vaultStatus.vaultId !== "string") {
-    fail("CERTIFIED_RELEASE_VAULT_NOT_CONFIGURED");
-  }
-
-  // Fail before any local master secret is decrypted.
-  await assertDeveloperBuildAuthorized({
-    productRoot: request.productRoot,
-    vaultId: vaultStatus.vaultId,
-    components: request.components,
-  });
-
-  return withLocalSecretVaultEntry({
-    productRoot: request.productRoot,
-    password: vaultPassword,
-    entryId: vaultEntryId,
-    purpose: "github-release",
-    expectedVaultId: vaultStatus.vaultId,
-    requiredPurpose: "developer-area",
-  }, async (secret, _entry, vaultContext = {}) => {
-    // The second check binds the signed grant to the exact immutable
-    // community-enrolled developer profile after authenticated vault unlock,
-    // but still before keystore unlock, staging, signing or publication.
-    if (typeof assertDeveloperGitHubRequestAuthorizedForProfile !== "function") {
-      fail("CERTIFIED_RELEASE_DEVELOPER_PROFILE_BINDING_UNAVAILABLE");
-    }
-    await assertDeveloperGitHubRequestAuthorizedForProfile({
-      productRoot: request.productRoot,
-      vaultId: vaultStatus.vaultId,
-      developerProfileSha256: vaultContext.developerProfileSha256,
-      request,
-    });
-    let masterPassword = secret.toString("utf8");
-    try {
-      return await createCertifiedGitHubReleaseCore({
-        request,
-        masterPassword,
-        onProgress,
-      });
-    } finally {
-      masterPassword = null;
-    }
-  });
 }

@@ -47,6 +47,9 @@ const REQUIRED_CORE_LICENSE_PREDECESSORS = new Map([
   ["0.1.20+c", "0.1.20"],
   ["0.1.20+d", "0.1.20"],
   ["0.1.20+e", "0.1.20"],
+  ["0.1.20+f", "0.1.20"],
+  ["0.1.20+h", "0.1.20"],
+  ["0.1.20+g", "0.1.20"],
 ]);
 
 function runBounded(command, args, options = {}) {

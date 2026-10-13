@@ -4,6 +4,7 @@ import path from "node:path";
 import { resolveBonniProjectRoot } from "../project-root.js";
 import type { ModuleKind, ModuleManifestSummary } from "../types.js";
 import { normalizeDeclaredModuleTerminalAccounts } from "../../auth/terminal-accounts/terminal-account-declaration.js";
+import { validateCoreVersionCompatibility } from "../compatibility/module-version.js";
 import { loadModuleRpcContract, validateModuleRpcContract } from "./module-rpc-contract.js";
 import { parseStaticTypeScriptManifest } from "./static-manifest-parser.js";
 
@@ -29,6 +30,35 @@ const MANIFEST_KEY = /^(app|addon|plugin|bridge)\.[a-z0-9][a-z0-9.-]{0,158}[a-z0
 const SEMVER = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
 const PACKAGE_RELATIVE_PATH = /^[^\u0000-\u001f\u007f\\]+$/;
 const IFRAME_SANDBOX_CAPABILITIES = new Set(["downloads", "forms", "popups"]);
+
+/**
+ * Older privacyIDEA packages declared a fake scoped database delegate only
+ * for an already-built legacy loader. It never represented a Prisma model.
+ * During discovery that declaration is normalized to the real provider
+ * contract: no module database capability.
+ */
+export function isLegacyPrivacyIdeaCompatibilityManifest(manifest: any) {
+  const database = manifest?.metadata?.database;
+  return (
+    manifest?.key === "plugin.privacyidea"
+    && database?.mode === "scoped-v1"
+    && database?.domain === "core"
+    && Array.isArray(database?.delegates)
+    && database.delegates.length === 1
+    && database.delegates[0] === "twoFactorPluginStorageUnavailable"
+  );
+}
+
+export function normalizeLegacyPrivacyIdeaManifest(manifest: any) {
+  if (!isLegacyPrivacyIdeaCompatibilityManifest(manifest)) return manifest;
+  return {
+    ...manifest,
+    metadata: {
+      ...manifest.metadata,
+      database: { mode: "none" },
+    },
+  };
+}
 
 async function readJson(file: string) {
   const stats = await fs.stat(file);
@@ -112,7 +142,7 @@ async function findManifestFiles(directory: string): Promise<string[]> {
   if (manifestName) manifests.push(path.join(directory, manifestName));
 
   for (const entry of entries) {
-    if (!entry.isDirectory() || SKIPPED_DIRECTORIES.has(entry.name)) continue;
+    if (!entry.isDirectory() || entry.name.startsWith(".bonni-") || SKIPPED_DIRECTORIES.has(entry.name)) continue;
     manifests.push(...await findManifestFiles(path.join(directory, entry.name)));
   }
 
@@ -133,7 +163,11 @@ async function collectManifests(
 
   for (const manifestPath of manifestFiles) {
     try {
-      const manifest = await readManifest(manifestPath);
+      const manifest = normalizeLegacyPrivacyIdeaManifest(await readManifest(manifestPath));
+      const compatibilityValidation = validateCoreVersionCompatibility(manifest.compatibility);
+      if (!compatibilityValidation.ok) {
+        throw new Error(compatibilityValidation.errors.join(" "));
+      }
       const packageRoot = path.dirname(manifestPath);
       const key = String(manifest.key || manifest.id || path.basename(packageRoot)).trim();
       if (!key) continue;
@@ -259,6 +293,8 @@ export function validateModuleManifest(manifest: any) {
   } else if (!SEMVER.test(version)) {
     errors.push("Manifest-version muss SemVer entsprechen.");
   }
+
+  errors.push(...validateCoreVersionCompatibility(manifest.compatibility).errors);
 
   if (manifest.backend !== undefined) {
     if (!isRecord(manifest.backend)) {
@@ -434,20 +470,27 @@ export function validateModuleManifest(manifest: any) {
     }
   }
 
+  const declaresNfcCapability = (
+    Array.isArray(manifest.dependsOn)
+    && manifest.dependsOn.includes("core.nfc")
+  );
+  if (
+    declaresNfcCapability
+    && (!isRecord(manifest.metadata) || manifest.metadata.nfcAccessProfiles === undefined)
+  ) {
+    errors.push("dependsOn core.nfc benötigt metadata.nfcAccessProfiles.");
+  }
+
   if (manifest.metadata !== undefined) {
     if (!isRecord(manifest.metadata)) {
       errors.push("metadata muss ein Objekt sein.");
     } else {
       if (manifest.metadata.database !== undefined) {
         const database = manifest.metadata.database;
-        const isDatabaseLessPrivacyIdeaCompatibility = (
-          manifest.key === "plugin.privacyidea"
-          && database?.mode === "scoped-v1"
-          && database?.domain === "core"
-          && Array.isArray(database?.delegates)
-          && database.delegates.length === 1
-          && database.delegates[0] === "twoFactorPluginStorageUnavailable"
-        );
+        // Keep direct validation backwards compatible for manifests that can
+        // still be found in an older installation. Discovery normalizes them
+        // before they reach assembly or runtime loading.
+        const isDatabaseLessPrivacyIdeaCompatibility = isLegacyPrivacyIdeaCompatibilityManifest(manifest);
         if (!isRecord(database) || !["none", "scoped-v1"].includes(String(database.mode || ""))) {
           errors.push("metadata.database.mode muss none oder scoped-v1 sein.");
         } else if (database.mode === "none" && Object.keys(database).some((field) => field !== "mode")) {
@@ -511,6 +554,21 @@ export function validateModuleManifest(manifest: any) {
         );
         if (!validProfiles) {
           errors.push("metadata.accessProfiles ist ungültig.");
+        }
+      }
+
+      if (manifest.metadata.nfcAccessProfiles !== undefined) {
+        const nfcProfiles = manifest.metadata.nfcAccessProfiles;
+        const validNfcProfiles = (
+          allUniqueStrings(nfcProfiles, 50)
+          && nfcProfiles.length > 0
+          && nfcProfiles.every((profile: string) => /^[a-z][a-z0-9-]{0,79}$/.test(profile))
+        );
+        if (!validNfcProfiles) {
+          errors.push("metadata.nfcAccessProfiles ist ungültig.");
+        }
+        if (!declaresNfcCapability) {
+          errors.push("metadata.nfcAccessProfiles benötigt dependsOn core.nfc.");
         }
       }
 

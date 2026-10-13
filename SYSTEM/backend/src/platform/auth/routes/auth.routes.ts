@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { Router } from "express";
+import { nfcService } from "../../../core/modules/security/nfc/index.js";
 import { AccountType } from "@prisma/client";
 
 import { getServerPrismaClient } from "../../../core/database/database.js";
@@ -14,6 +15,7 @@ import type {
 import { ensureLocalBootstrapAdminAccess } from "../bootstrap-admin-access.js";
 import { verifyPasswordRuntime } from "../password-runtime.js";
 import { isForbiddenInteractiveLoginName } from "../system-account-policy.js";
+import { scopeTerminalAccount } from "../terminal-accounts/terminal-account-access.js";
 import { coreTokenService } from "../token/core-token.service.js";
 import * as twoFactorService from "../../../core/modules/security/two-factor/service.js";
 import {
@@ -184,7 +186,8 @@ function moduleAccessFromRoles(account: NonNullable<AccountWithAuth>) {
     const roleLabel = String(entry.role.label || roleKey).trim();
     const normalizedRoleKey = roleKey.toLowerCase();
 
-    if (normalizedRoleKey === "admin" || roleLabel.toLowerCase() === "administrator") {
+    if (account.type !== AccountType.TERMINAL
+      && (normalizedRoleKey === "admin" || roleLabel.toLowerCase() === "administrator")) {
       return [{
         kind: "control-center" as const,
         moduleKey: "control-center",
@@ -484,6 +487,10 @@ async function createShell(account: NonNullable<AccountWithAuth>) {
     console.warn("Auth-Shell konnte die Modul-Manifeste nicht laden", error);
   }
 
+  account = scopeTerminalAccount(account, manifests);
+  if (account.type === AccountType.TERMINAL && !account.roles.length) {
+    throw new LoginError("TERMINAL_ACCOUNT_ACCESS_MISSING", "Dem Terminal muss genau eine gültige technische App-Oberfläche zugewiesen sein.", 403);
+  }
   const configuredAccess = moduleAccessFromRoles(account);
   const moduleAccess = resolveModuleAccess(
     configuredAccess.length ? configuredAccess : fallbackModuleAccess(account),
@@ -624,6 +631,7 @@ async function completeInteractiveLogin(
   if (authenticatedAccount.credentialRevision !== expectedCredentialRevision) {
     throw new LoginError("TWO_FACTOR_CREDENTIAL_REVISION_MISMATCH", "Der Sicherheitsstand des Kontos hat sich geändert", 409);
   }
+  const shell = await createShell(authenticatedAccount);
   const token = await prisma.$transaction(async (transaction) => {
     const unchanged = await transaction.account.updateMany({
       where: {
@@ -665,7 +673,6 @@ async function completeInteractiveLogin(
     return nextToken;
   });
 
-  const shell = await createShell(authenticatedAccount);
   return {
     ok: true,
     token,
@@ -726,7 +733,10 @@ router.get("/status", async (_req, res) => {
 
 router.post("/login", async (req, res) => {
   try {
-    const loginName = normalizeLoginName(req.body?.login || req.body?.loginName || req.body?.username || req.body?.email);
+    const nfcLocator = req.body?.nfcCode !== undefined
+      ? await nfcService.loginLocator(req.body.nfcCode, req.ip || "unknown")
+      : null;
+    const loginName = nfcLocator?.loginName || normalizeLoginName(req.body?.login || req.body?.loginName || req.body?.username || req.body?.email);
     const passwordValidation = validateExactLocalPassword(req.body?.password);
     const password = passwordValidation.ok ? passwordValidation.password : "";
 
@@ -743,7 +753,7 @@ router.post("/login", async (req, res) => {
     }
 
     const account = await findAccountForLogin(loginName);
-    if (!account) {
+    if (!account || (nfcLocator && account.id !== nfcLocator.accountId)) {
       throw new LoginError("ACCOUNT_NOT_FOUND", "Benutzer existiert nicht", 401);
     }
 

@@ -53,6 +53,7 @@ const moduleDomains: Readonly<Record<string, DataDomain>> = Object.freeze({
   "app.kontorapp": "kontor",
   "app.meetapp": "meet",
   "app.stueberlapp": "stueberl",
+  "app.jeldapp": "pos",
   "app.pos": "pos",
   "app.posapp": "pos",
 });

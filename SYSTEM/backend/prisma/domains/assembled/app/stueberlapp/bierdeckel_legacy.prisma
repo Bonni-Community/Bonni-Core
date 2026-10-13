@@ -1,0 +1,59 @@
+// -----------------------------------------------------
+// BIERDECKEL LEGACY
+// -----------------------------------------------------
+// Diese Datei isoliert die alten Bierdeckel-Begriffe.
+// Sie ist absichtlich separat, damit LegacyTab/LegacyTabItem nach
+// Migration der Altdaten später als ganze Prisma-Datei entfernt werden können.
+//
+// Alt:
+// - Tab = alter Deckel
+// - TabItem = alte Position
+//
+// Neu liegt im Hauptschema:
+// - TabSession = Tagesdeckel
+// - TabSessionGroup = 14-Tage-Sammel-/Übernahmegruppe
+// - Tab = neuer angeschriebener Verzehr / operative Einheit
+// -----------------------------------------------------
+
+enum LegacyTabStatus {
+  OPEN
+  CLOSED
+  VOIDED
+}
+
+model LegacyTab {
+  id                 String          @id @default(cuid())
+  memberId           String
+  status             LegacyTabStatus @default(OPEN)
+  openedAt           DateTime        @default(now())
+  closedAt           DateTime?
+  openedByTerminalId String?
+  openedByAccountId  String?
+  note               String?
+  totalAmount        Decimal         @default(0)
+
+  items LegacyTabItem[]
+
+  @@index([memberId, status])
+  @@map("Tab")
+}
+
+model LegacyTabItem {
+  id                  String             @id @default(cuid())
+  tabId               String
+  tab                 LegacyTab          @relation(fields: [tabId], references: [id])
+  productId           String
+  productVersionId    String?
+  quantity            Decimal
+  unitPrice           Decimal
+  totalPrice          Decimal
+  source              ReservationSource?
+  status              String             @default("ACTIVE")
+  createdByTerminalId String?
+  createdByAccountId  String?
+  createdAt           DateTime           @default(now())
+
+  @@index([tabId, status])
+  @@index([productId, createdAt])
+  @@map("TabItem")
+}

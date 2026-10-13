@@ -2207,7 +2207,7 @@ export class LocalSourceUpdateSupervisor {
       publicPort: this.localRunPublicPort,
       productionRunSystemRoot: this.productionRunSystemRoot,
       productionStorageRoot: this.productionStorageRoot,
-      productionLogRoot: path.join(this.productionRunSystemRoot, "logs"),
+      productionLogRoot: path.join(this.productionRunSystemRoot, "LOGS", "CORE"),
       environment: {
         ...runtimeEnvironment,
         RUNCONTAINER_ROOT: this.localRunRoot,

@@ -16,6 +16,10 @@ export function createLogger(moduleName: string) {
       logger.error(message, meta);
     },
 
+    critical(message: string, meta: Record<string, unknown> = {}) {
+      logger.log("critical", message, { ...meta, severity: "critical" });
+    },
+
     debug(message: string, meta: Record<string, unknown> = {}) {
       logger.debug(message, meta);
     }

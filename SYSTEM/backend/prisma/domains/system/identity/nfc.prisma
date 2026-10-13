@@ -1,0 +1,18 @@
+// NFC identifies a member, not a financial account and not an MFA proof.
+model SecurityNfcTag {
+  id             String   @id @default(cuid())
+  memberId       String
+  member         MemberProfile @relation(fields: [memberId], references: [id], onDelete: Cascade)
+  loginAccountId String?
+  loginAccount   Account? @relation(fields: [loginAccountId], references: [id], onDelete: SetNull)
+  codeHash       String   @unique
+  kind           String   @default("NFC")
+  label          String
+  createdBy      String
+  createdAt      DateTime @default(now())
+  revokedAt      DateTime?
+  revokedBy      String?
+  lastUsedAt     DateTime?
+
+  @@index([memberId, revokedAt])
+}

@@ -2,6 +2,23 @@
 // Core IDs are stored as scalar references so the optional app schema does not
 // force reverse relations into the Bonni Core schema.
 
+model StueberlPersonAddress {
+  id         String   @id @default(cuid())
+  personId   String
+  type       String   @default("PRIMARY")
+  street     String?
+  houseNo    String?
+  postalCode String?
+  city       String?
+  country    String?
+  note       String?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@unique([personId, type])
+  @@index([personId])
+}
+
 model StueberlMemberDetails {
   memberProfileId      String   @id
   socialCategory       String?
@@ -22,6 +39,119 @@ model StueberlMemberAccount {
   lastSettledAt DateTime?
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
+}
+
+// Persistente, app-eigene Projektion der an Kontor übergebenen Forderung.
+// Geldbeträge sind an dieser App-Grenze ausnahmslos ganzzahlige Centwerte.
+model StueberlKontorReceivable {
+  reversedAmountCents      Int @default(0)
+  creditAppliedCents       Int @default(0)
+  id                       String   @id @default(cuid())
+  receivableExternalId     String   @unique
+  correlationId            String   @unique
+  tabSessionId             String   @unique
+  tabSessionGroupId        String
+  financeSessionId         String   @unique
+  memberId                 String
+  amountCents              Int
+  currency                 String   @default("EUR")
+  description              String
+  snapshotHash             String
+  bookingCount             Int
+  contractVersion          Int      @default(1)
+  lineItemsJson            Json?
+  settlementOwner          String   @default("KONTOR")
+  releasedAt               DateTime
+  status                   String   @default("RELEASED")
+  kontorReceivableId       String?
+  receivedAmountCents      Int      @default(0)
+  appliedAmountCents       Int      @default(0)
+  openAmountCents          Int
+  creditGeneratedCents     Int      @default(0)
+  memberCreditBalanceCents Int      @default(0)
+  memberCreditRevision     Int      @default(0)
+  settlementRevision       Int      @default(0)
+  settlementPayloadHash    String?
+  lastPaymentMethod        String?
+  lastPaymentExternalId    String?
+  receivableMessageId      String?
+  lastSettlementMessageId  String?
+  lastSettlementAt         DateTime?
+  createdAt                DateTime @default(now())
+  updatedAt                DateTime @updatedAt
+
+  @@index([memberId, status])
+  @@index([tabSessionGroupId])
+  @@index([settlementOwner, status, lastSettlementAt])
+}
+
+// Ein Barzahlungsereignis wird vor dem Publish dauerhaft gespeichert. Der
+// paymentExternalId kommt vom Bedien-Client und macht einen HTTP-Retry sicher.
+model StueberlKontorCashPayment {
+  expectedAccountRevision Int @default(1)
+  id                   String   @id @default(cuid())
+  paymentExternalId    String   @unique
+  receivableExternalId String   @unique
+  memberId             String
+  amountCents          Int
+  currency             String   @default("EUR")
+  paidAt               DateTime
+  messageId            String?
+  createdByAccountId   String?
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  @@index([memberId, paidAt])
+}
+
+// Lokale Outbox: Der fachliche Commit darf nicht davon abhängen, ob der Core-
+// Transport im selben HTTP-Aufruf verfügbar ist.
+model StueberlKontorOutboxMessage {
+  id               String   @id @default(cuid())
+  protocol         String
+  correlationId    String
+  idempotencyKey   String   @unique
+  sourceRecordId   String
+  payload          Json
+  status           String   @default("PENDING")
+  messageId        String?
+  attemptCount     Int      @default(0)
+  lastAttemptAt    DateTime?
+  publishedAt      DateTime?
+  lastErrorCode    String?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  @@index([status, createdAt])
+  @@index([correlationId, createdAt])
+}
+
+// Jede Core-Nachricht wird genau einmal protokolliert. Eine neue Nachricht
+// mit einer älteren Settlement-Revision wird angenommen, aber nicht projiziert.
+model StueberlKontorInboxMessage {
+  messageId            String   @id
+  protocol             String
+  correlationId        String
+  payloadHash          String
+  receivableExternalId String
+  settlementRevision   Int
+  outcome              String
+  processedAt          DateTime @default(now())
+
+  @@index([receivableExternalId, settlementRevision])
+}
+
+// Kontor ist die Geld-Autorität. Stüberl hält nur einen positiven Read-Model-
+// Kontostand für seine Oberfläche; negative Guthabenwerte sind unzulässig.
+model StueberlKontorMemberCredit {
+  memberId             String   @id
+  balanceCents         Int      @default(0)
+  memberCreditRevision Int      @default(0)
+  settlementRevision   Int      @default(0)
+  kontorReceivableId   String?
+  sourceMessageId      String?
+  projectedAt          DateTime @default(now())
+  updatedAt            DateTime @updatedAt
 }
 
 // Instance-wide Stueberl UI settings must not live in Bonni Core.

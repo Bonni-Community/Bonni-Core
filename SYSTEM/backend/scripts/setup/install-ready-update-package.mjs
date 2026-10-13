@@ -115,10 +115,7 @@ function canonicalTimestamp(value, code = "READY_UPDATE_INSTALL_TIME_INVALID") {
 }
 
 function manifestView(manifest) {
-  if (
-    !new Set(["bonni.update/v2", "bonni.update/v3"]).has(manifest?.schema)
-    || !isPlainObject(manifest.signed)
-  ) {
+  if (manifest?.schema !== "bonni.update/v2" || !isPlainObject(manifest.signed)) {
     fail("READY_UPDATE_INSTALL_MANIFEST_V2_REQUIRED");
   }
   const { signed } = manifest;
@@ -132,36 +129,13 @@ function manifestView(manifest) {
   const unsupported = components.filter((component) => !SUPPORTED_COMPONENT_SET.has(component));
   if (unsupported.length) fail("READY_UPDATE_INSTALL_COMPONENT_UNSUPPORTED", unsupported.join(","));
   return {
-    schema: manifest.schema,
     updateId: signed.updateId,
     channel: signed.channel,
     releaseSequence: signed.releaseSequence,
     createdAt: signed.createdAt,
     payloads: signed.payloads,
     components,
-    apps: manifest.schema === "bonni.update/v3"
-      ? (signed.apps || []).map((app) => app.id)
-      : (signed.includedApps || []),
   };
-}
-
-async function assertAppRegistryTransition(productRoot, manifest, view) {
-  if (view.schema !== "bonni.update/v2" || !view.components.includes("SYSTEM")) return;
-  const systemPayload = manifest.signed.payloads.find((payload) => payload.component === "SYSTEM");
-  if (!systemPayload || !Array.isArray(systemPayload.files)) {
-    fail("READY_UPDATE_INSTALL_V2_SYSTEM_PAYLOAD_INVALID");
-  }
-  const embedsUnboundRegistry = systemPayload.files.some((entry) => (
-    typeof entry?.path === "string"
-    && entry.path.split("/", 1)[0].toLowerCase() === "app-registry.json"
-  ));
-  if (embedsUnboundRegistry) {
-    fail("READY_UPDATE_INSTALL_V2_APP_REGISTRY_FORBIDDEN");
-  }
-  const installedRegistry = path.join(productRoot, "SYSTEM", "APP-REGISTRY.json");
-  if (await lstatOrNull(installedRegistry)) {
-    fail("READY_UPDATE_INSTALL_V2_SYSTEM_AFTER_APP_REGISTRY_FORBIDDEN");
-  }
 }
 
 function runtimePlatformIdentity(override) {
@@ -453,7 +427,7 @@ async function preserveSystemData(liveSystem, candidateSystem) {
   await assertPlainDirectory(liveSystem);
   for (const entry of (await fs.readdir(liveSystem, { withFileTypes: true }))
     .sort((left, right) => bytewiseCompare(left.name, right.name))) {
-    if (["backend", "frontend", "app", "APP-REGISTRY.json", ".bonni-source-update"].includes(entry.name)) continue;
+    if (["backend", "frontend", ".bonni-source-update"].includes(entry.name)) continue;
     await copyTreeStrict(
       path.join(liveSystem, entry.name),
       path.join(candidateSystem, entry.name),
@@ -548,11 +522,7 @@ function assertVerifiedMode(verified, policy) {
     if (view.channel !== "stable" || verified.receipt?.source?.authenticated !== true) {
       fail("READY_UPDATE_INSTALL_PRODUCTION_AUTHENTICATION_REQUIRED");
     }
-    const required = new Set([
-      "RELEASE",
-      ...view.components,
-      ...view.apps.map((app) => `APP:${app}`),
-    ]);
+    const required = new Set(["RELEASE", ...view.components]);
     const observed = new Set(verified.receipt?.source?.verifiedScopes || []);
     for (const scope of required) {
       if (!observed.has(scope)) fail("READY_UPDATE_INSTALL_PRODUCTION_SCOPE_REQUIRED", scope);
@@ -1206,7 +1176,7 @@ function developerBasePaths(productRoot, journal) {
   if (!VERSION_DIRECTORY.test(journal.developerBase.version || "")) {
     fail("READY_UPDATE_INSTALL_DEVELOPER_BASE_VERSION_INVALID");
   }
-  const developmentRoot = path.join(productRoot, "RUN_DEV");
+  const developmentRoot = path.join(productRoot, "DEVELOPMENT");
   const basesRoot = path.join(developmentRoot, "BASES");
   return {
     developmentRoot,
@@ -1220,7 +1190,7 @@ function developerBasePaths(productRoot, journal) {
 }
 
 async function ensureDeveloperBasesRoot(productRoot) {
-  const developmentRoot = path.join(productRoot, "RUN_DEV");
+  const developmentRoot = path.join(productRoot, "DEVELOPMENT");
   if (!await exists(developmentRoot)) await fs.mkdir(developmentRoot, { mode: 0o700 });
   await assertSafePathChain(productRoot, developmentRoot, "directory");
   const basesRoot = path.join(developmentRoot, "BASES");
@@ -1397,7 +1367,6 @@ async function reverifyBoundReady({ productRoot, journal, policy, runtime }) {
     verificationPolicy: policy,
   });
   const view = assertPayloadPlatforms(assertVerifiedMode(verified, policy), runtime);
-  await assertAppRegistryTransition(productRoot, verified.manifest, view);
   assertBinding(
     bindingFromVerified(verified, view, preparedReceiptFile, productRoot),
     journal.binding,
@@ -1882,7 +1851,6 @@ export async function installReadyUpdatePackage({
       verificationPolicy: policy,
     });
     const view = assertPayloadPlatforms(assertVerifiedMode(verified, policy), runtime);
-    await assertAppRegistryTransition(resolvedProductRoot, verified.manifest, view);
     const binding = bindingFromVerified(
       verified,
       view,
@@ -2028,7 +1996,7 @@ function usage() {
     "Entwicklung (nur NODE_ENV=development/test und lokales unsigned development-v2):",
     "  zusaetzlich --development-local",
     "",
-    "Produktiv werden ausschliesslich signierte bonni.update/v2- oder bonni.update/v3-stable-Pakete",
+    "Produktiv werden ausschliesslich signierte bonni.update/v2 stable-Pakete",
     "mit RELEASE- und komponentenspezifischen Vertrauenssignaturen akzeptiert.",
     "LINUX und CONTAINER werden in dieser Version sicher abgelehnt.",
   ].join("\n");

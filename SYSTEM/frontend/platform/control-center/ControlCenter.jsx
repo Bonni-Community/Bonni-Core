@@ -139,8 +139,24 @@ export default function ControlCenter({
     return modules.find((module) => module.key === key);
   }
 
+  function openDiagnostics(tab = "log") {
+    const target = findModuleByKey("diagnostics");
+    if (!target) return;
+
+    setActiveModuleKey(target.key);
+    setActiveNavigationKey(target.key);
+    setMessage("");
+    const suffix = tab === "log" ? "" : `?tab=${encodeURIComponent(tab)}`;
+    window.history.replaceState(null, "", `/control-center/diagnostics${suffix}`);
+  }
+
   function handleNavigate(item) {
     if (!item) return;
+
+    if (item.key === "terminal") {
+      openDiagnostics("terminal");
+      return;
+    }
 
     if (item.key === "changelog") {
       setActiveModuleKey("");
@@ -276,6 +292,7 @@ export default function ControlCenter({
           modules={modules}
           overview={overview}
           onOpenModule={(module) => openModule(module)}
+          onOpenDiagnostics={openDiagnostics}
         />
       )}
     </ControlCenterShell>

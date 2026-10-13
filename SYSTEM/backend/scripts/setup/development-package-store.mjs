@@ -1,17 +1,8 @@
-import { resolveDevelopmentBase } from "./development-base.mjs";
 import {
   createHash,
   createHmac,
   randomBytes,
 } from "node:crypto";
-import { randomUUID } from "node:crypto";
-import { createFilePreview, changedTreeFiles } from "./development-preview.mjs";
-import {
-  detectDevelopmentBranchConflicts,
-  normalizeDevelopmentMergeMetadata,
-  normalizeDevelopmentMetadata,
-  stableDevelopmentVersioningJson,
-} from "./development-versioning.mjs";
 import { createReadStream, constants as fsConstants } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -24,16 +15,11 @@ import {
 
 export const DEVELOPMENT_REVIEW_SCHEMA = "bonni.development-review/v1";
 export const DEVELOPMENT_CHAIN_SCHEMA = "bonni.development-chain/v1";
-export const DEVELOPMENT_CLEANUP_PLAN_SCHEMA = "bonni.development-cleanup-plan/v2";
+export const DEVELOPMENT_CLEANUP_PLAN_SCHEMA = "bonni.development-cleanup-plan/v1";
 export const DEVELOPMENT_TRASH_SCHEMA = "bonni.development-trash/v1";
 export const DEVELOPMENT_DELETION_SCHEMA = "bonni.development-package-deletion/v1";
 export const DEVELOPMENT_TEST_READY_SCHEMA = "bonni.development-test-ready/v1";
-export const DEVELOPMENT_TEST_SET_READY_SCHEMA = "bonni.development-test-set-ready/v2";
-export const DEVELOPMENT_ACTIVE_TEST_SELECTION_SCHEMA = "bonni.development-active-test-selection/v1";
 export const DEVELOPMENT_REVIEW_TRANSACTION_SCHEMA = "bonni.development-review-transaction/v1";
-export const DEVELOPMENT_CANDIDATE_IDENTITY_SCHEMA = "bonni.development-candidate-identity/v1";
-export const DEVELOPMENT_STORE_ROOT_NAME = "RUN_DEV";
-const LEGACY_DEVELOPMENT_STORE_ROOT_NAME = "DEVELOPMENT";
 
 export const DEVELOPMENT_REVIEW_STATUSES = Object.freeze([
   "pending",
@@ -67,8 +53,6 @@ const MAXIMUM_NOTE_BYTES = 16 * 1024;
 const MAXIMUM_REVIEWER_BYTES = 512;
 const MINIMUM_SIGNING_KEY_BYTES = 32;
 const DEFAULT_TRASH_RETENTION_MS = 14 * 24 * 60 * 60_000;
-const MAXIMUM_STORED_TEST_SET_TREES = 16;
-const TEST_SET_DIRECTORY_PATTERN = /^test-set--([a-f0-9]{64})$/u;
 const WINDOWS_DIRECTORY_SYNC_UNSUPPORTED = new Set([
   "EACCES",
   "EBADF",
@@ -119,82 +103,6 @@ function sha256File(file) {
     input.on("data", (chunk) => hash.update(chunk));
     input.on("end", () => resolve(hash.digest("hex")));
   });
-}
-
-async function isEmptyLaborCatalogRoot(directory) {
-  const state = await lstatOrNull(directory);
-  if (!state) return true;
-  if (!state.isDirectory() || state.isSymbolicLink()) return false;
-  for (const name of await fs.readdir(directory)) {
-    if (name === ".catalog-key") continue;
-    if (name !== "CAS" && name !== "RECEIPTS") return false;
-    const child = path.join(directory, name);
-    const childState = await lstatOrNull(child);
-    if (!childState?.isDirectory() || childState.isSymbolicLink()) return false;
-    if ((await fs.readdir(child)).length) return false;
-  }
-  return true;
-}
-
-async function migrateLegacyDevelopmentRoot(productRoot, targetRoot) {
-  const legacyRoot = path.join(productRoot, "DEVELOPMENT");
-  const legacyState = await lstatOrNull(legacyRoot);
-  if (!legacyState) return;
-  if (!legacyState.isDirectory() || legacyState.isSymbolicLink()) {
-    fail("DEVELOPMENT_LEGACY_ROOT_UNSAFE");
-  }
-  await assertNoSymlinkComponents(productRoot);
-  const targetState = await lstatOrNull(targetRoot);
-  if (!targetState) {
-    await fs.rename(legacyRoot, targetRoot);
-    return;
-  }
-  if (!targetState.isDirectory() || targetState.isSymbolicLink()) {
-    fail("DEVELOPMENT_RUN_DEV_ROOT_UNSAFE");
-  }
-
-  // v67 could initialize the new catalog before this migration ran. If it
-  // contains only its freshly generated key and empty data directories, keep
-  // the old catalog key so existing signed Labor receipts remain readable.
-  const legacyCatalog = path.join(legacyRoot, "LABOR-SOURCES");
-  const targetCatalog = path.join(targetRoot, "LABOR-SOURCES");
-  const legacyCatalogKey = path.join(legacyCatalog, ".catalog-key");
-  const targetCatalogKey = path.join(targetCatalog, ".catalog-key");
-  if (await lstatOrNull(legacyCatalogKey) && await lstatOrNull(targetCatalogKey)
-    && await isEmptyLaborCatalogRoot(targetCatalog)) {
-    await fs.unlink(targetCatalogKey);
-  }
-
-  const moveEntry = async (source, target) => {
-    const sourceInfo = await lstatOrNull(source);
-    if (!sourceInfo) return;
-    if (sourceInfo.isSymbolicLink()) fail("DEVELOPMENT_LEGACY_ENTRY_UNSAFE", path.basename(source));
-    const targetInfo = await lstatOrNull(target);
-    if (!targetInfo) {
-      await fs.rename(source, target);
-      return;
-    }
-    if (targetInfo.isSymbolicLink()) fail("DEVELOPMENT_RUN_DEV_ENTRY_UNSAFE", path.basename(target));
-    if (sourceInfo.isDirectory() && targetInfo.isDirectory()) {
-      for (const name of await fs.readdir(source)) {
-        await moveEntry(path.join(source, name), path.join(target, name));
-      }
-      await fs.rmdir(source);
-      return;
-    }
-    if (sourceInfo.isFile() && targetInfo.isFile()
-      && sourceInfo.size === targetInfo.size
-      && await sha256File(source) === await sha256File(target)) {
-      await fs.unlink(source);
-      return;
-    }
-    fail("DEVELOPMENT_LEGACY_MIGRATION_CONFLICT", path.basename(source));
-  };
-
-  for (const name of await fs.readdir(legacyRoot)) {
-    await moveEntry(path.join(legacyRoot, name), path.join(targetRoot, name));
-  }
-  await fs.rmdir(legacyRoot);
 }
 
 function asSigningKey(value) {
@@ -339,28 +247,6 @@ function sameRequires(left, right) {
   return stableStringify(normalizeRequires(left)) === stableStringify(normalizeRequires(right));
 }
 
-function normalizeStoredDevelopment(value, label = "development") {
-  if (value === undefined || value === null) return undefined;
-  try {
-    return normalizeDevelopmentMetadata({
-      ...value,
-      targetVersion: value.displayVersion,
-      requires: value.dependencies || [],
-      dependencies: value.dependencies || [],
-    }, { requireChangedFiles: true });
-  } catch (error) {
-    fail(error?.code || "DEVELOPMENT_VERSION_METADATA_INVALID", `${label}:${error?.detail || error?.message || "invalid"}`);
-  }
-}
-
-function sameStoredDevelopment(left, right) {
-  if (left === undefined || left === null || right === undefined || right === null) {
-    return left === right;
-  }
-  return stableDevelopmentVersioningJson(normalizeStoredDevelopment(left))
-    === stableDevelopmentVersioningJson(normalizeStoredDevelopment(right));
-}
-
 function portableRelative(root, target) {
   const relative = path.relative(path.resolve(root), path.resolve(target));
   if (!relative || relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
@@ -389,15 +275,6 @@ function containedPath(root, relativePath) {
 async function lstatOrNull(target) {
   try {
     return await fs.lstat(target);
-  } catch (error) {
-    if (error?.code === "ENOENT") return null;
-    throw error;
-  }
-}
-
-async function lstatBigIntOrNull(target) {
-  try {
-    return await fs.lstat(target, { bigint: true });
   } catch (error) {
     if (error?.code === "ENOENT") return null;
     throw error;
@@ -448,93 +325,6 @@ async function assertRegularFile(target, code, { expectedSize = undefined } = {}
   return state;
 }
 
-function escapeRegularExpression(value) {
-  return value.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
-}
-
-function internalPublishTemporaryPattern(target) {
-  return new RegExp(
-    `^\\.${escapeRegularExpression(path.basename(target))}\\.[0-9]+\\.[a-f0-9]{16}\\.tmp$`,
-    "u",
-  );
-}
-
-async function recoverInternalPublishAlias(target) {
-  await assertNoSymlinkComponents(target);
-  const state = await lstatBigIntOrNull(target);
-  if (!state) return false;
-  if (!state.isFile() || state.isSymbolicLink()) fail("DEVELOPMENT_FILE_UNSAFE", target);
-  if (state.nlink === 1n) return false;
-  if (state.nlink !== 2n) fail("DEVELOPMENT_FILE_UNSAFE", target);
-  if (state.ino === 0n) fail("DEVELOPMENT_FILE_UNSAFE", target);
-
-  const directory = path.dirname(target);
-  await assertPlainDirectory(directory);
-  const temporaryPattern = internalPublishTemporaryPattern(target);
-  const aliases = [];
-  for (const name of await fs.readdir(directory)) {
-    if (!temporaryPattern.test(name)) continue;
-    const candidate = path.join(directory, name);
-    const candidateState = await lstatBigIntOrNull(candidate);
-    if (!candidateState
-      || !candidateState.isFile()
-      || candidateState.isSymbolicLink()
-      || candidateState.dev !== state.dev
-      || candidateState.ino !== state.ino
-      || candidateState.nlink !== 2n) continue;
-    aliases.push(candidate);
-  }
-  if (aliases.length === 0) {
-    const recoveredByPeer = await lstatBigIntOrNull(target);
-    if (recoveredByPeer
-      && recoveredByPeer.isFile()
-      && !recoveredByPeer.isSymbolicLink()
-      && recoveredByPeer.nlink === 1n
-      && recoveredByPeer.dev === state.dev
-      && recoveredByPeer.ino === state.ino) return true;
-  }
-  if (aliases.length !== 1) fail("DEVELOPMENT_FILE_UNSAFE", target);
-  const targetBeforeUnlink = await lstatBigIntOrNull(target);
-  const aliasBeforeUnlink = await lstatBigIntOrNull(aliases[0]);
-  if (targetBeforeUnlink
-    && targetBeforeUnlink.isFile()
-    && !targetBeforeUnlink.isSymbolicLink()
-    && targetBeforeUnlink.nlink === 1n
-    && targetBeforeUnlink.dev === state.dev
-    && targetBeforeUnlink.ino === state.ino
-    && !aliasBeforeUnlink) return true;
-  if (!targetBeforeUnlink
-    || !aliasBeforeUnlink
-    || !targetBeforeUnlink.isFile()
-    || targetBeforeUnlink.isSymbolicLink()
-    || !aliasBeforeUnlink.isFile()
-    || aliasBeforeUnlink.isSymbolicLink()
-    || targetBeforeUnlink.nlink !== 2n
-    || aliasBeforeUnlink.nlink !== 2n
-    || targetBeforeUnlink.dev !== state.dev
-    || targetBeforeUnlink.ino !== state.ino
-    || aliasBeforeUnlink.dev !== state.dev
-    || aliasBeforeUnlink.ino !== state.ino) {
-    fail("DEVELOPMENT_FILE_UNSAFE", target);
-  }
-  try {
-    await fs.unlink(aliases[0]);
-  } catch (error) {
-    if (error?.code !== "ENOENT") throw error;
-  }
-  await syncDirectory(directory);
-  const recovered = await lstatBigIntOrNull(target);
-  if (!recovered
-    || !recovered.isFile()
-    || recovered.isSymbolicLink()
-    || recovered.nlink !== 1n
-    || recovered.dev !== state.dev
-    || recovered.ino !== state.ino) {
-    fail("DEVELOPMENT_FILE_UNSAFE", target);
-  }
-  return true;
-}
-
 async function syncDirectory(directory) {
   let handle;
   try {
@@ -568,31 +358,6 @@ async function writeExclusiveSynced(target, contents, mode = 0o600) {
 
 async function writeJsonExclusive(target, value) {
   await writeExclusiveSynced(target, `${JSON.stringify(value, null, 2)}\n`);
-}
-
-async function writeJsonExclusiveAtomic(target, value) {
-  const directory = path.dirname(target);
-  await assertPlainDirectory(directory);
-  const temporary = path.join(
-    directory,
-    `.${path.basename(target)}.${process.pid}.${randomBytes(8).toString("hex")}.tmp`,
-  );
-  await writeJsonExclusive(temporary, value);
-  try {
-    await fs.link(temporary, target);
-    try {
-      await fs.unlink(temporary);
-    } catch (error) {
-      if (error?.code !== "ENOENT") throw error;
-    }
-    await syncDirectory(directory);
-  } catch (error) {
-    await fs.unlink(temporary).catch(() => undefined);
-    if (error?.code === "EEXIST") {
-      await recoverInternalPublishAlias(target);
-    }
-    throw error;
-  }
 }
 
 async function writeJsonAtomic(target, value) {
@@ -632,83 +397,9 @@ function receiptFileName(candidateId, packageSha256, sequence, status) {
   return `${candidateId}--${packageSha256}--${String(sequence).padStart(4, "0")}-${status}.json`;
 }
 
-function candidateIdentityFile(paths, candidateId) {
-  return path.join(paths.receipts, `.candidate-identity--${assertCandidateId(candidateId)}.json`);
-}
-
-function createCandidateIdentity({ candidateId, packageSha256 }, key) {
-  return signedEnvelope({
-    schema: DEVELOPMENT_CANDIDATE_IDENTITY_SCHEMA,
-    candidateId: assertCandidateId(candidateId),
-    packageSha256: assertHash(packageSha256, "DEVELOPMENT_PACKAGE_HASH_INVALID"),
-  }, key, "identityMac", "identitySha256");
-}
-
-function parseCandidateIdentity(raw, key) {
-  assertExactKeys(
-    raw,
-    new Set([
-      "schema", "candidateId", "packageSha256", "identityMac", "identitySha256",
-    ]),
-    "DEVELOPMENT_CANDIDATE_IDENTITY_INVALID",
-    "fields",
-  );
-  const core = verifySignedEnvelope(
-    raw,
-    key,
-    "identityMac",
-    "identitySha256",
-    "DEVELOPMENT_CANDIDATE_IDENTITY_AUTHENTICATION_FAILED",
-  );
-  if (core.schema !== DEVELOPMENT_CANDIDATE_IDENTITY_SCHEMA) {
-    fail("DEVELOPMENT_CANDIDATE_IDENTITY_SCHEMA_UNSUPPORTED");
-  }
-  const recreated = createCandidateIdentity(core, key);
-  if (stableStringify(recreated) !== stableStringify(raw)) {
-    fail("DEVELOPMENT_CANDIDATE_IDENTITY_INVALID");
-  }
-  return recreated;
-}
-
-async function readCandidateIdentityWithRetry(file, key) {
-  let previousError;
-  for (let attempt = 0; attempt < 50; attempt += 1) {
-    try {
-      await recoverInternalPublishAlias(file);
-      return parseCandidateIdentity(
-        await readSmallJson(file, "DEVELOPMENT_CANDIDATE_IDENTITY_INVALID"),
-        key,
-      );
-    } catch (error) {
-      previousError = error;
-      if (attempt === 49) break;
-      await new Promise((resolve) => setTimeout(resolve, 20));
-    }
-  }
-  throw previousError;
-}
-
-async function reserveCandidateIdentity(paths, key, candidateId, packageSha256) {
-  const expected = createCandidateIdentity({ candidateId, packageSha256 }, key);
-  const file = candidateIdentityFile(paths, candidateId);
-  let created = false;
-  try {
-    await writeJsonExclusiveAtomic(file, expected);
-    created = true;
-  } catch (error) {
-    if (error?.code !== "EEXIST") throw error;
-  }
-  const actual = created ? expected : await readCandidateIdentityWithRetry(file, key);
-  if (actual.candidateId !== expected.candidateId
-    || actual.packageSha256 !== expected.packageSha256) {
-    fail("DEVELOPMENT_CANDIDATE_ID_COLLISION", candidateId);
-  }
-  return { identity: actual, created };
-}
-
 export function resolveDevelopmentStorePaths(productRoot) {
   if (typeof productRoot !== "string" || !productRoot.trim()) fail("DEVELOPMENT_PRODUCT_ROOT_REQUIRED");
-  const root = path.resolve(productRoot, DEVELOPMENT_STORE_ROOT_NAME);
+  const root = path.resolve(productRoot, "DEVELOPMENT");
   const packages = path.join(root, "PACKAGES");
   return Object.freeze({
     productRoot: path.resolve(productRoot),
@@ -717,7 +408,6 @@ export function resolveDevelopmentStorePaths(productRoot) {
     previous: path.join(root, "PREVIOUS"),
     bases: path.join(root, "BASES"),
     tests: path.join(root, "TESTS"),
-    activeTestSelection: path.join(root, "TESTS", "ACTIVE-TEST-SELECTION.json"),
     packages,
     packageDirectories: Object.freeze(Object.fromEntries(
       Object.entries(STATUS_DIRECTORY_NAMES).map(([status, directory]) => [status, path.join(packages, directory)]),
@@ -734,8 +424,7 @@ export function resolveDevelopmentStorePaths(productRoot) {
 export async function initializeDevelopmentStore({ productRoot }) {
   const paths = resolveDevelopmentStorePaths(productRoot);
   await assertPlainDirectory(paths.productRoot, "DEVELOPMENT_PRODUCT_ROOT_MISSING");
-  await migrateLegacyDevelopmentRoot(paths.productRoot, paths.root);
-  await ensurePlainDirectory(paths.productRoot, DEVELOPMENT_STORE_ROOT_NAME);
+  await ensurePlainDirectory(paths.productRoot, "DEVELOPMENT");
   await ensurePlainDirectory(paths.root, "BASES");
   await ensurePlainDirectory(paths.root, "TESTS");
   await ensurePlainDirectory(paths.root, "PACKAGES");
@@ -804,9 +493,8 @@ function receiptCore({
   reviewedAt,
   reviewedBy,
   note,
-  development = undefined,
 }) {
-  const core = {
+  return {
     schema: DEVELOPMENT_REVIEW_SCHEMA,
     candidateId: assertCandidateId(candidateId),
     packageSha256: assertHash(packageSha256, "DEVELOPMENT_PACKAGE_HASH_INVALID"),
@@ -822,9 +510,6 @@ function receiptCore({
     reviewedBy,
     note,
   };
-  const normalizedDevelopment = normalizeStoredDevelopment(development);
-  if (normalizedDevelopment !== undefined) core.development = normalizedDevelopment;
-  return core;
 }
 
 function createReceipt(input, key) {
@@ -855,15 +540,13 @@ function createReceipt(input, key) {
 }
 
 function parseReceipt(raw, key) {
-  const baseFields = new Set([
-    "schema", "candidateId", "packageSha256", "packageSizeBytes", "storedName", "status",
-    "sequence", "previousReceiptSha256", "manifestSha256", "resultingTreeSha256", "requires",
-    "reviewedAt", "reviewedBy", "note", "receiptMac", "receiptSha256",
-  ]);
-  const versionedFields = new Set([...baseFields, "development"]);
   assertExactKeys(
     raw,
-    Object.hasOwn(raw, "development") ? versionedFields : baseFields,
+    new Set([
+      "schema", "candidateId", "packageSha256", "packageSizeBytes", "storedName", "status",
+      "sequence", "previousReceiptSha256", "manifestSha256", "resultingTreeSha256", "requires",
+      "reviewedAt", "reviewedBy", "note", "receiptMac", "receiptSha256",
+    ]),
     "DEVELOPMENT_RECEIPT_INVALID",
     "fields",
   );
@@ -889,10 +572,8 @@ async function readReceiptFiles(paths, key) {
     if (DELETION_FILE_PATTERN.test(name) || TEST_READY_FILE_PATTERN.test(name)) continue;
     const match = RECEIPT_FILE_PATTERN.exec(name);
     if (!match) fail("DEVELOPMENT_RECEIPT_FILE_UNRECOGNIZED", name);
-    const receiptPath = path.join(paths.receipts, name);
-    await recoverInternalPublishAlias(receiptPath);
     const receipt = parseReceipt(
-      await readSmallJson(receiptPath, "DEVELOPMENT_RECEIPT_INVALID"),
+      await readSmallJson(path.join(paths.receipts, name), "DEVELOPMENT_RECEIPT_INVALID"),
       key,
     );
     if (
@@ -969,7 +650,6 @@ async function packageLocations(paths, storedName) {
 }
 
 async function verifyPackageAtLocation(location, receipt) {
-  await recoverInternalPublishAlias(location.path);
   await assertRegularFile(location.path, "DEVELOPMENT_PACKAGE_MISSING", {
     expectedSize: receipt.packageSizeBytes,
   });
@@ -1021,35 +701,11 @@ export async function readVerifiedDevelopmentReceipt({
   };
 }
 
-async function waitForExactStoredPackage(target, expectedHash, expectedSize) {
-  let previousError;
-  for (let attempt = 0; attempt < 50; attempt += 1) {
-    try {
-      await recoverInternalPublishAlias(target);
-      await assertRegularFile(target, "DEVELOPMENT_PACKAGE_MISSING", {
-        expectedSize,
-      });
-      if (await sha256File(target) !== expectedHash) {
-        fail("DEVELOPMENT_PACKAGE_HASH_MISMATCH", target);
-      }
-      return;
-    } catch (error) {
-      previousError = error;
-      if (attempt === 49) break;
-      await new Promise((resolve) => setTimeout(resolve, 20));
-    }
-  }
-  throw previousError;
-}
-
 async function copyPackageAtomically(source, target, expectedHash, expectedSize) {
   await assertRegularFile(source, "DEVELOPMENT_SOURCE_PACKAGE_MISSING", { expectedSize });
   const targetDirectory = path.dirname(target);
   await assertPlainDirectory(targetDirectory);
-  if (await lstatOrNull(target)) {
-    await waitForExactStoredPackage(target, expectedHash, expectedSize);
-    return { published: false };
-  }
+  if (await lstatOrNull(target)) fail("DEVELOPMENT_PACKAGE_ALREADY_EXISTS", target);
   const temporary = path.join(
     targetDirectory,
     `.${path.basename(target)}.${process.pid}.${randomBytes(8).toString("hex")}.tmp`,
@@ -1060,22 +716,10 @@ async function copyPackageAtomically(source, target, expectedHash, expectedSize)
     if (await sha256File(temporary) !== expectedHash) fail("DEVELOPMENT_SOURCE_PACKAGE_CHANGED");
     const handle = await fs.open(temporary, "r");
     try { await handle.sync(); } finally { await handle.close(); }
-    await fs.link(temporary, target);
-    try {
-      await fs.unlink(temporary);
-    } catch (error) {
-      if (error?.code !== "ENOENT") throw error;
-    }
-    await recoverInternalPublishAlias(target);
-    await waitForExactStoredPackage(target, expectedHash, expectedSize);
+    await fs.rename(temporary, target);
     await syncDirectory(targetDirectory);
-    return { published: true };
   } catch (error) {
     await fs.unlink(temporary).catch(() => undefined);
-    if (error?.code === "EEXIST") {
-      await waitForExactStoredPackage(target, expectedHash, expectedSize);
-      return { published: false };
-    }
     throw error;
   }
 }
@@ -1083,7 +727,7 @@ async function copyPackageAtomically(source, target, expectedHash, expectedSize)
 export async function registerDevelopmentPackage({
   productRoot,
   zipPath,
-  candidateId = undefined,
+  candidateId,
   manifestSha256 = undefined,
   resultingTreeSha256 = undefined,
   requires = undefined,
@@ -1095,13 +739,11 @@ export async function registerDevelopmentPackage({
 }) {
   const paths = await initializeDevelopmentStore({ productRoot });
   const key = await resolveKey({ productRoot, receiptSigningKey, keyFile });
+  const normalizedId = assertCandidateId(candidateId);
   if (path.extname(zipPath).toLowerCase() !== ".zip") fail("DEVELOPMENT_PACKAGE_EXTENSION_INVALID");
   const sourceState = await assertRegularFile(path.resolve(zipPath), "DEVELOPMENT_SOURCE_PACKAGE_MISSING");
   if (sourceState.size <= 0) fail("DEVELOPMENT_PACKAGE_SIZE_INVALID");
   const descriptor = await readDevelopmentPackageDescriptor(path.resolve(zipPath));
-  const normalizedId = candidateId === undefined
-    ? assertCandidateId(descriptor.candidateId)
-    : assertCandidateId(candidateId);
   let packageSha256;
   let verifiedDescriptor;
   try {
@@ -1110,9 +752,6 @@ export async function registerDevelopmentPackage({
       manifestSha256: descriptor.manifestSha256,
       resultingTreeSha256: descriptor.manifest.resultingTreeSha256,
       requires: descriptor.manifest.requires,
-      ...(descriptor.manifest.development
-        ? { development: descriptor.manifest.development }
-        : {}),
     };
     if (descriptor.candidateId !== normalizedId) {
       fail("DEVELOPMENT_PACKAGE_CANDIDATE_ID_MISMATCH", `${normalizedId}:${descriptor.candidateId}`);
@@ -1138,17 +777,13 @@ export async function registerDevelopmentPackage({
   if (sameCandidate.some((group) => group[0].packageSha256 !== packageSha256)) {
     fail("DEVELOPMENT_CANDIDATE_ID_COLLISION", normalizedId);
   }
-  await reserveCandidateIdentity(paths, key, normalizedId, packageSha256);
   if (sameCandidate.length) {
-    return {
-      ...(await readVerifiedDevelopmentReceipt({
-        productRoot,
-        candidateId: normalizedId,
-        packageSha256,
-        receiptSigningKey: key,
-      })),
-      idempotent: true,
-    };
+    return readVerifiedDevelopmentReceipt({
+      productRoot,
+      candidateId: normalizedId,
+      packageSha256,
+      receiptSigningKey: key,
+    });
   }
   const target = path.join(paths.packageDirectories.pending, storedName);
   await copyPackageAtomically(path.resolve(zipPath), target, packageSha256, sourceState.size);
@@ -1163,9 +798,6 @@ export async function registerDevelopmentPackage({
     manifestSha256: verifiedDescriptor.manifestSha256,
     resultingTreeSha256: verifiedDescriptor.resultingTreeSha256,
     requires: verifiedDescriptor.requires,
-    ...(verifiedDescriptor.development
-      ? { development: verifiedDescriptor.development }
-      : {}),
     reviewedAt: timestamp(now),
     reviewedBy: assertHumanText(reviewedBy, "DEVELOPMENT_REVIEWER_INVALID", MAXIMUM_REVIEWER_BYTES),
     note: assertHumanText(note, "DEVELOPMENT_REVIEW_NOTE_INVALID", MAXIMUM_NOTE_BYTES, { allowEmpty: true }),
@@ -1175,57 +807,19 @@ export async function registerDevelopmentPackage({
     receiptFileName(normalizedId, packageSha256, receipt.sequence, receipt.status),
   );
   try {
-    await writeJsonExclusiveAtomic(receiptFile, receipt);
+    await writeJsonExclusive(receiptFile, receipt);
   } catch (error) {
-    if (error?.code === "EEXIST") {
-      return {
-        ...(await readVerifiedDevelopmentReceipt({
-          productRoot,
-          candidateId: normalizedId,
-          packageSha256,
-          receiptSigningKey: key,
-        })),
-        idempotent: true,
-      };
-    }
+    await fs.unlink(target).catch(() => undefined);
     throw error;
   }
   return {
     receipt,
     history: [receipt],
     location: { kind: "package", status: "pending", path: target },
-    idempotent: false,
   };
 }
 
-function testReadyRelativePath(candidateId, packageSha256, storeRootName = DEVELOPMENT_STORE_ROOT_NAME) {
-  if (![DEVELOPMENT_STORE_ROOT_NAME, LEGACY_DEVELOPMENT_STORE_ROOT_NAME].includes(storeRootName)) {
-    fail("DEVELOPMENT_TEST_READY_PATH_INVALID");
-  }
-  return `${storeRootName}/TESTS/${candidateId}--${packageSha256}/SYSTEM`;
-}
-
-function acceptedTestReadyStoreRoot(testRelativePath, candidateId, packageSha256) {
-  const current = testReadyRelativePath(candidateId, packageSha256, DEVELOPMENT_STORE_ROOT_NAME);
-  if (testRelativePath === current) return DEVELOPMENT_STORE_ROOT_NAME;
-  const legacy = testReadyRelativePath(candidateId, packageSha256, LEGACY_DEVELOPMENT_STORE_ROOT_NAME);
-  if (testRelativePath === legacy) return LEGACY_DEVELOPMENT_STORE_ROOT_NAME;
-  fail("DEVELOPMENT_TEST_READY_PATH_INVALID");
-}
-
-function resolveTestReadySystemPath(paths, receipt) {
-  const candidateId = assertCandidateId(receipt.candidateId);
-  const packageSha256 = assertHash(receipt.packageSha256, "DEVELOPMENT_TEST_READY_INVALID");
-  acceptedTestReadyStoreRoot(receipt.testRelativePath, candidateId, packageSha256);
-  const current = path.join(paths.tests, `${candidateId}--${packageSha256}`, "SYSTEM");
-  portableRelative(paths.productRoot, current);
-  return current;
-}
-
-function createTestReadyReceipt(input, key, {
-  laborSource = false,
-  storeRootName = DEVELOPMENT_STORE_ROOT_NAME,
-} = {}) {
+function createTestReadyReceipt(input, key) {
   const core = {
     schema: DEVELOPMENT_TEST_READY_SCHEMA,
     candidateId: assertCandidateId(input.candidateId),
@@ -1251,12 +845,6 @@ function createTestReadyReceipt(input, key, {
     || !Array.isArray(core.appliedPackages)
     || !core.appliedPackages.length
   ) fail("DEVELOPMENT_TEST_READY_INVALID");
-  if (laborSource && (
-    core.candidateId !== `labor-${core.packageSha256.slice(0, 32)}`
-    || core.sourceReceiptSha256 !== core.packageSha256
-    || core.sourceChainSha256 !== null
-    || core.appliedPackages.length !== 1
-  )) fail("DEVELOPMENT_LABOR_TEST_READY_INVALID");
   core.appliedPackages = core.appliedPackages.map((entry, index) => {
     assertExactKeys(
       entry,
@@ -1264,14 +852,11 @@ function createTestReadyReceipt(input, key, {
       "DEVELOPMENT_TEST_READY_INVALID",
       `appliedPackages[${index}]`,
     );
-    const allowed = laborSource
-      ? entry.status === "pending" && entry.includedAs === "selected"
-        && entry.dependencyOf === null && entry.candidateId === core.candidateId
-        && entry.packageSha256 === core.packageSha256
-      : ["approved", "rejected", "failed"].includes(entry.status)
-        && ["approved", "explicit-dependency"].includes(entry.includedAs)
-        && (entry.dependencyOf === null || typeof entry.dependencyOf === "string");
-    if (!allowed) fail("DEVELOPMENT_TEST_READY_INVALID", `appliedPackages[${index}]`);
+    if (
+      !["approved", "rejected", "failed"].includes(entry.status)
+      || !["approved", "explicit-dependency"].includes(entry.includedAs)
+      || (entry.dependencyOf !== null && typeof entry.dependencyOf !== "string")
+    ) fail("DEVELOPMENT_TEST_READY_INVALID", `appliedPackages[${index}]`);
     return {
       candidateId: assertCandidateId(entry.candidateId),
       packageSha256: assertHash(entry.packageSha256, "DEVELOPMENT_TEST_READY_INVALID"),
@@ -1280,303 +865,12 @@ function createTestReadyReceipt(input, key, {
       dependencyOf: entry.dependencyOf,
     };
   });
-  const expectedRelative = testReadyRelativePath(
-    core.candidateId,
-    core.packageSha256,
-    storeRootName,
-  );
+  const expectedRelative = `DEVELOPMENT/TESTS/${core.candidateId}--${core.packageSha256}/SYSTEM`;
   if (core.testRelativePath !== expectedRelative) fail("DEVELOPMENT_TEST_READY_PATH_INVALID");
   return signedEnvelope(core, key, "testReadyMac", "testReadySha256");
 }
 
-function normalizeTestSetMembers(value) {
-  if (!Array.isArray(value) || value.length < 1 || value.length > 256) {
-    fail("DEVELOPMENT_TEST_SET_MEMBERS_INVALID");
-  }
-  const seenIds = new Set();
-  const seenIdentities = new Set();
-  return value.map((entry, index) => {
-    assertExactKeys(
-      entry,
-      new Set([
-        "candidateId", "packageSha256", "receiptSha256", "manifestSha256",
-        "resultingTreeSha256", "requires",
-      ]),
-      "DEVELOPMENT_TEST_SET_MEMBERS_INVALID",
-      String(index),
-    );
-    const normalized = {
-      candidateId: assertCandidateId(entry.candidateId),
-      packageSha256: assertHash(entry.packageSha256, "DEVELOPMENT_TEST_SET_MEMBERS_INVALID"),
-      receiptSha256: assertHash(entry.receiptSha256, "DEVELOPMENT_TEST_SET_MEMBERS_INVALID"),
-      manifestSha256: assertHash(entry.manifestSha256, "DEVELOPMENT_TEST_SET_MEMBERS_INVALID"),
-      resultingTreeSha256: assertHash(
-        entry.resultingTreeSha256,
-        "DEVELOPMENT_TEST_SET_MEMBERS_INVALID",
-      ),
-      requires: normalizeRequires(entry.requires),
-    };
-    const identity = `${normalized.candidateId}\0${normalized.packageSha256}`;
-    if (seenIds.has(normalized.candidateId) || seenIdentities.has(identity)) {
-      fail("DEVELOPMENT_TEST_SET_MEMBER_DUPLICATE", normalized.candidateId);
-    }
-    seenIds.add(normalized.candidateId);
-    seenIdentities.add(identity);
-    return normalized;
-  });
-}
-
-function computeTestSetAggregateHash(domain, members, field) {
-  return sha256(stableStringify({
-    domain,
-    [field]: members.map((entry) => entry[field === "receipts" ? "receiptSha256" : "manifestSha256"]),
-  }));
-}
-
-function computeTestSetSelectionSha256({
-  targetVersion,
-  baseVersion,
-  baseTreeSha256,
-  sourceChainSha256,
-  members,
-}) {
-  return sha256(stableStringify({
-    schema: "bonni.development-test-selection/v1",
-    targetVersion: assertVersion(targetVersion, "targetVersion"),
-    baseVersion: assertVersion(baseVersion, "baseVersion"),
-    baseTreeSha256: assertHash(baseTreeSha256, "DEVELOPMENT_TEST_SET_READY_INVALID"),
-    sourceChainSha256: assertNullableHash(
-      sourceChainSha256,
-      "DEVELOPMENT_TEST_SET_READY_INVALID",
-    ),
-    members: normalizeTestSetMembers(members),
-  }));
-}
-
-function createTestSetReadyReceipt(input, key, { storeRootName = DEVELOPMENT_STORE_ROOT_NAME } = {}) {
-  const members = normalizeTestSetMembers(input.members);
-  const developmentMerge = input.developmentMerge === undefined || input.developmentMerge === null
-    ? undefined
-    : normalizeDevelopmentMergeMetadata(input.developmentMerge);
-  const core = {
-    schema: DEVELOPMENT_TEST_SET_READY_SCHEMA,
-    candidateId: assertCandidateId(input.candidateId),
-    packageSha256: assertHash(input.packageSha256, "DEVELOPMENT_TEST_SET_READY_INVALID"),
-    selectionSha256: assertHash(input.selectionSha256, "DEVELOPMENT_TEST_SET_READY_INVALID"),
-    sourceReceiptSha256: assertHash(input.sourceReceiptSha256, "DEVELOPMENT_TEST_SET_READY_INVALID"),
-    manifestSha256: assertHash(input.manifestSha256, "DEVELOPMENT_TEST_SET_READY_INVALID"),
-    targetVersion: assertVersion(input.targetVersion, "targetVersion"),
-    baseVersion: assertVersion(input.baseVersion, "baseVersion"),
-    sourceChainSha256: assertNullableHash(
-      input.sourceChainSha256,
-      "DEVELOPMENT_TEST_SET_READY_INVALID",
-    ),
-    baseTreeSha256: assertHash(input.baseTreeSha256, "DEVELOPMENT_TEST_SET_READY_INVALID"),
-    finalTreeSha256: assertHash(input.finalTreeSha256, "DEVELOPMENT_TEST_SET_READY_INVALID"),
-    ...(developmentMerge ? { developmentMerge } : {}),
-    members,
-    fileCount: input.fileCount,
-    totalBytes: input.totalBytes,
-    appliedPackages: input.appliedPackages,
-    stagedAt: assertCanonicalTimestamp(input.stagedAt, "DEVELOPMENT_TEST_READY_TIME_INVALID"),
-    testRelativePath: input.testRelativePath,
-  };
-  if (core.candidateId !== "test-set"
-    || core.packageSha256 !== core.selectionSha256
-    || !Number.isSafeInteger(core.fileCount)
-    || core.fileCount < 1
-    || !Number.isSafeInteger(core.totalBytes)
-    || core.totalBytes < 0
-    || !Array.isArray(core.appliedPackages)
-    || !core.appliedPackages.length) {
-    fail("DEVELOPMENT_TEST_SET_READY_INVALID");
-  }
-  if (core.selectionSha256 !== computeTestSetSelectionSha256(core)
-    || core.sourceReceiptSha256 !== computeTestSetAggregateHash(
-      "bonni.development-test-set-receipts/v1",
-      members,
-      "receipts",
-    )
-    || core.manifestSha256 !== computeTestSetAggregateHash(
-      "bonni.development-test-set-manifests/v1",
-      members,
-      "manifests",
-    )
-    || (!core.developmentMerge && core.finalTreeSha256 !== members.at(-1).resultingTreeSha256)
-    || (core.developmentMerge && core.developmentMerge.baseVersion !== core.baseVersion)) {
-    fail("DEVELOPMENT_TEST_SET_READY_BINDING_MISMATCH");
-  }
-  const selectedMembers = new Map(
-    members.map((entry) => [entry.candidateId, entry.packageSha256]),
-  );
-  const appliedCandidateIds = new Set();
-  core.appliedPackages = core.appliedPackages.map((entry, index) => {
-    assertExactKeys(
-      entry,
-      new Set(["candidateId", "packageSha256", "status", "includedAs", "dependencyOf"]),
-      "DEVELOPMENT_TEST_SET_READY_INVALID",
-      `appliedPackages[${index}]`,
-    );
-    if (!new Set(["pending", "approved", "rejected", "failed"]).has(entry.status)
-      || !new Set(["selected", "approved", "explicit-dependency"]).has(entry.includedAs)
-      || (entry.dependencyOf !== null && typeof entry.dependencyOf !== "string")) {
-      fail("DEVELOPMENT_TEST_SET_READY_INVALID", `appliedPackages[${index}]`);
-    }
-    const normalized = {
-      candidateId: assertCandidateId(entry.candidateId),
-      packageSha256: assertHash(entry.packageSha256, "DEVELOPMENT_TEST_SET_READY_INVALID"),
-      status: entry.status,
-      includedAs: entry.includedAs,
-      dependencyOf: entry.dependencyOf === null
-        ? null
-        : assertCandidateId(entry.dependencyOf),
-    };
-    if (appliedCandidateIds.has(normalized.candidateId)) {
-      fail("DEVELOPMENT_TEST_SET_APPLIED_DUPLICATE", normalized.candidateId);
-    }
-    appliedCandidateIds.add(normalized.candidateId);
-    const selectedHash = selectedMembers.get(normalized.candidateId);
-    if (selectedHash !== undefined) {
-      if (normalized.packageSha256 !== selectedHash
-        || normalized.status !== "pending"
-        || normalized.includedAs !== "selected"
-        || normalized.dependencyOf !== null) {
-        fail("DEVELOPMENT_TEST_SET_SELECTED_BINDING_MISMATCH", normalized.candidateId);
-      }
-    } else if (normalized.status === "pending" || normalized.includedAs === "selected") {
-      fail("DEVELOPMENT_TEST_SET_HIDDEN_PENDING_PACKAGE", normalized.candidateId);
-    }
-    return normalized;
-  });
-  for (const candidateId of selectedMembers.keys()) {
-    if (!appliedCandidateIds.has(candidateId)) {
-      fail("DEVELOPMENT_TEST_SET_SELECTED_MEMBER_MISSING", candidateId);
-    }
-  }
-  for (const entry of core.appliedPackages) {
-    if (entry.dependencyOf !== null && !appliedCandidateIds.has(entry.dependencyOf)) {
-      fail("DEVELOPMENT_TEST_SET_DEPENDENCY_BINDING_INVALID", entry.candidateId);
-    }
-  }
-  const expectedRelative = testReadyRelativePath(
-    core.candidateId,
-    core.packageSha256,
-    storeRootName,
-  );
-  if (core.testRelativePath !== expectedRelative) fail("DEVELOPMENT_TEST_READY_PATH_INVALID");
-  return signedEnvelope(core, key, "testReadyMac", "testReadySha256");
-}
-
-function createActiveTestSelection(input, key) {
-  const core = {
-    schema: DEVELOPMENT_ACTIVE_TEST_SELECTION_SCHEMA,
-    candidateId: assertCandidateId(input.candidateId),
-    selectionSha256: assertHash(
-      input.selectionSha256,
-      "DEVELOPMENT_ACTIVE_TEST_SELECTION_INVALID",
-    ),
-    testReadySha256: assertHash(
-      input.testReadySha256,
-      "DEVELOPMENT_ACTIVE_TEST_SELECTION_INVALID",
-    ),
-    updatedAt: assertCanonicalTimestamp(
-      input.updatedAt,
-      "DEVELOPMENT_ACTIVE_TEST_SELECTION_TIME_INVALID",
-    ),
-  };
-  if (core.candidateId !== "test-set") {
-    fail("DEVELOPMENT_ACTIVE_TEST_SELECTION_INVALID");
-  }
-  return signedEnvelope(core, key, "selectionMac", "selectionReceiptSha256");
-}
-
-function parseActiveTestSelection(raw, key) {
-  assertExactKeys(
-    raw,
-    new Set([
-      "schema", "candidateId", "selectionSha256", "testReadySha256", "updatedAt",
-      "selectionMac", "selectionReceiptSha256",
-    ]),
-    "DEVELOPMENT_ACTIVE_TEST_SELECTION_INVALID",
-    "fields",
-  );
-  const core = verifySignedEnvelope(
-    raw,
-    key,
-    "selectionMac",
-    "selectionReceiptSha256",
-    "DEVELOPMENT_ACTIVE_TEST_SELECTION_AUTHENTICATION_FAILED",
-  );
-  if (core.schema !== DEVELOPMENT_ACTIVE_TEST_SELECTION_SCHEMA) {
-    fail("DEVELOPMENT_ACTIVE_TEST_SELECTION_SCHEMA_UNSUPPORTED");
-  }
-  const recreated = createActiveTestSelection(core, key);
-  if (stableStringify(recreated) !== stableStringify(raw)) {
-    fail("DEVELOPMENT_ACTIVE_TEST_SELECTION_INVALID");
-  }
-  return recreated;
-}
-
-async function publishActiveTestSelection(paths, key, receipt, now) {
-  const selection = createActiveTestSelection({
-    candidateId: receipt.candidateId,
-    selectionSha256: receipt.selectionSha256,
-    testReadySha256: receipt.testReadySha256,
-    updatedAt: timestamp(now),
-  }, key);
-  await writeJsonAtomic(paths.activeTestSelection, selection);
-  return selection;
-}
-
-async function verifyActiveTestSelection(paths, key, receipt) {
-  const selection = parseActiveTestSelection(
-    await readSmallJson(
-      paths.activeTestSelection,
-      "DEVELOPMENT_ACTIVE_TEST_SELECTION_MISSING",
-    ),
-    key,
-  );
-  if (selection.candidateId !== receipt.candidateId
-    || selection.selectionSha256 !== receipt.selectionSha256
-    || selection.testReadySha256 !== receipt.testReadySha256) {
-    fail("DEVELOPMENT_ACTIVE_TEST_SELECTION_CHANGED");
-  }
-  return selection;
-}
-
-function parseTestReadyReceipt(raw, key, { laborSource = false } = {}) {
-  if (raw?.schema === DEVELOPMENT_TEST_SET_READY_SCHEMA) {
-    assertExactKeys(
-      raw,
-      new Set([
-        "schema", "candidateId", "packageSha256", "selectionSha256",
-        "sourceReceiptSha256", "manifestSha256", "targetVersion", "baseVersion",
-        "sourceChainSha256", "baseTreeSha256", "finalTreeSha256", "members",
-        "fileCount", "totalBytes", "appliedPackages", "stagedAt", "testRelativePath",
-        "testReadyMac", "testReadySha256",
-        ...(Object.hasOwn(raw, "developmentMerge") ? ["developmentMerge"] : []),
-      ]),
-      "DEVELOPMENT_TEST_SET_READY_INVALID",
-      "fields",
-    );
-    const core = verifySignedEnvelope(
-      raw,
-      key,
-      "testReadyMac",
-      "testReadySha256",
-      "DEVELOPMENT_TEST_READY_AUTHENTICATION_FAILED",
-    );
-    const storeRootName = acceptedTestReadyStoreRoot(
-      core.testRelativePath,
-      core.candidateId,
-      core.packageSha256,
-    );
-    const recreated = createTestSetReadyReceipt(core, key, { storeRootName });
-    if (stableStringify(recreated) !== stableStringify(raw)) {
-      fail("DEVELOPMENT_TEST_SET_READY_INVALID");
-    }
-    return recreated;
-  }
+function parseTestReadyReceipt(raw, key) {
   assertExactKeys(
     raw,
     new Set([
@@ -1596,22 +890,14 @@ function parseTestReadyReceipt(raw, key, { laborSource = false } = {}) {
     "DEVELOPMENT_TEST_READY_AUTHENTICATION_FAILED",
   );
   if (core.schema !== DEVELOPMENT_TEST_READY_SCHEMA) fail("DEVELOPMENT_TEST_READY_SCHEMA_UNSUPPORTED");
-  const storeRootName = acceptedTestReadyStoreRoot(
-    core.testRelativePath,
-    core.candidateId,
-    core.packageSha256,
-  );
-  const recreated = createTestReadyReceipt(core, key, { laborSource, storeRootName });
+  const recreated = createTestReadyReceipt(core, key);
   if (stableStringify(recreated) !== stableStringify(raw)) fail("DEVELOPMENT_TEST_READY_INVALID");
   return recreated;
 }
 
 async function verifyTestReadyTree(paths, receipt) {
-  let testSystem = resolveTestReadySystemPath(paths, receipt);
+  let testSystem = containedPath(paths.productRoot, receipt.testRelativePath);
   if (!(await lstatOrNull(testSystem))) {
-    if (receipt.schema === DEVELOPMENT_TEST_SET_READY_SCHEMA) {
-      fail("DEVELOPMENT_TEST_TREE_MISSING", receipt.candidateId);
-    }
     const currentTree = await collectDevelopmentTree(paths.current);
     if (currentTree.treeSha256 !== receipt.finalTreeSha256) {
       fail("DEVELOPMENT_TEST_TREE_MISSING", receipt.candidateId);
@@ -1627,129 +913,6 @@ async function verifyTestReadyTree(paths, receipt) {
   return { receipt, testSystem, tree };
 }
 
-async function readActiveTestSetProtection(paths, key) {
-  if (!(await lstatOrNull(paths.activeTestSelection))) return null;
-  const selection = parseActiveTestSelection(
-    await readSmallJson(
-      paths.activeTestSelection,
-      "DEVELOPMENT_ACTIVE_TEST_SELECTION_INVALID",
-    ),
-    key,
-  );
-  const testRoot = path.join(paths.tests, `test-set--${selection.selectionSha256}`);
-  const ready = parseTestReadyReceipt(
-    await readSmallJson(
-      path.join(testRoot, "TEST-READY.json"),
-      "DEVELOPMENT_ACTIVE_TEST_SELECTION_READY_INVALID",
-    ),
-    key,
-  );
-  if (ready.schema !== DEVELOPMENT_TEST_SET_READY_SCHEMA
-    || ready.candidateId !== "test-set"
-    || ready.selectionSha256 !== selection.selectionSha256
-    || ready.packageSha256 !== selection.selectionSha256
-    || ready.testReadySha256 !== selection.testReadySha256) {
-    fail("DEVELOPMENT_ACTIVE_TEST_SELECTION_READY_INVALID");
-  }
-  await verifyTestSetReadyStoreBindings(paths, key, ready);
-  await verifyTestReadyTree(paths, ready);
-  return Object.freeze({
-    selectionReceiptSha256: selection.selectionReceiptSha256,
-    selectionSha256: selection.selectionSha256,
-    testReadySha256: selection.testReadySha256,
-    members: ready.members.map(({ candidateId, packageSha256 }) => ({
-      candidateId,
-      packageSha256,
-    })),
-  });
-}
-
-async function verifyTestSetReadyStoreBindings(paths, key, receipt) {
-  const groups = await verifiedReceiptGroups(paths, key);
-  const sourceChain = await readChainFile(paths, key, { required: false });
-  const baselineCandidateIds = new Set();
-  if (receipt.sourceChainSha256 === null) {
-    if (sourceChain) fail("DEVELOPMENT_TEST_SET_SOURCE_CHAIN_CHANGED");
-  } else {
-    if (!sourceChain || sourceChain.chainSha256 !== receipt.sourceChainSha256) {
-      fail("DEVELOPMENT_TEST_SET_SOURCE_CHAIN_CHANGED");
-    }
-    const verifiedChain = await validateChainAgainstReceipts(paths, key, sourceChain, groups);
-    for (const entry of sourceChain.entries) baselineCandidateIds.add(entry.candidateId);
-    for (const identity of verifiedChain.dependencyIdentities) {
-      baselineCandidateIds.add(identity.slice(0, identity.indexOf("\0")));
-    }
-    const currentTree = await collectDevelopmentTree(paths.current);
-    if (currentTree.treeSha256 !== sourceChain.finalTreeSha256) {
-      fail("DEVELOPMENT_CURRENT_TREE_MISMATCH");
-    }
-  }
-  const resolvedBase = await resolveDevelopmentBase({productRoot: paths.productRoot, baseVersion: receipt.baseVersion,
-    expectedTreeSha256: receipt.baseTreeSha256, withInventory: true});
-  const baseRoot = resolvedBase.root;
-  await assertPlainDirectory(baseRoot, "DEVELOPMENT_VERSIONED_BASE_MISSING");
-  if (resolvedBase.inventory.treeSha256 !== receipt.baseTreeSha256) {
-    fail("DEVELOPMENT_TEST_SET_BASE_TREE_CHANGED");
-  }
-
-  const selectedCandidateIds = new Set();
-  if (receipt.developmentMerge) {
-    const merge = normalizeDevelopmentMergeMetadata(receipt.developmentMerge);
-    if (merge.baseVersion !== receipt.baseVersion) {
-      fail("DEVELOPMENT_TEST_SET_MERGE_BASE_MISMATCH");
-    }
-  }
-  for (const member of receipt.members) {
-    const identity = `${member.candidateId}\0${member.packageSha256}`;
-    const history = groups.get(identity);
-    if (!history) fail("DEVELOPMENT_TEST_SET_MEMBER_RECEIPT_MISSING", member.candidateId);
-    const latest = history.at(-1);
-    const locations = await packageLocations(paths, latest.storedName);
-    if (latest.status !== "pending"
-      || latest.receiptSha256 !== member.receiptSha256
-      || latest.manifestSha256 !== member.manifestSha256
-      || latest.resultingTreeSha256 !== member.resultingTreeSha256
-      || !sameRequires(latest.requires, member.requires)
-      || locations.length !== 1
-      || locations[0].kind !== "package"
-      || locations[0].status !== "pending") {
-      fail("DEVELOPMENT_TEST_SET_MEMBER_STATE_CHANGED", member.candidateId);
-    }
-    await verifyPackageAtLocation(locations[0], latest);
-    const descriptor = await readDevelopmentPackageDescriptor(locations[0].path);
-    try {
-      if (descriptor.candidateId !== member.candidateId
-        || descriptor.packageSha256 !== member.packageSha256
-        || descriptor.manifestSha256 !== member.manifestSha256
-        || descriptor.manifest.resultingTreeSha256 !== member.resultingTreeSha256
-        || (descriptor.manifest.development
-          ? descriptor.manifest.development.baseVersion !== receipt.baseVersion
-          : descriptor.manifest.targetVersion !== receipt.targetVersion)
-        || !sameRequires(descriptor.manifest.requires, member.requires)) {
-        fail("DEVELOPMENT_TEST_SET_MEMBER_DESCRIPTOR_CHANGED", member.candidateId);
-      }
-    } finally {
-      await descriptor.dispose();
-    }
-    selectedCandidateIds.add(member.candidateId);
-  }
-
-  const expectedAppliedIds = new Set([...baselineCandidateIds, ...selectedCandidateIds]);
-  const actualAppliedIds = new Set(receipt.appliedPackages.map((entry) => entry.candidateId));
-  if (expectedAppliedIds.size !== actualAppliedIds.size
-    || [...expectedAppliedIds].some((candidateId) => !actualAppliedIds.has(candidateId))) {
-    fail("DEVELOPMENT_TEST_SET_APPLIED_CLOSURE_MISMATCH");
-  }
-  for (const applied of receipt.appliedPackages) {
-    if (selectedCandidateIds.has(applied.candidateId)) continue;
-    const history = groups.get(`${applied.candidateId}\0${applied.packageSha256}`);
-    const latest = history?.at(-1);
-    if (!latest || latest.status !== applied.status || !FINAL_REVIEW_STATUSES.has(latest.status)) {
-      fail("DEVELOPMENT_TEST_SET_BASELINE_BINDING_MISMATCH", applied.candidateId);
-    }
-  }
-}
-
 export async function readDevelopmentTestReady({
   productRoot,
   candidateId,
@@ -1757,9 +920,6 @@ export async function readDevelopmentTestReady({
   receiptSigningKey = undefined,
   keyFile = undefined,
   verifyTree = true,
-  requireActiveSelection = true,
-  allowLaborSource = false,
-  allowMetadataOnlyLaborSource = false,
 }) {
   const paths = await initializeDevelopmentStore({ productRoot });
   const key = await resolveKey({ productRoot, receiptSigningKey, keyFile });
@@ -1769,44 +929,14 @@ export async function readDevelopmentTestReady({
   const activeFile = path.join(testRoot, "TEST-READY.json");
   const archivedFile = path.join(paths.receipts, `TEST-READY--${normalizedId}--${normalizedHash}.json`);
   const source = await lstatOrNull(activeFile) ? activeFile : archivedFile;
-  const raw = await readSmallJson(source, "DEVELOPMENT_TEST_READY_MISSING");
-  // A selected raw DEV ZIP is not an approved release/dependency. Only the
-  // runtime preparation explicitly accepts this existing Labor receipt form.
-  // Review/promotion readers retain their approved-chain contract by default.
-  const laborSource = allowLaborSource === true && Array.isArray(raw.appliedPackages)
-    && raw.appliedPackages.some((entry) => entry?.includedAs === "selected");
-  const receipt = parseTestReadyReceipt(raw, key, { laborSource });
+  const receipt = parseTestReadyReceipt(
+    await readSmallJson(source, "DEVELOPMENT_TEST_READY_MISSING"),
+    key,
+  );
   if (receipt.candidateId !== normalizedId || receipt.packageSha256 !== normalizedHash) {
     fail("DEVELOPMENT_TEST_READY_BINDING_MISMATCH", normalizedId);
   }
-  if (receipt.schema === DEVELOPMENT_TEST_SET_READY_SCHEMA) {
-    await verifyTestSetReadyStoreBindings(paths, key, receipt);
-    if (requireActiveSelection) await verifyActiveTestSelection(paths, key, receipt);
-  }
-  if (laborSource) {
-    if (source !== activeFile) fail("DEVELOPMENT_LABOR_TEST_READY_ACTIVE_REQUIRED");
-    const overlay = await readSmallJson(path.join(testRoot, "LABOR-OVERLAY.json"), "DEVELOPMENT_LABOR_BINDING_MISSING");
-    if (overlay.schema !== "bonni.labor-source-overlay/v1"
-      || sha256(stableStringify(overlay)) !== receipt.manifestSha256
-      || overlay.candidateId !== normalizedId || overlay.sourceSha256 !== normalizedHash
-      || overlay.baseVersion !== receipt.baseVersion || overlay.targetVersion !== receipt.targetVersion
-      || overlay.baseTreeSha256 !== receipt.baseTreeSha256 || overlay.finalTreeSha256 !== receipt.finalTreeSha256
-      || !/^\d+\.\d+\.\d+\+[a-z]$/u.test(String(overlay.coreVersion || ""))) {
-      fail("DEVELOPMENT_LABOR_TEST_READY_BINDING_MISMATCH");
-    }
-    if (!verifyTree && allowMetadataOnlyLaborSource === true) {
-      return {
-        receipt,
-        testSystem: resolveTestReadySystemPath(paths, receipt),
-        laborSource: true,
-        runtimeCoreVersion: overlay.coreVersion,
-      };
-    }
-    // Normal Labor preparation and start always verify raw trees; only the
-    // lightweight persisted-status probe may use the metadata-only route.
-    return { ...await verifyTestReadyTree(paths, receipt), laborSource: true, runtimeCoreVersion: overlay.coreVersion };
-  }
-  if (!verifyTree) return { receipt, testSystem: resolveTestReadySystemPath(paths, receipt) };
+  if (!verifyTree) return { receipt, testSystem: containedPath(paths.productRoot, receipt.testRelativePath) };
   return verifyTestReadyTree(paths, receipt);
 }
 
@@ -1839,20 +969,9 @@ async function inspectStoredTestArtifact(paths, key, receiptHistory) {
   };
 }
 
-async function loadTestPackageDescriptors({
-  paths,
-  key,
-  roots,
-  pendingCandidateId = undefined,
-  pendingCandidateIds = undefined,
-}) {
+async function loadTestPackageDescriptors({ paths, key, roots, pendingCandidateId }) {
   const descriptors = new Map();
   const loading = new Set();
-  const pendingRoots = new Set(
-    pendingCandidateIds === undefined
-      ? (pendingCandidateId === undefined ? [] : [pendingCandidateId])
-      : pendingCandidateIds,
-  );
   const load = async (candidateId, packageSha256, dependencyOf = null) => {
     const existing = descriptors.get(candidateId);
     if (existing) {
@@ -1869,7 +988,7 @@ async function loadTestPackageDescriptors({
       packageSha256,
       receiptSigningKey: key,
     });
-    const isPendingRoot = pendingRoots.has(candidateId);
+    const isPendingRoot = candidateId === pendingCandidateId && dependencyOf === null;
     if (
       verified.location.kind !== "package"
       || (isPendingRoot
@@ -1883,7 +1002,6 @@ async function loadTestPackageDescriptors({
       || packageDescriptor.manifestSha256 !== verified.receipt.manifestSha256
       || packageDescriptor.manifest.resultingTreeSha256 !== verified.receipt.resultingTreeSha256
       || !sameRequires(packageDescriptor.manifest.requires, verified.receipt.requires)
-      || !sameStoredDevelopment(packageDescriptor.manifest.development, verified.receipt.development)
     ) {
       await packageDescriptor.dispose();
       fail("DEVELOPMENT_PACKAGE_DESCRIPTOR_MISMATCH", candidateId);
@@ -1915,11 +1033,9 @@ export async function stageDevelopmentPackageForTest({
   packageSha256 = undefined,
   baseRoot = undefined,
   baseVersion = undefined,
-  independentBase = false,
   receiptSigningKey = undefined,
   keyFile = undefined,
   now = undefined,
-  onProgress = undefined,
 }) {
   const paths = await initializeDevelopmentStore({ productRoot });
   const key = await resolveKey({ productRoot, receiptSigningKey, keyFile });
@@ -1961,7 +1077,7 @@ export async function stageDevelopmentPackageForTest({
     }
   }
 
-  let sourceChain = independentBase ? null : await readChainFile(paths, key, { required: false });
+  let sourceChain = await readChainFile(paths, key, { required: false });
   if (sourceChain) {
     const groups = await verifiedReceiptGroups(paths, key);
     await validateChainAgainstReceipts(paths, key, sourceChain, groups);
@@ -1976,16 +1092,16 @@ export async function stageDevelopmentPackageForTest({
   if (sourceChain && baseVersion && sourceChain.baseVersion !== baseVersion) {
     fail("DEVELOPMENT_CHAIN_BASE_CONFLICT");
   }
-  const resolvedBase = await resolveDevelopmentBase({productRoot: paths.productRoot, baseVersion: selectedBaseVersion, baseRoot,
-    withInventory: true, onProgress});
-  const resolvedBaseRoot = resolvedBase.root;
+  const resolvedBaseRoot = baseRoot === undefined
+    ? path.join(paths.bases, selectedBaseVersion, "SYSTEM")
+    : path.resolve(baseRoot);
   await assertPlainDirectory(
     resolvedBaseRoot,
     baseRoot === undefined
       ? "DEVELOPMENT_VERSIONED_BASE_MISSING"
       : "DEVELOPMENT_EXPLICIT_BASE_MISSING",
   );
-  const baseTree = resolvedBase.inventory;
+  const baseTree = await collectDevelopmentTree(resolvedBaseRoot);
   const topDescriptor = await readDevelopmentPackageDescriptor(state.location.path);
   let descriptors;
   try {
@@ -1993,17 +1109,8 @@ export async function stageDevelopmentPackageForTest({
       topDescriptor.candidateId !== state.receipt.candidateId
       || topDescriptor.packageSha256 !== state.receipt.packageSha256
     ) fail("DEVELOPMENT_PACKAGE_DESCRIPTOR_MISMATCH", state.receipt.candidateId);
-    if (sourceChain) {
-      if (topDescriptor.manifest.development
-        ? topDescriptor.manifest.development.baseVersion !== sourceChain.baseVersion
-        : sourceChain.targetVersion !== topDescriptor.manifest.targetVersion) {
-        fail(
-          topDescriptor.manifest.development
-            ? "DEVELOPMENT_PACKAGE_BASE_VERSION_MISMATCH"
-            : "DEVELOPMENT_PACKAGE_TARGET_VERSION_MISMATCH",
-          state.receipt.candidateId,
-        );
-      }
+    if (sourceChain && sourceChain.targetVersion !== topDescriptor.manifest.targetVersion) {
+      fail("DEVELOPMENT_PACKAGE_TARGET_VERSION_MISMATCH", state.receipt.candidateId);
     }
     if (sourceChain && sourceChain.baseTreeSha256 !== baseTree.treeSha256) {
       fail("DEVELOPMENT_CHAIN_BASE_TREE_MISMATCH");
@@ -2057,7 +1164,6 @@ export async function stageDevelopmentPackageForTest({
     } else {
       assembled = await assembleDevelopmentTestTree({
         baseRoot: resolvedBaseRoot,
-        baseInventory: baseTree,
         stagingRoot: testSystem,
         chain: provisionalChain,
         packageDescriptors: descriptors,
@@ -2095,336 +1201,6 @@ export async function stageDevelopmentPackageForTest({
     };
   } finally {
     await topDescriptor.dispose();
-    if (descriptors) {
-      await Promise.all([...descriptors.values()].map((entry) => entry.dispose().catch(() => undefined)));
-    }
-  }
-}
-
-function normalizeTestSetPackageRefs(value) {
-  if (!Array.isArray(value) || value.length < 1 || value.length > 256) {
-    fail("DEVELOPMENT_TEST_SET_MEMBERS_INVALID");
-  }
-  const ids = new Set();
-  return value.map((entry, index) => {
-    if (!isPlainObject(entry)) fail("DEVELOPMENT_TEST_SET_MEMBERS_INVALID", String(index));
-    const candidateId = assertCandidateId(entry.candidateId);
-    const packageSha256 = assertHash(
-      entry.packageSha256,
-      "DEVELOPMENT_TEST_SET_MEMBERS_INVALID",
-      String(index),
-    );
-    if (ids.has(candidateId)) fail("DEVELOPMENT_TEST_SET_MEMBER_DUPLICATE", candidateId);
-    ids.add(candidateId);
-    return Object.freeze({ candidateId, packageSha256 });
-  });
-}
-
-async function assertTestSetTreeCapacity(paths, prospectiveName) {
-  const names = await fs.readdir(paths.tests);
-  if (names.includes(prospectiveName)) return;
-  const storedCount = names.filter((name) => TEST_SET_DIRECTORY_PATTERN.test(name)).length;
-  if (storedCount >= MAXIMUM_STORED_TEST_SET_TREES) {
-    fail(
-      "DEVELOPMENT_TEST_SET_RETENTION_LIMIT_REACHED",
-      `${storedCount}/${MAXIMUM_STORED_TEST_SET_TREES}; remove only a verified inactive test set through the maintenance workflow`,
-    );
-  }
-}
-
-export async function stageDevelopmentPackageSetForTest({
-  productRoot,
-  packageRefs,
-  baseRoot = undefined,
-  baseVersion = undefined,
-  independentBase = false,
-  receiptSigningKey = undefined,
-  keyFile = undefined,
-  now = undefined,
-  previewOnly = false,
-  expectedPreviewSha256 = undefined,
-  onProgress = undefined,
-}) {
-  const paths = await initializeDevelopmentStore({ productRoot });
-  const key = await resolveKey({ productRoot, receiptSigningKey, keyFile });
-  const refs = normalizeTestSetPackageRefs(packageRefs);
-  const states = [];
-  for (const ref of refs) {
-    const state = await readVerifiedDevelopmentReceipt({
-      productRoot,
-      candidateId: ref.candidateId,
-      packageSha256: ref.packageSha256,
-      receiptSigningKey: key,
-    });
-    if (state.receipt.status !== "pending"
-      || state.location.kind !== "package"
-      || state.location.status !== "pending") {
-      fail("DEVELOPMENT_TEST_REQUIRES_PENDING_PACKAGE", state.receipt.candidateId);
-    }
-    states.push(state);
-  }
-
-  let sourceChain = independentBase ? null : await readChainFile(paths, key, { required: false });
-  if (sourceChain) {
-    const groups = await verifiedReceiptGroups(paths, key);
-    await validateChainAgainstReceipts(paths, key, sourceChain, groups);
-    const currentTree = await collectDevelopmentTree(paths.current);
-    if (currentTree.treeSha256 !== sourceChain.finalTreeSha256) {
-      fail("DEVELOPMENT_CURRENT_TREE_MISMATCH");
-    }
-  }
-  const selectedBaseVersion = sourceChain?.baseVersion
-    || (baseVersion ? assertVersion(baseVersion, "baseVersion") : null);
-  if (!selectedBaseVersion) fail("DEVELOPMENT_TEST_BASE_VERSION_REQUIRED");
-  if (sourceChain && baseVersion && sourceChain.baseVersion !== baseVersion) {
-    fail("DEVELOPMENT_CHAIN_BASE_CONFLICT");
-  }
-  const resolvedBase = await resolveDevelopmentBase({productRoot: paths.productRoot, baseVersion: selectedBaseVersion, baseRoot,
-    withInventory: true, onProgress});
-  const resolvedBaseRoot = resolvedBase.root;
-  await assertPlainDirectory(
-    resolvedBaseRoot,
-    baseRoot === undefined
-      ? "DEVELOPMENT_VERSIONED_BASE_MISSING"
-      : "DEVELOPMENT_EXPLICIT_BASE_MISSING",
-  );
-  const baseTree = resolvedBase.inventory;
-  if (sourceChain && sourceChain.baseTreeSha256 !== baseTree.treeSha256) {
-    fail("DEVELOPMENT_CHAIN_BASE_TREE_MISMATCH");
-  }
-
-  const selectedEntries = states.map((state) => ({
-    candidateId: state.receipt.candidateId,
-    packageSha256: state.receipt.packageSha256,
-    receiptSha256: state.receipt.receiptSha256,
-    manifestSha256: state.receipt.manifestSha256,
-    requires: state.receipt.requires,
-    resultingTreeSha256: state.receipt.resultingTreeSha256,
-  }));
-  const provisionalEntries = [...(sourceChain?.entries || []), ...selectedEntries];
-  let descriptors;
-  try {
-    descriptors = await loadTestPackageDescriptors({
-      paths,
-      key,
-      roots: provisionalEntries,
-      pendingCandidateIds: refs.map((entry) => entry.candidateId),
-    });
-    const selectedDescriptors = refs.map((entry) => descriptors.get(entry.candidateId));
-    if (selectedDescriptors.some((entry) => !entry)) {
-      fail("DEVELOPMENT_TEST_SET_DESCRIPTOR_MISSING");
-    }
-    const targetVersion = sourceChain?.targetVersion
-      || selectedDescriptors[0].manifest.targetVersion;
-    for (const descriptor of selectedDescriptors) {
-      const versioned = descriptor.manifest.development !== undefined;
-      if (versioned
-        ? descriptor.manifest.development.baseVersion !== selectedBaseVersion
-        : descriptor.manifest.targetVersion !== targetVersion) {
-        fail("DEVELOPMENT_PACKAGE_TARGET_VERSION_MISMATCH", descriptor.candidateId);
-      }
-    }
-    const versionedDescriptors = [...descriptors.values()]
-      .filter((descriptor) => descriptor.manifest.development !== undefined)
-      .map((descriptor) => ({
-        ...descriptor,
-        candidateId: descriptor.candidateId,
-        packageSha256: descriptor.packageSha256,
-      }));
-    const developmentMerge = versionedDescriptors.length
-      ? detectDevelopmentBranchConflicts(versionedDescriptors, { baseVersion: selectedBaseVersion })
-      : null;
-    if (developmentMerge && !developmentMerge.mergeable) {
-      const detail = developmentMerge.conflicts
-        .map((entry) => `${entry.path}[${entry.branches.join(",")}]`)
-        .join(",");
-      fail("DEVELOPMENT_BRANCH_CONFLICT", detail);
-    }
-    // Individual DEV packages hash their own branch result. A parallel
-    // selection has a different merged tree, so its provisional chain keeps
-    // the final hash unresolved until the verified assembler computes it.
-    const finalTreeSha256 = developmentMerge ? null : selectedEntries.at(-1).resultingTreeSha256;
-    const provisionalChain = {
-      schema: DEVELOPMENT_CHAIN_SCHEMA,
-      targetVersion,
-      baseVersion: selectedBaseVersion,
-      baseTreeSha256: sourceChain?.baseTreeSha256 || baseTree.treeSha256,
-      entries: provisionalEntries,
-      finalTreeSha256,
-      updatedAt: timestamp(now),
-      chainMac: "0".repeat(64),
-      chainSha256: "0".repeat(64),
-    };
-    const selectionSha256 = computeTestSetSelectionSha256({
-      targetVersion,
-      baseVersion: provisionalChain.baseVersion,
-      baseTreeSha256: provisionalChain.baseTreeSha256,
-      sourceChainSha256: sourceChain?.chainSha256 || null,
-      members: selectedEntries,
-    });
-    const candidateId = "test-set";
-    const testRoot = path.join(paths.tests, `${candidateId}--${selectionSha256}`);
-    const testSystem = path.join(testRoot, "SYSTEM");
-    const readyFile = path.join(testRoot, "TEST-READY.json");
-    let confirmedPreview = null;
-    if (previewOnly || expectedPreviewSha256 !== undefined) {
-      if (!previewOnly && !HASH_PATTERN.test(expectedPreviewSha256)) fail("DEVELOPMENT_PREVIEW_HASH_REQUIRED");
-      const previewRoot = path.join(paths.root, `.selection-preview-${randomUUID()}`);
-      await fs.mkdir(previewRoot, { mode: 0o700 });
-      try {
-        // Run the existing verified assembler in disposable trees. No TEST-READY
-        // or active selection is published by a preview, including dependencies.
-        let previous = sourceChain ? await collectDevelopmentTree(paths.current) : baseTree;
-        const baseline = previous;
-        const layers = [];
-        for (let index = 0; index < selectedEntries.length; index++) {
-          const prefix = [...(sourceChain?.entries || []), ...selectedEntries.slice(0, index + 1)];
-          const prefixRoot = path.join(previewRoot, String(index));
-          await assembleDevelopmentTestTree({
-            baseRoot: resolvedBaseRoot, baseInventory: baseTree, stagingRoot: prefixRoot,
-            chain: {
-              ...provisionalChain,
-              entries: prefix,
-              finalTreeSha256: developmentMerge ? null : selectedEntries[index].resultingTreeSha256,
-            },
-            packageDescriptors: descriptors,
-          });
-          const next = await collectDevelopmentTree(prefixRoot);
-          layers.push({ name: selectedEntries[index].candidateId, packageSha256: selectedEntries[index].packageSha256,
-            files: changedTreeFiles(previous.files, next.files) });
-          previous = next;
-          await fs.rm(prefixRoot, { recursive: true, force: true });
-        }
-        confirmedPreview = createFilePreview({ baseFiles: baseline.files, layers, binding: {
-          kind: "development-package", baseVersion: selectedBaseVersion, baseTreeSha256: baseTree.treeSha256,
-          sourceChainSha256: sourceChain?.chainSha256 || null, members: selectedEntries,
-          developmentMerge,
-          finalTreeSha256: previous.treeSha256,
-        } });
-        if (previewOnly) return confirmedPreview;
-        if (confirmedPreview.previewSha256 !== expectedPreviewSha256) fail("DEVELOPMENT_PREVIEW_CHANGED");
-      } finally { await fs.rm(previewRoot, { recursive: true, force: true }); }
-    }
-    if (await lstatOrNull(readyFile)) {
-      const existing = await readDevelopmentTestReady({
-        productRoot,
-        candidateId,
-        packageSha256: selectionSha256,
-        receiptSigningKey: key,
-        requireActiveSelection: false,
-      });
-      if (existing.receipt.schema !== DEVELOPMENT_TEST_SET_READY_SCHEMA
-        || stableStringify(existing.receipt.members) !== stableStringify(selectedEntries)) {
-        fail("DEVELOPMENT_TEST_SET_READY_BINDING_MISMATCH");
-      }
-      await publishActiveTestSelection(paths, key, existing.receipt, now);
-      return {
-        candidateId,
-        packageSha256: selectionSha256,
-        selectionSha256,
-        members: selectedEntries.map(({ candidateId: memberId, packageSha256 }) => ({
-          candidateId: memberId,
-          packageSha256,
-        })),
-        finalTreeSha256: existing.receipt.finalTreeSha256,
-        ...(existing.receipt.developmentMerge
-          ? { developmentMerge: existing.receipt.developmentMerge }
-          : {}),
-        testReadySha256: existing.receipt.testReadySha256,
-        testRelativePath: existing.receipt.testRelativePath,
-        idempotent: true,
-      };
-    }
-    if (await lstatOrNull(testRoot)) {
-      fail("DEVELOPMENT_TEST_STAGING_INCOMPLETE", candidateId);
-    }
-    await assertTestSetTreeCapacity(paths, path.basename(testRoot));
-
-    const baselineCandidateIds = new Set();
-    const visitBaseline = (candidateId) => {
-      if (baselineCandidateIds.has(candidateId)) return;
-      const descriptor = descriptors.get(candidateId);
-      if (!descriptor) fail("DEVELOPMENT_TEST_SET_DESCRIPTOR_MISSING", candidateId);
-      baselineCandidateIds.add(candidateId);
-      for (const dependency of descriptor.manifest.requires) {
-        visitBaseline(dependency.candidateId);
-      }
-    };
-    for (const entry of sourceChain?.entries || []) visitBaseline(entry.candidateId);
-    const selectedCandidateIds = new Set(refs.map((entry) => entry.candidateId));
-    for (const descriptor of selectedDescriptors) {
-      for (const dependency of descriptor.manifest.requires) {
-        if (!selectedCandidateIds.has(dependency.candidateId)
-          && !baselineCandidateIds.has(dependency.candidateId)) {
-          fail("DEVELOPMENT_TEST_SET_DEPENDENCY_NOT_SELECTED", dependency.candidateId);
-        }
-      }
-    }
-    const assembled = await assembleDevelopmentTestTree({
-      baseRoot: resolvedBaseRoot,
-      baseInventory: baseTree,
-      stagingRoot: testSystem,
-      chain: provisionalChain,
-      packageDescriptors: descriptors,
-    });
-    if (confirmedPreview && assembled.finalTreeSha256 !== confirmedPreview.binding.finalTreeSha256) {
-      fail("DEVELOPMENT_PREVIEW_CHANGED");
-    }
-    const appliedPackages = assembled.appliedPackages.map((entry) => (
-      selectedCandidateIds.has(entry.candidateId)
-        ? {
-          candidateId: entry.candidateId,
-          packageSha256: entry.packageSha256,
-          status: "pending",
-          includedAs: "selected",
-          dependencyOf: null,
-        }
-        : entry
-    ));
-    const sourceReceiptSha256 = sha256(stableStringify({
-      domain: "bonni.development-test-set-receipts/v1",
-      receipts: selectedEntries.map((entry) => entry.receiptSha256),
-    }));
-    const manifestSha256 = sha256(stableStringify({
-      domain: "bonni.development-test-set-manifests/v1",
-      manifests: selectedEntries.map((entry) => entry.manifestSha256),
-    }));
-    const ready = createTestSetReadyReceipt({
-      candidateId,
-      packageSha256: selectionSha256,
-      selectionSha256,
-      sourceReceiptSha256,
-      manifestSha256,
-      targetVersion,
-      baseVersion: provisionalChain.baseVersion,
-      sourceChainSha256: sourceChain?.chainSha256 || null,
-      baseTreeSha256: provisionalChain.baseTreeSha256,
-      finalTreeSha256: assembled.finalTreeSha256,
-      ...(developmentMerge ? { developmentMerge } : {}),
-      members: selectedEntries,
-      fileCount: assembled.fileCount,
-      totalBytes: assembled.totalBytes,
-      appliedPackages,
-      stagedAt: timestamp(now),
-      testRelativePath: portableRelative(paths.productRoot, testSystem),
-    }, key);
-    await writeJsonExclusive(readyFile, ready);
-    await publishActiveTestSelection(paths, key, ready, now);
-    return {
-      candidateId,
-      packageSha256: selectionSha256,
-      selectionSha256,
-      members: selectedEntries.map(({ candidateId: memberId, packageSha256 }) => ({
-        candidateId: memberId,
-        packageSha256,
-      })),
-      finalTreeSha256: ready.finalTreeSha256,
-      ...(developmentMerge ? { developmentMerge } : {}),
-      testReadySha256: ready.testReadySha256,
-      testRelativePath: ready.testRelativePath,
-      idempotent: false,
-    };
-  } finally {
     if (descriptors) {
       await Promise.all([...descriptors.values()].map((entry) => entry.dispose().catch(() => undefined)));
     }
@@ -2928,17 +1704,11 @@ async function verifyReceiptPackageDescriptor(packagePath, receipt, expectedTarg
       || descriptor.manifestSha256 !== receipt.manifestSha256
       || descriptor.manifest.resultingTreeSha256 !== receipt.resultingTreeSha256
       || !sameRequires(descriptor.manifest.requires, receipt.requires)
-      || !sameStoredDevelopment(descriptor.manifest.development, receipt.development)
     ) fail("DEVELOPMENT_PACKAGE_DESCRIPTOR_MISMATCH", receipt.candidateId);
-    const versioned = descriptor.manifest.development !== undefined;
-    if (versioned
-      ? descriptor.manifest.development.baseVersion !== receipt.development?.baseVersion
-      : descriptor.manifest.targetVersion !== expectedTargetVersion) {
+    if (descriptor.manifest.targetVersion !== expectedTargetVersion) {
       fail(
-        versioned ? "DEVELOPMENT_PACKAGE_BASE_VERSION_MISMATCH" : "DEVELOPMENT_PACKAGE_TARGET_VERSION_MISMATCH",
-        versioned
-          ? `${receipt.candidateId}:${descriptor.manifest.development.baseVersion}:${receipt.development?.baseVersion}`
-          : `${receipt.candidateId}:${descriptor.manifest.targetVersion}:${expectedTargetVersion}`,
+        "DEVELOPMENT_PACKAGE_TARGET_VERSION_MISMATCH",
+        `${receipt.candidateId}:${descriptor.manifest.targetVersion}:${expectedTargetVersion}`,
       );
     }
   } finally {
@@ -2978,7 +1748,7 @@ async function assertTestReadyForApproval({
     ready.receipt.sourceReceiptSha256 !== pendingReceipt.receiptSha256
     || ready.receipt.manifestSha256 !== pendingReceipt.manifestSha256
     || ready.receipt.finalTreeSha256 !== pendingReceipt.resultingTreeSha256
-    || (pendingReceipt.development === undefined && ready.receipt.targetVersion !== chain.targetVersion)
+    || ready.receipt.targetVersion !== chain.targetVersion
     || ready.receipt.baseVersion !== chain.baseVersion
     || ready.receipt.baseTreeSha256 !== chain.baseTreeSha256
     || !sourceChainMatches
@@ -3015,7 +1785,7 @@ async function collectTreeOrNull(target) {
 
 async function promoteDevelopmentTestToCurrent(paths, key, ready, transaction) {
   await archiveTestReadyReceipt(paths, key, ready.receipt);
-  const testSystem = resolveTestReadySystemPath(paths, ready.receipt);
+  const testSystem = containedPath(paths.productRoot, ready.receipt.testRelativePath);
   const retiredPrevious = path.join(paths.root, `.PREVIOUS.${transaction.transactionId}.retired`);
   let currentTree = await collectTreeOrNull(paths.current);
   let testTree = await collectTreeOrNull(testSystem);
@@ -3197,13 +1967,12 @@ export async function recordDevelopmentReview({
     }
     return { ...current, chain, promotion, idempotent: true };
   }
-    const descriptor = {
-      manifestSha256: manifestSha256 === undefined ? latest.manifestSha256 : manifestSha256,
-      resultingTreeSha256: resultingTreeSha256 === undefined
-        ? latest.resultingTreeSha256
-        : resultingTreeSha256,
-      requires: requires === undefined ? latest.requires : requires,
-      ...(latest.development ? { development: latest.development } : {}),
+  const descriptor = {
+    manifestSha256: manifestSha256 === undefined ? latest.manifestSha256 : manifestSha256,
+    resultingTreeSha256: resultingTreeSha256 === undefined
+      ? latest.resultingTreeSha256
+      : resultingTreeSha256,
+    requires: requires === undefined ? latest.requires : requires,
   };
   assertNullableHash(descriptor.manifestSha256, "DEVELOPMENT_MANIFEST_HASH_INVALID");
   assertNullableHash(descriptor.resultingTreeSha256, "DEVELOPMENT_RESULT_TREE_HASH_INVALID");
@@ -3348,7 +2117,6 @@ export async function listDevelopmentPackages({
     candidates.push({
       candidateId: latest.candidateId,
       packageSha256: latest.packageSha256,
-      ...(latest.development ? { targetVersion: latest.development.displayVersion } : {}),
       status: latest.status,
       packageSizeBytes: latest.packageSizeBytes,
       reviewedAt: latest.reviewedAt,
@@ -3357,16 +2125,6 @@ export async function listDevelopmentPackages({
       manifestSha256: latest.manifestSha256,
       resultingTreeSha256: latest.resultingTreeSha256,
       requires: latest.requires,
-      ...(latest.development ? {
-        baseVersion: latest.development.baseVersion,
-        branch: latest.development.branch,
-        devNumber: latest.development.devNumber,
-        displayVersion: latest.development.displayVersion,
-        changedFiles: latest.development.changedFiles,
-        dependencies: latest.development.dependencies,
-        conflicts: latest.development.conflicts,
-        development: latest.development,
-      } : {}),
       receiptSha256: latest.receiptSha256,
       location: locations[0].kind === "trash"
         ? "trash"
@@ -3382,53 +2140,11 @@ function createCleanupPlanEnvelope(core, key) {
   return signedEnvelope(core, key, "planMac", "planSha256");
 }
 
-function normalizeCleanupActiveTestSelection(value) {
-  if (value === null) return null;
-  assertExactKeys(
-    value,
-    new Set([
-      "selectionReceiptSha256", "selectionSha256", "testReadySha256", "members",
-    ]),
-    "DEVELOPMENT_CLEANUP_PLAN_INVALID",
-    "activeTestSelection",
-  );
-  if (!Array.isArray(value.members) || !value.members.length || value.members.length > 256) {
-    fail("DEVELOPMENT_CLEANUP_PLAN_INVALID", "activeTestSelection.members");
-  }
-  const candidateIds = new Set();
-  const members = value.members.map((entry, index) => {
-    assertExactKeys(
-      entry,
-      new Set(["candidateId", "packageSha256"]),
-      "DEVELOPMENT_CLEANUP_PLAN_INVALID",
-      `activeTestSelection.members[${index}]`,
-    );
-    const normalized = {
-      candidateId: assertCandidateId(entry.candidateId),
-      packageSha256: assertHash(entry.packageSha256, "DEVELOPMENT_CLEANUP_PLAN_INVALID"),
-    };
-    if (candidateIds.has(normalized.candidateId)) {
-      fail("DEVELOPMENT_CLEANUP_PLAN_INVALID", "activeTestSelection.members.duplicate");
-    }
-    candidateIds.add(normalized.candidateId);
-    return normalized;
-  });
-  return {
-    selectionReceiptSha256: assertHash(
-      value.selectionReceiptSha256,
-      "DEVELOPMENT_CLEANUP_PLAN_INVALID",
-    ),
-    selectionSha256: assertHash(value.selectionSha256, "DEVELOPMENT_CLEANUP_PLAN_INVALID"),
-    testReadySha256: assertHash(value.testReadySha256, "DEVELOPMENT_CLEANUP_PLAN_INVALID"),
-    members,
-  };
-}
-
 function parseCleanupPlan(raw, key) {
   assertExactKeys(
     raw,
     new Set([
-      "schema", "createdAt", "activeTestSelection", "activeCandidateIds", "openCandidateIds", "preparedReleaseCandidateIds",
+      "schema", "createdAt", "activeCandidateIds", "openCandidateIds", "preparedReleaseCandidateIds",
       "discardPendingCandidateIds", "candidates", "protected", "reclaimableBytes", "planMac", "planSha256",
     ]),
     "DEVELOPMENT_CLEANUP_PLAN_INVALID",
@@ -3443,10 +2159,6 @@ function parseCleanupPlan(raw, key) {
   );
   if (core.schema !== DEVELOPMENT_CLEANUP_PLAN_SCHEMA) fail("DEVELOPMENT_CLEANUP_PLAN_SCHEMA_UNSUPPORTED");
   assertCanonicalTimestamp(core.createdAt, "DEVELOPMENT_CLEANUP_PLAN_TIME_INVALID");
-  const normalizedActiveTestSelection = normalizeCleanupActiveTestSelection(core.activeTestSelection);
-  if (stableStringify(normalizedActiveTestSelection) !== stableStringify(core.activeTestSelection)) {
-    fail("DEVELOPMENT_CLEANUP_PLAN_INVALID", "activeTestSelection");
-  }
   for (const [label, values] of Object.entries({
     activeCandidateIds: core.activeCandidateIds,
     openCandidateIds: core.openCandidateIds,
@@ -3539,12 +2251,6 @@ export async function createDevelopmentCleanupPlan({
   const prepared = new Set(normalized.preparedReleaseCandidateIds);
   const discardPending = new Set(normalized.discardPendingCandidateIds);
   const groups = await verifiedReceiptGroups(paths, key);
-  const activeTestSelection = await readActiveTestSetProtection(paths, key);
-  const activeTestMemberIdentities = new Set(
-    (activeTestSelection?.members || []).map((entry) => (
-      `${entry.candidateId}\0${entry.packageSha256}`
-    )),
-  );
   const chain = await readChainFile(paths, key, { required: false });
   const verifiedChain = chain
     ? await validateChainAgainstReceipts(paths, key, chain, groups)
@@ -3568,9 +2274,6 @@ export async function createDevelopmentCleanupPlan({
     if (active.has(latest.candidateId)) reasons.push("active");
     if (open.has(latest.candidateId)) reasons.push("open-test");
     if (prepared.has(latest.candidateId)) reasons.push("prepared-release");
-    if (activeTestMemberIdentities.has(`${latest.candidateId}\0${latest.packageSha256}`)) {
-      reasons.push("active-test-set");
-    }
     if (latest.status === "pending" && !discardPending.has(latest.candidateId)) reasons.push("pending");
     if (reasons.length) {
       protectedEntries.push({
@@ -3609,7 +2312,6 @@ export async function createDevelopmentCleanupPlan({
   const plan = createCleanupPlanEnvelope({
     schema: DEVELOPMENT_CLEANUP_PLAN_SCHEMA,
     createdAt: timestamp(now),
-    activeTestSelection,
     ...normalized,
     candidates,
     protected: protectedEntries,
@@ -3881,15 +2583,6 @@ export async function executeDevelopmentCleanup({
   if (expectedPlanSha256 !== undefined && verifiedPlan.planSha256 !== expectedPlanSha256) {
     fail("DEVELOPMENT_CLEANUP_PLAN_CHANGED");
   }
-  const activeTestSelection = await readActiveTestSetProtection(paths, key);
-  if (stableStringify(activeTestSelection) !== stableStringify(verifiedPlan.activeTestSelection)) {
-    fail("DEVELOPMENT_CLEANUP_ACTIVE_TEST_SELECTION_CHANGED");
-  }
-  const activeTestMemberIdentities = new Set(
-    (activeTestSelection?.members || []).map((entry) => (
-      `${entry.candidateId}\0${entry.packageSha256}`
-    )),
-  );
   const groups = await verifiedReceiptGroups(paths, key);
   const chain = await readChainFile(paths, key, { required: false });
   const verifiedChain = chain
@@ -3903,9 +2596,7 @@ export async function executeDevelopmentCleanup({
     ...[...verifiedChain.dependencyIdentities].map((identity) => identity.split("\0", 1)[0]),
   ]);
   for (const entry of verifiedPlan.candidates) {
-    if (protectedIds.has(entry.candidateId)
-      || activeTestMemberIdentities.has(`${entry.candidateId}\0${entry.packageSha256}`)
-      || entry.status === "approved") {
+    if (protectedIds.has(entry.candidateId) || entry.status === "approved") {
       fail("DEVELOPMENT_CLEANUP_PROTECTED", entry.candidateId);
     }
   }

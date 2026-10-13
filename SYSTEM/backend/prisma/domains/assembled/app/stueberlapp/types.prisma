@@ -19,3 +19,14 @@ enum RiskLevel {
   HIGH
   CRITICAL
 }
+
+// App-eigener Schweregrad. Der Name ist absichtlich vom Bonni-Core-Typ
+// `LogLevel` getrennt, damit das Stueberl-Schema sowohl isoliert als auch in
+// der gemeinsamen Client-Assembly ohne implizite Core-Typabhängigkeit gilt.
+enum StueberlLogLevel {
+  DEBUG
+  INFO
+  WARN
+  ERROR
+  FATAL
+}

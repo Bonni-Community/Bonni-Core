@@ -1,3 +1,6 @@
+import {ensureAppDatabaseRuntime} from "../distribution/app-database-runtime.js";
+import {createHash} from "node:crypto";
+import {readFile} from "node:fs/promises";
 import { Router, type Express, type NextFunction, type Request, type Response } from "express";
 import { existsSync } from "node:fs";
 import path from "node:path";
@@ -12,7 +15,7 @@ import { createModuleDataAdapterRuntime } from "../../../core/data-adapters/inde
 import { createModuleMediaRuntime } from "../../../core/media/index.js";
 import { createModuleVideoConferenceRuntime } from "../../../core/video-conferencing/index.js";
 import { createModuleInstanceIdentityRuntime } from "../../../core/instance-identity/index.js";
-import { createModuleDomainMessageRuntime } from "../../../core/domain-messages/index.js";
+import { createStagedModuleDomainMessageRuntime } from "../../../core/domain-messages/index.js";
 import { createModuleProtectedPeopleRuntime } from "../../../core/protected-people/index.js";
 import { createModuleProtectedOrganizationRuntime } from "../../../core/protected-organization/index.js";
 import { createModuleArchiveRuntime } from "../../../core/archive/index.js";
@@ -29,6 +32,7 @@ import {
   getPrismaClient,
 } from "../../../core/database/database.js";
 import { createModulePrivateDataRuntime } from "../../security/crypto/index.js";
+import { createModuleNfcRuntime } from "../../security/nfc/index.js";
 import { createModuleTwoFactorRuntime } from "../../security/two-factor/index.js";
 import { createStagedModuleTwoFactorProviderRuntime } from "../../security/two-factor/two-factor-provider-registry.js";
 import {
@@ -223,7 +227,9 @@ async function loadModule(
       );
     }
 
-    const entry = await import(pathToFileURL(resolvedEntry.entryPath).href);
+    await ensureAppDatabaseRuntime(path.resolve(resolveBonniProjectRoot(),installPath),module.key);
+    const codeHash=createHash("sha256").update(await readFile(resolvedEntry.entryPath)).digest("hex");
+    const entry = await import(pathToFileURL(resolvedEntry.entryPath).href+"?bonni="+codeHash);
     const register = entry.registerModule || entry.default;
 
     if (typeof register !== "function") {
@@ -244,7 +250,7 @@ async function loadModule(
     // A provider plugin such as 2FA owns no application domain, therefore the
     // runtime must exist only when the manifest explicitly requests it.
     const domainMessageRuntime = declaredDependencies.has("core.domain-messages")
-      ? createModuleDomainMessageRuntime(module.key, corePrisma)
+      ? createStagedModuleDomainMessageRuntime(module.key, corePrisma)
       : null;
     registrationCleanup = normalizeRuntimeModuleCleanup(() => {
       domainMessageRuntime?.dispose();
@@ -259,7 +265,7 @@ async function loadModule(
       dataAdapters: createModuleDataAdapterRuntime(module.key),
       networkRequests: networkRequestRuntime.runtime,
       ...(domainMessageRuntime
-        ? { domainMessages: domainMessageRuntime }
+        ? { domainMessages: domainMessageRuntime.runtime }
         : {}),
       ...(declaredDependencies.has("core.protected-people")
         ? {
@@ -332,6 +338,14 @@ async function loadModule(
       ...(declaredDependencies.has("core.two-factor")
         ? { twoFactor: createModuleTwoFactorRuntime(module.key) }
         : {}),
+      ...(declaredDependencies.has("core.nfc")
+        ? {
+            nfc: createModuleNfcRuntime(
+              module.key,
+              manifest?.metadata?.nfcAccessProfiles,
+            ),
+          }
+        : {}),
       ...(declaredDependencies.has("core.two-factor-provider")
         ? { twoFactorProvider: twoFactorProviderRuntime.runtime }
         : {}),
@@ -365,9 +379,10 @@ async function loadModule(
     });
     const moduleCleanup = normalizeRuntimeModuleCleanup(registrationResult);
     registrationCleanup = normalizeRuntimeModuleCleanup(async () => {
-      // Revoke every network capability and abort in-flight work before
-      // awaiting add-on cleanup. A slow disposer must not keep the module
-      // remotely reachable.
+      // Revoke every Core capability and abort in-flight work before awaiting
+      // add-on cleanup. A slow disposer must not keep the module remotely
+      // reachable or leave message subscriptions/retry timers alive.
+      domainMessageRuntime?.dispose();
       networkRequestRuntime.dispose();
       twoFactorProviderRuntime.dispose();
       let cleanupError: unknown;
@@ -385,6 +400,7 @@ async function loadModule(
       registrationCleanup,
       isCurrent,
       () => {
+        domainMessageRuntime?.activate();
         networkRequestRuntime.activate();
         twoFactorProviderRuntime.activate();
       },

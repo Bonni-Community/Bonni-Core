@@ -365,7 +365,9 @@ export async function changeMePassword(accountId: string, input: ChangeOwnPasswo
   if (!PERSONAL_ACCOUNT_TYPES.has(account.type)) {
     throw accountError(
       "TECHNICAL_ACCOUNT_PASSWORD_FORBIDDEN",
-      "Technische Terminal- und Dienstkonten dürfen kein interaktives Passwort besitzen.",
+      account.type === AccountType.TERMINAL
+        ? "Terminal-Passwörter werden durch die Benutzerverwaltung in Bonni Core gesetzt."
+        : "Reine Dienstkonten dürfen kein interaktives Passwort besitzen.",
       409,
     );
   }

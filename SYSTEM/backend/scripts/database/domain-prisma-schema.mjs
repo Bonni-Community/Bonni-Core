@@ -26,7 +26,7 @@ const sourceDirectories = Object.freeze({
 
 const moduleDomainPackages = Object.freeze({
   hocket: Object.freeze({ packageDirectory: "hocketapp", required: false }),
-  kontor: Object.freeze({ packageDirectory: "kontorapp", required: true }),
+  kontor: Object.freeze({ packageDirectory: "kontorapp", required: false }),
   meet: Object.freeze({ packageDirectory: "meetapp", required: false }),
   stueberl: Object.freeze({ packageDirectory: "stueberlapp", required: false }),
   pos: Object.freeze({ packageDirectory: "posapp", required: false }),
@@ -96,7 +96,7 @@ export async function listActiveDataDomains(projectRoot) {
     if (!files.length) throw new Error(`DATA_DOMAIN_SCHEMA_EMPTY:${domain}`);
     active.push(domain);
   }
-  if (!active.includes("core") || !active.includes("kontor")) {
+  if (!active.includes("core")) {
     throw new Error("DATA_DOMAIN_REQUIRED_SET_INVALID");
   }
   return Object.freeze(active);

@@ -1,9 +1,9 @@
 export const systemManifest = {
   key: "system",
   legacyKeys: ["system"],
-  label: "System",
+  label: "Bonni Core",
   kind: "system",
-  version: "0.1.20+e",
+  version: "0.1.20+h-DEV.11",
   provides: [
     "system",
     "system.overview",

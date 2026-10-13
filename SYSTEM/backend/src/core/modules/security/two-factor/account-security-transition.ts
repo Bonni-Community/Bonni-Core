@@ -21,6 +21,7 @@ const FORBIDDEN_ACCOUNT_PATCH_KEYS = new Set([
 ]);
 
 type TechnicalSecurityState = {
+  type?: AccountType;
   passwordHash?: unknown;
   twoFactorProviderId?: unknown;
   twoFactorEnrolledAt?: unknown;
@@ -45,6 +46,7 @@ type TechnicalSecurityState = {
 };
 
 const TECHNICAL_SECURITY_STATE_SELECT = Object.freeze({
+  type: true,
   passwordHash: true,
   twoFactorProviderId: true,
   twoFactorEnrolledAt: true,
@@ -92,14 +94,16 @@ export class AccountSecurityTransitionError extends Error {
 }
 
 /**
- * Detects credential/session residue which must never remain attached to a
- * technical principal. Callers select only the listed fields; no secret is
+ * Detects forbidden security residue. Terminals may keep their own password
+ * and browser sessions; services may not. Neither inherits personal 2FA.
+ * Callers select only the listed fields; no secret is
  * exposed outside the owning Core Security transition.
  */
 export function accountHasTechnicalSecurityMaterial(account: TechnicalSecurityState | null | undefined) {
   if (!account) return false;
+  const terminal = account.type === "TERMINAL";
   if (
-    account.passwordHash !== null && account.passwordHash !== undefined
+    !terminal && account.passwordHash !== null && account.passwordHash !== undefined
     || account.twoFactorProviderId !== null && account.twoFactorProviderId !== undefined
     || account.twoFactorEnrolledAt !== null && account.twoFactorEnrolledAt !== undefined
     || account.privateDataTwoFactorEnrolledAt !== null && account.privateDataTwoFactorEnrolledAt !== undefined
@@ -123,8 +127,8 @@ export function accountHasTechnicalSecurityMaterial(account: TechnicalSecuritySt
         && account.twoFactorEnrollment.enrollmentPasswordHash !== undefined
     )
   ) return true;
-  if ((account.sessions || []).some((session) => !session.endedAt)) return true;
-  if ((account.refreshTokens || []).some((token) => !token.revokedAt)) return true;
+  if (!terminal && (account.sessions || []).some((session) => !session.endedAt)) return true;
+  if (!terminal && (account.refreshTokens || []).some((token) => !token.revokedAt)) return true;
   if ((account.passwordRecoveryRequests || []).length > 0) return true;
   return false;
 }
@@ -147,6 +151,7 @@ function validateInput(input: {
   nextType: AccountType;
   nextIsActive: boolean;
   force?: boolean;
+  terminalPasswordHash?: string;
   accountData?: Record<string, unknown>;
 }) {
   if (
@@ -162,6 +167,14 @@ function validateInput(input: {
       && input.previousType === input.nextType
       && input.previousIsActive === input.nextIsActive)
   ) throw new AccountSecurityTransitionError();
+
+  if (input.terminalPasswordHash !== undefined && (
+    input.previousType !== "TERMINAL"
+    || input.nextType !== "TERMINAL"
+    || !input.force
+    || typeof input.terminalPasswordHash !== "string"
+    || !input.terminalPasswordHash
+  )) throw new AccountSecurityTransitionError();
 
   for (const key of Object.keys(input.accountData || {})) {
     if (FORBIDDEN_ACCOUNT_PATCH_KEYS.has(key)) throw new AccountSecurityTransitionError();
@@ -249,8 +262,9 @@ async function shredTwoFactorMaterial(
  * confirmation rolls the complete transition back instead of splitting state.
  *
  * Personal account deactivation intentionally preserves an active TOTP and
- * advances it to the new revision. Technical targets are passwordless and all
- * local/external 2FA binding material is revoked or shredded.
+ * advances it to the new revision. An unchanged TERMINAL keeps its own password
+ * (or receives an admin-rotated hash). Conversions involving technical accounts
+ * never inherit passwords. All technical 2FA material is shredded.
  */
 export async function transitionAccountSecurity(
   transaction: any,
@@ -263,6 +277,7 @@ export async function transitionAccountSecurity(
     nextIsActive: boolean;
     twoFactorProviderId?: string | null;
     force?: boolean;
+    terminalPasswordHash?: string;
     accountData?: Record<string, unknown>;
   },
 ) {
@@ -271,6 +286,7 @@ export async function transitionAccountSecurity(
   const technicalTarget = TECHNICAL_ACCOUNT_TYPES.has(input.nextType);
   const technicalSource = TECHNICAL_ACCOUNT_TYPES.has(input.previousType);
   const resetTechnicalCredentials = technicalTarget || technicalSource;
+  const sameTerminal = input.previousType === "TERMINAL" && input.nextType === "TERMINAL";
   const accountUpdate = await transaction.account.updateMany({
     where: {
       id: input.accountId,
@@ -285,7 +301,8 @@ export async function transitionAccountSecurity(
       credentialRevision: { increment: 1 },
       passwordRecoveryRequestId: null,
       ...(resetTechnicalCredentials ? {
-        passwordHash: null,
+        ...(!sameTerminal ? { passwordHash: null } : input.terminalPasswordHash !== undefined
+          ? { passwordHash: input.terminalPasswordHash } : {}),
         passwordRecoveryLockedAt: null,
         twoFactorProviderId: null,
         twoFactorEnrolledAt: null,

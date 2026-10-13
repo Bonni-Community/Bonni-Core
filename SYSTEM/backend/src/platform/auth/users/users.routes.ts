@@ -1,4 +1,6 @@
 import { Router } from "express";
+import { nfcManagementRouter } from "../../../core/modules/security/nfc/routes.js";
+import { presenceManagementRouter } from "../../../core/modules/security/presence/routes.js";
 
 import { currentUserMiddleware } from "../middleware/current-user.middleware.js";
 import { requireAuth } from "../../security/identity/middleware/requireAuth.js";
@@ -32,7 +34,9 @@ const requireUserManager = requireAnyPermission(
 systemUsersRouter.get("/", requireUserManager, getUsersOverviewController);
 systemUsersRouter.get("/list", requireUserManager, getUsersOverviewController);
 systemUsersRouter.get("/overview", requireUserManager, getUsersOverviewController);
+systemUsersRouter.use("/presence", requireUserManager, presenceManagementRouter);
 systemUsersRouter.get("/members/:memberId", requireUserManager, getMemberDetailsController);
+systemUsersRouter.use("/members/:memberId/nfc", requireUserManager, nfcManagementRouter);
 systemUsersRouter.post("/", requireUserManager, createLocalMemberController);
 systemUsersRouter.patch("/members/:memberId", requireUserManager, updateMemberByIdController);
 systemUsersRouter.patch("/:accountId/access", requirePermission("SYSTEM_ADMIN"), updateLocalMemberAccessController);

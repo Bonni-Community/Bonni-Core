@@ -83,7 +83,7 @@ export function parseDevelopmentAssemblyRequest(raw) {
     stagingRoot: normalizePath(raw.stagingRoot, "request.stagingRoot"),
     expectedFinalRoot: Object.hasOwn(raw, "expectedFinalRoot")
       ? normalizePath(raw.expectedFinalRoot, "request.expectedFinalRoot")
-      : path.join(productRoot, "RUN_DEV", "CURRENT"),
+      : path.join(productRoot, "DEVELOPMENT", "CURRENT"),
     ...(Object.hasOwn(raw, "keyFile")
       ? { keyFile: normalizePath(raw.keyFile, "request.keyFile") }
       : {}),
@@ -154,7 +154,7 @@ export async function resolveVerifiedDevelopmentAssemblyBase({ request, chain })
   if (typeof chain.baseTreeSha256 !== "string" || !SHA256.test(chain.baseTreeSha256)) {
     fail("DEVELOPMENT_ASSEMBLY_BASE_TREE_HASH_INVALID");
   }
-  const basesRoot = path.join(request.productRoot, "RUN_DEV", "BASES");
+  const basesRoot = path.join(request.productRoot, "DEVELOPMENT", "BASES");
   const envelopeRoot = path.join(basesRoot, chain.baseVersion);
   const baseRoot = path.join(envelopeRoot, "SYSTEM");
   if (request.baseRoot !== null && path.resolve(request.baseRoot) !== path.resolve(baseRoot)) {
@@ -162,7 +162,7 @@ export async function resolveVerifiedDevelopmentAssemblyBase({ request, chain })
   }
   for (const directory of [
     request.productRoot,
-    path.join(request.productRoot, "RUN_DEV"),
+    path.join(request.productRoot, "DEVELOPMENT"),
     basesRoot,
     envelopeRoot,
     baseRoot,

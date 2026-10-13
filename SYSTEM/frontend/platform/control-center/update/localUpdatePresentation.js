@@ -42,10 +42,16 @@ export const ACCEPTED_UPDATE_STATUS_TIMEOUT_MS = 60_000;
 export const ACCEPTED_UPDATE_TRANSITION_MAX_AGE_MS = 5 * 60_000;
 export const UPDATE_CONFIRMATION_WINDOW_MS = 60_000;
 
-export function formatBonniCoreVersion(value) {
+export function formatBonniVersion(value) {
   const version = String(value || "").trim();
   if (!version) return "—";
-  return version.replace(/^(\d+\.\d+\.\d+)\+([A-Za-z])$/u, "$1$2");
+  return version
+    .replace(/^(\d+\.\d+\.\d+)\+([A-Za-z]+)(-DEV\.[1-9]\d*)$/u, "$1$2$3")
+    .replace(/^(\d+\.\d+\.\d+)\+([A-Za-z]+)$/u, "$1$2");
+}
+
+export function formatBonniCoreVersion(value) {
+  return formatBonniVersion(value);
 }
 
 const CANDIDATE_STEP_LABELS = Object.freeze({

@@ -1,6 +1,6 @@
 # Security
 
-Kanonischer Bonni-Core-Owner für 2FA/TOTP, native Kontowiederherstellung, Sicherheitsnachweise, Credential-Revisionen, Schutzfreigaben und sicherheitsrelevante Kryptografie. TOTP und die quorumgeschützte Passwortwiederherstellung sind Bestandteile von Core; externe Anbieter sind ausschließlich optionale, fail-closed Adapter.
+Kanonischer Bonni-Core-Owner für die verpflichtende 2FA-Engine und TOTP, native Kontowiederherstellung, Sicherheitsnachweise, Credential-Revisionen, Schutzfreigaben und sicherheitsrelevante Kryptografie. Enrollment, Login-Challenges, Recovery-Codes, Lockout und Fail-Closed-Regeln bleiben immer in Core. Externe Anbieter wie privacyIDEA sind ausschließlich optionale Provider-Adapter und dürfen keine Core-Datenbank oder Core-2FA ersetzen.
 
 Bei der Kontowiederherstellung sind aktive persönliche Admin-Konten kraft Core-Rolle prüfberechtigt. Die Policy-Liste `reviewerAccountIds` bezeichnet bis zu sechs **zusätzliche** ausdrücklich benannte Notfallberechtigte; sie ersetzt die Admin-Berechtigung nicht. Jeder Antrag friert die zu diesem Zeitpunkt tatsächlich 2FA-fähige Gesamtmenge und die Policy-Revision ein.
 

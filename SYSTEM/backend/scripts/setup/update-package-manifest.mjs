@@ -4,18 +4,8 @@ import fs from "node:fs/promises";
 import path from "node:path";
 
 import { parseEd25519SpkiPublicKey } from "../../src/system/update-runner/trusted-keys.mjs";
-import {
-  BONNI_APP_REGISTRY_FILE_NAME,
-  BONNI_APP_REGISTRY_PAYLOAD_PATH,
-  appManifestScope,
-  parseBonniAppRegistry,
-  parseBonniAppRegistryBinding,
-  readBonniAppRegistryFile,
-  verifyBonniAppRegistryBinding,
-} from "./app-registry.mjs";
 
 export const UPDATE_PACKAGE_SCHEMA = "bonni.update/v2";
-export const REGISTRY_UPDATE_PACKAGE_SCHEMA = "bonni.update/v3";
 export const LEGACY_UPDATE_PACKAGE_SCHEMA = "bonni.update/v1";
 export const UPDATE_PACKAGE_MANIFEST_NAME = "UPDATE-MANIFEST.json";
 export const UPDATE_PACKAGE_COMPONENTS = Object.freeze([
@@ -40,13 +30,11 @@ export const UPDATE_PACKAGE_SIGNATURE_SCOPES = Object.freeze([
 const SIGNATURE_SCOPE_SET = new Set(UPDATE_PACKAGE_SIGNATURE_SCOPES);
 const INCLUDED_APP_SET = new Set(UPDATE_PACKAGE_INCLUDED_APPS);
 const UPDATE_SIGNATURE_DOMAIN = "BONNI_UPDATE_MANIFEST_V2";
-const REGISTRY_UPDATE_SIGNATURE_DOMAIN = "BONNI_UPDATE_MANIFEST_V3";
 const SHA256_HEX = /^[a-f0-9]{64}$/u;
 const UPDATE_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$/u;
 const VERSION_TOKEN = /^[A-Za-z0-9][A-Za-z0-9._+-]{0,127}$/u;
 const PLATFORM_TOKEN = /^[a-z0-9][a-z0-9._-]{0,63}$/u;
 const INCLUDED_APP_TOKEN = /^[A-Z][A-Z0-9_-]{1,63}$/u;
-const STRICT_SEMVER = /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-(?:(?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*))*))?(?:\+(?:[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$/u;
 const KEY_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u;
 const ED25519_SIGNATURE_BASE64 = /^[A-Za-z0-9+/]{86}==$/u;
 const CANONICAL_UTC_TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u;
@@ -103,17 +91,10 @@ export function canonicalizeUpdatePackageSignedPayload(value) {
   return stableStringify(parseV2SignedPayload(value));
 }
 
-export function canonicalizeRegistryUpdatePackageSignedPayload(value) {
-  return stableStringify(parseV3SignedPayload(value));
-}
-
-function signatureBytes(schema, signed, scope, allowedScopes) {
-  if (!allowedScopes.has(scope)) fail("UPDATE_PACKAGE_SIGNATURE_SCOPE_INVALID", String(scope));
-  const domain = schema === REGISTRY_UPDATE_PACKAGE_SCHEMA
-    ? REGISTRY_UPDATE_SIGNATURE_DOMAIN
-    : UPDATE_SIGNATURE_DOMAIN;
+function signatureBytes(signed, scope) {
+  if (!SIGNATURE_SCOPE_SET.has(scope)) fail("UPDATE_PACKAGE_SIGNATURE_SCOPE_INVALID", String(scope));
   return Buffer.from(
-    `${domain}\n${scope}\n${stableStringify(signed)}\n`,
+    `${UPDATE_SIGNATURE_DOMAIN}\n${scope}\n${stableStringify(signed)}\n`,
     "utf8",
   );
 }
@@ -413,120 +394,8 @@ function parseV2SignedPayload(raw) {
   };
 }
 
-function parseV3Apps(rawApps) {
-  if (!Array.isArray(rawApps) || rawApps.length > 128) {
-    fail("UPDATE_PACKAGE_APPS_INVALID");
-  }
-  const ids = new Set();
-  const paths = new Set();
-  const apps = rawApps.map((entry, index) => {
-    const label = `manifest.signed.apps[${index}]`;
-    assertExactKeys(
-      entry,
-      new Set(["id", "version", "path", "fileCount", "totalBytes", "treeSha256"]),
-      new Set(["id", "version", "path", "fileCount", "totalBytes", "treeSha256"]),
-      label,
-    );
-    if (typeof entry.id !== "string" || !/^[A-Z][A-Z0-9._-]{1,63}$/u.test(entry.id)) {
-      fail("UPDATE_PACKAGE_APP_ID_INVALID", String(entry.id || ""));
-    }
-    if (ids.has(entry.id)) fail("UPDATE_PACKAGE_APP_DUPLICATE", entry.id);
-    ids.add(entry.id);
-    if (typeof entry.version !== "string" || !STRICT_SEMVER.test(entry.version)) {
-      fail("UPDATE_PACKAGE_APP_VERSION_INVALID", entry.id);
-    }
-    const appPath = normalizeRelativePath(entry.path, `${label}.path`);
-    if (!appPath.startsWith("app/") || appPath.split("/").length !== 2) {
-      fail("UPDATE_PACKAGE_APP_PATH_INVALID", `${entry.id}:${appPath}`);
-    }
-    if (paths.has(pathCollisionKey(appPath))) fail("UPDATE_PACKAGE_APP_PATH_DUPLICATE", appPath);
-    paths.add(pathCollisionKey(appPath));
-    if (!Number.isSafeInteger(entry.fileCount) || entry.fileCount < 1) {
-      fail("UPDATE_PACKAGE_APP_FILE_COUNT_INVALID", entry.id);
-    }
-    if (!Number.isSafeInteger(entry.totalBytes) || entry.totalBytes < 1) {
-      fail("UPDATE_PACKAGE_APP_TOTAL_BYTES_INVALID", entry.id);
-    }
-    if (typeof entry.treeSha256 !== "string" || !SHA256_HEX.test(entry.treeSha256)) {
-      fail("UPDATE_PACKAGE_APP_TREE_HASH_INVALID", entry.id);
-    }
-    return Object.freeze({
-      id: entry.id,
-      version: entry.version,
-      path: appPath,
-      fileCount: entry.fileCount,
-      totalBytes: entry.totalBytes,
-      treeSha256: entry.treeSha256,
-    });
-  });
-  for (let index = 1; index < apps.length; index += 1) {
-    if (bytewiseCompare(apps[index - 1].id, apps[index].id) >= 0) {
-      fail("UPDATE_PACKAGE_APPS_ORDER_INVALID");
-    }
-  }
-  return apps;
-}
-
-function parseV3SignedPayload(raw) {
-  assertExactKeys(
-    raw,
-    new Set([
-      "updateId", "channel", "releaseSequence", "createdAt", "payloads",
-      "releaseNotes", "appRegistry", "apps",
-    ]),
-    new Set([
-      "updateId", "channel", "releaseSequence", "createdAt", "payloads",
-      "appRegistry", "apps",
-    ]),
-    "manifest.signed",
-  );
-  if (typeof raw.updateId !== "string" || !UPDATE_ID.test(raw.updateId)) {
-    fail("UPDATE_PACKAGE_UPDATE_ID_INVALID");
-  }
-  if (!new Set(["stable", "development"]).has(raw.channel)) {
-    fail("UPDATE_PACKAGE_CHANNEL_INVALID", String(raw.channel));
-  }
-  if (!Number.isSafeInteger(raw.releaseSequence) || raw.releaseSequence < 1) {
-    fail("UPDATE_PACKAGE_RELEASE_SEQUENCE_INVALID");
-  }
-  let releaseNotes;
-  if (Object.hasOwn(raw, "releaseNotes")) {
-    if (
-      typeof raw.releaseNotes !== "string"
-      || !raw.releaseNotes.trim()
-      || raw.releaseNotes !== raw.releaseNotes.normalize("NFC")
-      || Buffer.byteLength(raw.releaseNotes, "utf8") > MAX_RELEASE_NOTES_BYTES
-      || /[\u0000\u000b\u000c\u000e-\u001f\u007f]/u.test(raw.releaseNotes)
-    ) fail("UPDATE_PACKAGE_RELEASE_NOTES_INVALID");
-    releaseNotes = raw.releaseNotes;
-  }
-  const payloads = parsePayloads(raw.payloads, "manifest.signed.payloads");
-  if (!payloads.some((payload) => payload.component === "SYSTEM")) {
-    fail("UPDATE_PACKAGE_APP_REGISTRY_REQUIRES_SYSTEM");
-  }
-  const appRegistry = parseBonniAppRegistryBinding(raw.appRegistry);
-  const apps = parseV3Apps(raw.apps);
-  return {
-    updateId: raw.updateId,
-    channel: raw.channel,
-    releaseSequence: raw.releaseSequence,
-    createdAt: validateCanonicalTimestamp(raw.createdAt),
-    payloads,
-    appRegistry,
-    apps,
-    ...(releaseNotes === undefined ? {} : { releaseNotes }),
-  };
-}
-
-function signatureScopesFor(schema, signed) {
-  if (schema === UPDATE_PACKAGE_SCHEMA) return new Set(SIGNATURE_SCOPE_SET);
-  const scopes = new Set(["RELEASE", ...signed.payloads.map((payload) => payload.component)]);
-  for (const app of signed.apps) scopes.add(appManifestScope(app.id));
-  return scopes;
-}
-
-function parseSignatures(raw, allowedScopes) {
-  if (!Array.isArray(raw) || raw.length > Math.max(16, allowedScopes.size * 4)) {
+function parseV2Signatures(raw) {
+  if (!Array.isArray(raw) || raw.length > UPDATE_PACKAGE_SIGNATURE_SCOPES.length * 4) {
     fail("UPDATE_PACKAGE_SIGNATURES_INVALID");
   }
   const identities = new Set();
@@ -542,7 +411,7 @@ function parseSignatures(raw, allowedScopes) {
     if (typeof entry.keyId !== "string" || !KEY_ID.test(entry.keyId)) {
       fail("UPDATE_PACKAGE_SIGNATURE_KEY_ID_INVALID", label);
     }
-    if (typeof entry.scope !== "string" || !allowedScopes.has(entry.scope)) {
+    if (typeof entry.scope !== "string" || !SIGNATURE_SCOPE_SET.has(entry.scope)) {
       fail("UPDATE_PACKAGE_SIGNATURE_SCOPE_INVALID", label);
     }
     if (typeof entry.value !== "string" || !ED25519_SIGNATURE_BASE64.test(entry.value)) {
@@ -575,17 +444,11 @@ export function parseUpdatePackageManifest(raw) {
     new Set(["schema", "signed", "signatures"]),
     "manifest",
   );
-  if (!new Set([UPDATE_PACKAGE_SCHEMA, REGISTRY_UPDATE_PACKAGE_SCHEMA]).has(raw.schema)) {
-    fail("UPDATE_PACKAGE_SCHEMA_UNSUPPORTED");
-  }
-  const signed = raw.schema === REGISTRY_UPDATE_PACKAGE_SCHEMA
-    ? parseV3SignedPayload(raw.signed)
-    : parseV2SignedPayload(raw.signed);
-  const allowedScopes = signatureScopesFor(raw.schema, signed);
+  if (raw.schema !== UPDATE_PACKAGE_SCHEMA) fail("UPDATE_PACKAGE_SCHEMA_UNSUPPORTED");
   return {
-    schema: raw.schema,
-    signed,
-    signatures: parseSignatures(raw.signatures, allowedScopes),
+    schema: UPDATE_PACKAGE_SCHEMA,
+    signed: parseV2SignedPayload(raw.signed),
+    signatures: parseV2Signatures(raw.signatures),
   };
 }
 
@@ -610,9 +473,9 @@ function asEd25519PublicKey(value) {
   }
 }
 
-function signManifest(schema, signed, signers) {
+export function signUpdatePackageManifest(signedInput, signers) {
+  const signed = parseV2SignedPayload(signedInput);
   if (!Array.isArray(signers)) fail("UPDATE_PACKAGE_SIGNERS_INVALID");
-  const allowedScopes = signatureScopesFor(schema, signed);
   const signatures = signers.map((signer, index) => {
     const label = `signers[${index}]`;
     assertExactKeys(
@@ -624,7 +487,7 @@ function signManifest(schema, signed, signers) {
     if (typeof signer.keyId !== "string" || !KEY_ID.test(signer.keyId)) {
       fail("UPDATE_PACKAGE_SIGNATURE_KEY_ID_INVALID", label);
     }
-    if (typeof signer.scope !== "string" || !allowedScopes.has(signer.scope)) {
+    if (typeof signer.scope !== "string" || !SIGNATURE_SCOPE_SET.has(signer.scope)) {
       fail("UPDATE_PACKAGE_SIGNATURE_SCOPE_INVALID", label);
     }
     return {
@@ -633,24 +496,12 @@ function signManifest(schema, signed, signers) {
       scope: signer.scope,
       value: crypto.sign(
         null,
-        signatureBytes(schema, signed, signer.scope, allowedScopes),
+        signatureBytes(signed, signer.scope),
         asEd25519PrivateKey(signer.privateKey),
       ).toString("base64"),
     };
   });
-  return parseUpdatePackageManifest({ schema, signed, signatures });
-}
-
-export function signUpdatePackageManifest(signedInput, signers) {
-  return signManifest(UPDATE_PACKAGE_SCHEMA, parseV2SignedPayload(signedInput), signers);
-}
-
-export function signRegistryUpdatePackageManifest(signedInput, signers) {
-  return signManifest(
-    REGISTRY_UPDATE_PACKAGE_SCHEMA,
-    parseV3SignedPayload(signedInput),
-    signers,
-  );
+  return parseUpdatePackageManifest({ schema: UPDATE_PACKAGE_SCHEMA, signed, signatures });
 }
 
 export function createUnsignedDevelopmentUpdatePackageManifest(signedInput) {
@@ -799,7 +650,7 @@ function trustedKeyEntry(trustedKeys, keyId) {
   return trustedKeys[keyId];
 }
 
-function parseTrustedKeyEntry(raw, keyId, allowedScopes) {
+function parseTrustedKeyEntry(raw, keyId) {
   assertExactKeys(
     raw,
     new Set(["publicKey", "scopes"]),
@@ -811,7 +662,7 @@ function parseTrustedKeyEntry(raw, keyId, allowedScopes) {
   }
   const scopes = new Set();
   for (const scope of raw.scopes) {
-    if (typeof scope !== "string" || !allowedScopes.has(scope) || scopes.has(scope)) {
+    if (typeof scope !== "string" || !SIGNATURE_SCOPE_SET.has(scope) || scopes.has(scope)) {
       fail("UPDATE_PACKAGE_TRUSTED_KEY_SCOPE_INVALID", keyId);
     }
     scopes.add(scope);
@@ -882,55 +733,8 @@ export function verifyUpdatePackageAuthenticity(manifestInput, options = {}) {
   }
 
   const declaredScopes = new Set(signed.payloads.map((payload) => payload.component));
-  const signedApps = manifest.schema === REGISTRY_UPDATE_PACKAGE_SCHEMA
-    ? signed.apps.map((app) => app.id)
-    : (signed.includedApps || []);
-  const declaredAppScopes = new Set(signedApps.map((app) => `APP:${app}`));
+  const declaredAppScopes = new Set((signed.includedApps || []).map((app) => `APP:${app}`));
   const requiredScopes = new Set(["RELEASE", ...declaredScopes, ...declaredAppScopes]);
-  const allowedScopes = signatureScopesFor(manifest.schema, signed);
-  let registryById = new Map();
-  if (manifest.schema === REGISTRY_UPDATE_PACKAGE_SCHEMA) {
-    if (!options.appRegistry || options.appRegistryBytes === undefined) {
-      fail("UPDATE_PACKAGE_APP_REGISTRY_REQUIRED");
-    }
-    const registry = verifyBonniAppRegistryBinding(
-      parseBonniAppRegistry(options.appRegistry),
-      options.appRegistryBytes,
-      signed.appRegistry,
-    );
-    if (options.previousAppRegistry !== undefined && options.previousAppRegistry !== null) {
-      const previous = parseBonniAppRegistry(options.previousAppRegistry);
-      if (previous.registryId !== registry.registryId) {
-        fail("UPDATE_PACKAGE_APP_REGISTRY_IDENTITY_CHANGED");
-      }
-      if (registry.sequence < previous.sequence) {
-        fail("UPDATE_PACKAGE_APP_REGISTRY_SEQUENCE_ROLLBACK");
-      }
-      const nextById = new Map(registry.apps.map((app) => [app.id, app]));
-      for (const existing of previous.apps) {
-        const next = nextById.get(existing.id);
-        if (!next || stableStringify(next) !== stableStringify(existing)) {
-          fail("UPDATE_PACKAGE_APP_REGISTRY_ENTRY_CHANGED", existing.id);
-        }
-      }
-      const addedApps = registry.apps.length - previous.apps.length;
-      const sequenceDelta = registry.sequence - previous.sequence;
-      if (sequenceDelta !== addedApps) {
-        fail(
-          "UPDATE_PACKAGE_APP_REGISTRY_SEQUENCE_DELTA_INVALID",
-          `${sequenceDelta}:${addedApps}`,
-        );
-      }
-    }
-    registryById = new Map(registry.apps.map((app) => [app.id, app]));
-    for (const app of signed.apps) {
-      const registered = registryById.get(app.id);
-      if (!registered) fail("UPDATE_PACKAGE_APP_NOT_REGISTERED", app.id);
-      if (app.path !== `app/${registered.directory}`) {
-        fail("UPDATE_PACKAGE_APP_REGISTRY_PATH_MISMATCH", app.id);
-      }
-    }
-  }
   const verifiedScopes = new Set();
   for (const signature of manifest.signatures) {
     if (
@@ -940,25 +744,16 @@ export function verifyUpdatePackageAuthenticity(manifestInput, options = {}) {
     ) {
       fail("UPDATE_PACKAGE_SIGNATURE_SCOPE_NOT_DECLARED", signature.scope);
     }
-    let rawTrusted;
-    if (signature.scope.startsWith("APP:") && manifest.schema === REGISTRY_UPDATE_PACKAGE_SCHEMA) {
-      const registered = registryById.get(signature.scope.slice("APP:".length));
-      if (!registered || signature.keyId !== registered.keyId) {
-        fail("UPDATE_PACKAGE_APP_SIGNER_NOT_REGISTERED", signature.scope);
-      }
-      rawTrusted = { publicKey: registered.publicKeyPem, scopes: [signature.scope] };
-    } else {
-      rawTrusted = trustedKeyEntry(options.trustedKeys, signature.keyId);
-    }
+    const rawTrusted = trustedKeyEntry(options.trustedKeys, signature.keyId);
     if (!rawTrusted) continue;
-    const trusted = parseTrustedKeyEntry(rawTrusted, signature.keyId, allowedScopes);
+    const trusted = parseTrustedKeyEntry(rawTrusted, signature.keyId);
     if (!trusted.scopes.has(signature.scope)) {
       fail("UPDATE_PACKAGE_TRUSTED_KEY_SCOPE_MISMATCH", `${signature.keyId}:${signature.scope}`);
     }
     const signatureBytesValue = Buffer.from(signature.value, "base64");
     if (!crypto.verify(
       null,
-      signatureBytes(manifest.schema, signed, signature.scope, allowedScopes),
+      signatureBytes(signed, signature.scope),
       trusted.publicKey,
       signatureBytesValue,
     )) fail("UPDATE_PACKAGE_SIGNATURE_INVALID", `${signature.keyId}:${signature.scope}`);
@@ -976,109 +771,15 @@ export function verifyUpdatePackageAuthenticity(manifestInput, options = {}) {
   };
 }
 
-function appFilesFromSystemPayload(systemPayload, appPath) {
-  const prefix = `${appPath}/`;
-  return systemPayload.files
-    .filter((file) => file.path.startsWith(prefix))
-    .map((file) => ({ ...file, path: file.path.slice(prefix.length) }));
-}
-
-async function readAppPackageVersion(applicationRoot, appId) {
-  const packageFile = path.join(applicationRoot, "package.json");
-  const state = await lstatOrNull(packageFile);
-  if (
-    !state
-    || !state.isFile()
-    || state.isSymbolicLink()
-    || state.nlink !== 1
-    || state.size < 2
-    || state.size > 1024 * 1024
-  ) fail("UPDATE_PACKAGE_APP_PACKAGE_JSON_INVALID", appId);
-  let raw;
-  try {
-    raw = JSON.parse(await fs.readFile(packageFile, "utf8"));
-  } catch (cause) {
-    fail("UPDATE_PACKAGE_APP_PACKAGE_JSON_INVALID", appId, { cause });
-  }
-  if (!isPlainObject(raw) || typeof raw.version !== "string" || !STRICT_SEMVER.test(raw.version)) {
-    fail("UPDATE_PACKAGE_APP_VERSION_INVALID", appId);
-  }
-  return raw.version;
-}
-
-async function verifyRegistryApplications(packageRoot, signed) {
-  const registryFile = path.join(packageRoot, ...BONNI_APP_REGISTRY_PAYLOAD_PATH.split("/"));
-  const loaded = await readBonniAppRegistryFile(registryFile);
-  const registry = verifyBonniAppRegistryBinding(
-    loaded.registry,
-    loaded.bytes,
-    signed.appRegistry,
-  );
-  const registryById = new Map(registry.apps.map((app) => [app.id, app]));
-  const systemPayload = signed.payloads.find((payload) => payload.component === "SYSTEM");
-  if (!systemPayload) fail("UPDATE_PACKAGE_APP_REGISTRY_REQUIRES_SYSTEM");
-  const registryRelative = BONNI_APP_REGISTRY_FILE_NAME;
-  if (!systemPayload.files.some((file) => file.path === registryRelative)) {
-    fail("UPDATE_PACKAGE_APP_REGISTRY_NOT_IN_SYSTEM");
-  }
-
-  const declaredDirectories = new Map();
-  for (const app of signed.apps) {
-    const registered = registryById.get(app.id);
-    if (!registered) fail("UPDATE_PACKAGE_APP_NOT_REGISTERED", app.id);
-    const expectedPath = `app/${registered.directory}`;
-    if (app.path !== expectedPath) fail("UPDATE_PACKAGE_APP_REGISTRY_PATH_MISMATCH", app.id);
-    if (declaredDirectories.has(registered.directory)) {
-      fail("UPDATE_PACKAGE_APP_DIRECTORY_DUPLICATE", registered.directory);
-    }
-    declaredDirectories.set(registered.directory, app);
-    const files = appFilesFromSystemPayload(systemPayload, app.path);
-    if (files.length !== app.fileCount) fail("UPDATE_PACKAGE_APP_FILE_COUNT_MISMATCH", app.id);
-    const totalBytes = files.reduce((sum, file) => sum + file.sizeBytes, 0);
-    if (!Number.isSafeInteger(totalBytes) || totalBytes !== app.totalBytes) {
-      fail("UPDATE_PACKAGE_APP_TOTAL_BYTES_MISMATCH", app.id);
-    }
-    if (computePayloadTreeSha256(files) !== app.treeSha256) {
-      fail("UPDATE_PACKAGE_APP_TREE_HASH_MISMATCH", app.id);
-    }
-    const applicationRoot = path.join(packageRoot, "PAYLOAD", "SYSTEM", "app", registered.directory);
-    await assertPlainDirectory(applicationRoot, "UPDATE_PACKAGE_APP_DIRECTORY_MISSING");
-    const version = await readAppPackageVersion(applicationRoot, app.id);
-    if (version !== app.version) fail("UPDATE_PACKAGE_APP_VERSION_MISMATCH", app.id);
-  }
-
-  const appRoot = path.join(packageRoot, "PAYLOAD", "SYSTEM", "app");
-  const appRootState = await lstatOrNull(appRoot);
-  if (!appRootState) {
-    if (signed.apps.length) fail("UPDATE_PACKAGE_APP_DIRECTORY_MISSING");
-  } else {
-    if (!appRootState.isDirectory() || appRootState.isSymbolicLink()) {
-      fail("UPDATE_PACKAGE_APP_CONTAINER_UNSAFE");
-    }
-    const entries = await fs.readdir(appRoot, { withFileTypes: true });
-    entries.sort((left, right) => bytewiseCompare(left.name, right.name));
-    for (const entry of entries) {
-      const state = await fs.lstat(path.join(appRoot, entry.name));
-      if (!entry.isDirectory() || entry.isSymbolicLink() || !state.isDirectory() || state.isSymbolicLink()) {
-        fail("UPDATE_PACKAGE_APP_DIRECTORY_UNSAFE", entry.name);
-      }
-      if (!declaredDirectories.has(entry.name)) {
-        fail("UPDATE_PACKAGE_APP_DIRECTORY_NOT_DECLARED", entry.name);
-      }
-    }
-    if (entries.length !== signed.apps.length) fail("UPDATE_PACKAGE_APP_BIJECTION_MISMATCH");
-  }
-  return Object.freeze({ registry, bytes: loaded.bytes });
-}
-
 export async function verifyUpdatePackageManifest({ packageRoot, manifest, ...policy }) {
   if (typeof packageRoot !== "string" || !packageRoot) fail("UPDATE_PACKAGE_ROOT_INVALID");
   const resolvedPackageRoot = path.resolve(packageRoot);
   await assertPlainDirectory(resolvedPackageRoot, "UPDATE_PACKAGE_ROOT_MISSING");
-  const parsedManifest = parseUpdatePackageManifest(manifest);
+  const authenticity = verifyUpdatePackageAuthenticity(manifest, policy);
+  const parsedManifest = authenticity.manifest;
   await assertPayloadEnvelope(resolvedPackageRoot);
 
-  const payloads = new Set([UPDATE_PACKAGE_SCHEMA, REGISTRY_UPDATE_PACKAGE_SCHEMA]).has(parsedManifest.schema)
+  const payloads = parsedManifest.schema === UPDATE_PACKAGE_SCHEMA
     ? parsedManifest.signed.payloads
     : parsedManifest.payloads;
 
@@ -1104,26 +805,12 @@ export async function verifyUpdatePackageManifest({ packageRoot, manifest, ...po
     assertExactFileBinding(declared, files, component);
   }
 
-  const appRegistryState = parsedManifest.schema === REGISTRY_UPDATE_PACKAGE_SCHEMA
-    ? await verifyRegistryApplications(resolvedPackageRoot, parsedManifest.signed)
-    : null;
-  const authenticity = verifyUpdatePackageAuthenticity(parsedManifest, {
-    ...policy,
-    ...(appRegistryState
-      ? {
-          appRegistry: appRegistryState.registry,
-          appRegistryBytes: appRegistryState.bytes,
-        }
-      : {}),
-  });
-
   return {
     packageRoot: resolvedPackageRoot,
     manifest: parsedManifest,
     authenticated: authenticity.authenticated,
     legacyManualBootstrap: authenticity.legacyManualBootstrap,
     verifiedScopes: authenticity.verifiedScopes,
-    ...(appRegistryState ? { appRegistry: appRegistryState.registry } : {}),
   };
 }
 

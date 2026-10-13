@@ -87,9 +87,11 @@ function isShellEnabled(): boolean {
   const explicit = boolEnv(process.env.CONTROL_CENTER_SHELL_ENABLED);
   if (explicit !== null) return explicit;
 
-  // Lokal im Entwicklungsmodus darf die Shell ohne Extra-Env benutzt werden.
-  // Im produktiven Betrieb/Docker muss sie bewusst freigeschaltet werden.
-  return isDevRuntime();
+  // Core owns the terminal in every runtime (Windows, Linux and container).
+  // The route remains protected by an authenticated SYSTEM_ADMIN check; an
+  // operator can still disable the shell explicitly with this environment
+  // variable.
+  return true;
 }
 
 function defaultShellCwd(): string {

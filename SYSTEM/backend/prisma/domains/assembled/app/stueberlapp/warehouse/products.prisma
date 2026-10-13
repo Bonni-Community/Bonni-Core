@@ -329,6 +329,7 @@ model ProductVersion {
   allergenSnapshotJson   Json?
   additiveSnapshotJson   Json?
   ingredientSnapshotJson Json?
+  salesTaxJson           Json?
   hash                   String
   previousVersionHash    String?
   createdByAccountId     String?

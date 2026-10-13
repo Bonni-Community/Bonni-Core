@@ -1,4 +1,6 @@
 import { prisma } from "../../core/database/database.js";
+import { listModuleManifests } from "../module-manager/manifests/index.js";
+import { resolveTerminalAccountAccess } from "../auth/terminal-accounts/terminal-account-access.js";
 
 type PlatformIdentity = {
   accountId?: string;
@@ -24,6 +26,18 @@ function defaultWorkspaceForRoles(roles: string[]) {
 
 export class PlatformPermissionsService {
   async resolveForIdentity(identity: PlatformIdentity) {
+    if (identity.type === "TERMINAL") {
+      // Never expand a terminal's inherited generic role (including admin) to
+      // broad Core permissions in the alternate identity/API path.
+      const roleRows = await prisma.role.findMany({
+        where: { key: { in: identity.roles || [] } },
+        include: { permissions: { include: { permission: true } } },
+      });
+      const access = resolveTerminalAccountAccess(
+        roleRows.map((role) => ({ role })), await listModuleManifests(),
+      );
+      return { ...access, memberCapabilities: [], defaultWorkspace: access.allowedWorkspaces[0] || "member" };
+    }
     const roles = unique(
       (identity.roles?.length ? identity.roles : ["MEMBER"]).map(normalizeRole)
     );

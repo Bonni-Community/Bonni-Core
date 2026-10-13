@@ -18,18 +18,13 @@ import {
   registerDevelopmentPackage,
   restoreDevelopmentPackage,
   stageDevelopmentPackageForTest,
-  stageDevelopmentPackageSetForTest,
 } from "./development-package-store.mjs";
-import { exportDevelopmentTestTree } from "./development-export.mjs";
 
 const ACTIONS = new Set([
   "init",
   "import",
   "list",
   "stage-test",
-  "stage-test-set",
-  "preview-test-set",
-  "export-test-tree",
   "review",
   "cleanup-plan",
   "cleanup-execute",
@@ -47,14 +42,6 @@ const VALUE_OPTIONS = new Set([
   "--status",
   "--base-root",
   "--base-version",
-  "--preview-sha256",
-  "--test-system",
-  "--output",
-  "--final-tree-sha256",
-  "--build-id",
-  "--target-version",
-  "--branch",
-  "--dev-number",
   "--plan-sha256",
   "--trash-id",
   "--retention-days",
@@ -64,10 +51,8 @@ const REPEATABLE_OPTIONS = new Set([
   "--open",
   "--prepared-release",
   "--discard-pending",
-  "--member",
-  "--dependency",
 ]);
-const FLAG_OPTIONS = new Set(["--verify", "--force", "--independent-base"]);
+const FLAG_OPTIONS = new Set(["--verify", "--force"]);
 const HASH_PATTERN = /^[a-f0-9]{64}$/u;
 
 class DevelopmentStoreCliError extends Error {
@@ -139,50 +124,14 @@ function common(options) {
   };
 }
 
-function createProgressReporter() {
-  let sequence = 0;
-  let lastAt = 0;
-  let lastPhase = "";
-  return (entry) => {
-    const now = Date.now();
-    if (entry.phase === lastPhase && entry.files !== entry.total && now - lastAt < 500) return;
-    lastAt = now;
-    lastPhase = entry.phase;
-    process.stderr.write(`BONNI_PROGRESS ${JSON.stringify({ ...entry, sequence: ++sequence })}\n`);
-  };
-}
-
-function parseMember(value) {
-  const separator = value.lastIndexOf("@");
-  if (separator < 1) fail("DEVELOPMENT_CLI_MEMBER_INVALID", value);
-  const candidateId = value.slice(0, separator);
-  const packageSha256 = value.slice(separator + 1);
-  if (!/^[A-Za-z0-9][A-Za-z0-9._+-]{0,127}$/u.test(candidateId)
-    || !HASH_PATTERN.test(packageSha256)) {
-    fail("DEVELOPMENT_CLI_MEMBER_INVALID", value);
-  }
-  return { candidateId, packageSha256 };
-}
-
 function packageSummary(result) {
   return {
     candidateId: result.receipt.candidateId,
     packageSha256: result.receipt.packageSha256,
-    ...(result.receipt.development ? { targetVersion: result.receipt.development.displayVersion } : {}),
     status: result.receipt.status,
     receiptSha256: result.receipt.receiptSha256,
     resultingTreeSha256: result.receipt.resultingTreeSha256,
     requires: result.receipt.requires,
-    ...(result.receipt.development ? {
-      baseVersion: result.receipt.development.baseVersion,
-      branch: result.receipt.development.branch,
-      devNumber: result.receipt.development.devNumber,
-      displayVersion: result.receipt.development.displayVersion,
-      changedFiles: result.receipt.development.changedFiles,
-      dependencies: result.receipt.development.dependencies,
-      conflicts: result.receipt.development.conflicts,
-      development: result.receipt.development,
-    } : {}),
     idempotent: Boolean(result.idempotent),
   };
 }
@@ -199,9 +148,7 @@ async function execute(options) {
       const result = await registerDevelopmentPackage({
         ...base,
         zipPath: path.resolve(required(options, "--zip")),
-        ...(options.values.has("--candidate-id")
-          ? { candidateId: options.values.get("--candidate-id") }
-          : {}),
+        candidateId: required(options, "--candidate-id"),
         reviewedBy: options.values.get("--reviewed-by") || "technical-admin",
         note: options.values.get("--note") || "",
       });
@@ -231,49 +178,9 @@ async function execute(options) {
         candidateId: required(options, "--candidate-id"),
         packageSha256: optionalHash(options, "--package-sha256"),
         baseVersion: options.values.get("--base-version"),
-        independentBase: options.flags.has("--independent-base"),
         ...(options.values.has("--base-root")
           ? { baseRoot: path.resolve(options.values.get("--base-root")) }
           : {}),
-        onProgress: createProgressReporter(),
-      });
-    }
-    case "preview-test-set":
-    case "stage-test-set": {
-      const members = options.repeated.get("--member").map(parseMember);
-      if (!members.length) fail("DEVELOPMENT_CLI_OPTION_REQUIRED", "--member");
-      return stageDevelopmentPackageSetForTest({
-        ...base,
-        packageRefs: members,
-        previewOnly: options.action === "preview-test-set",
-        expectedPreviewSha256: options.values.get("--preview-sha256"),
-        baseVersion: options.values.get("--base-version"),
-        independentBase: options.flags.has("--independent-base"),
-        ...(options.values.has("--base-root")
-          ? { baseRoot: path.resolve(options.values.get("--base-root")) }
-          : {}),
-        onProgress: createProgressReporter(),
-      });
-    }
-    case "export-test-tree": {
-      const members = options.repeated.get("--member");
-      if (!members.length) fail("DEVELOPMENT_CLI_OPTION_REQUIRED", "--member");
-      return exportDevelopmentTestTree({
-        onProgress: createProgressReporter(),
-        ...base,
-        testSystem: path.resolve(required(options, "--test-system")),
-        baseRoot: path.resolve(required(options, "--base-root")),
-        baseVersion: required(options, "--base-version"),
-        outputFile: path.resolve(required(options, "--output")),
-        finalTreeSha256: optionalHash(options, "--final-tree-sha256"),
-        buildId: options.values.get("--build-id"),
-        targetVersion: options.values.get("--target-version"),
-        branch: options.values.get("--branch"),
-        devNumber: options.values.has("--dev-number")
-          ? Number(options.values.get("--dev-number"))
-          : undefined,
-        dependencies: options.repeated.get("--dependency").map(parseMember),
-        members,
       });
     }
     case "review": {

@@ -137,10 +137,6 @@ export type ModuleManifest = {
   compatibility?: {
     minimumCoreVersion?: string;
     maximumCoreVersion?: string;
-    bonniCore?: {
-      minimumVersion?: string;
-      maximumVersion?: string;
-    };
   };
   installation?: {
     installable?: boolean;
@@ -153,6 +149,7 @@ export type ModuleManifest = {
   metadata?: Record<string, unknown> & {
     database?: ModuleDatabaseDeclaration;
     accessProfiles?: ModuleAccessProfile[];
+    nfcAccessProfiles?: string[];
     autoAssignMemberAccess?: boolean;
     technicalAccounts?: ModuleTechnicalAccountDeclaration[];
     legacyAccessMappings?: ModuleLegacyAccessMappings;

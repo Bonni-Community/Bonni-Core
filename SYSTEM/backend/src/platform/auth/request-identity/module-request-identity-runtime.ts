@@ -2,6 +2,9 @@ import {
   getVerifiedRequestIdentity,
   type RequestIdentity,
 } from "./request-identity-context.js";
+import { nfcService } from "../../../core/modules/security/nfc/index.js";
+import { presenceService } from "../../../core/modules/security/presence/index.js";
+import type { BookingObservation } from "../../../core/modules/security/presence/service.js";
 
 export const MODULE_REQUEST_IDENTITY_CONTRACT_VERSION = "bonni.request-identity/v1" as const;
 
@@ -102,7 +105,7 @@ function requestedProfiles(value: unknown, declaredLocalProfiles: ReadonlySet<st
 }
 
 /**
- * Creates a module-bound, read-only view of the verified request identity.
+ * Creates a module-bound view of verified identity and scoped identity operations.
  * The module key and assignable local profiles come from the installed
  * manifest, never from a request or a capability call.
  */
@@ -118,6 +121,14 @@ export function createModuleRequestIdentityRuntime(
     contractVersion: MODULE_REQUEST_IDENTITY_CONTRACT_VERSION,
     current(): RequestIdentity | null {
       return getVerifiedRequestIdentity();
+    },
+    async identifyNfc(code: string) {
+      const identity = getVerifiedRequestIdentity();
+      if (!identity) throw new ModuleRequestIdentityError("REQUEST_IDENTITY_UNAUTHENTICATED", 401);
+      return nfcService.identify(code, identity, moduleKey);
+    },
+    async recordBookingSeen(input: BookingObservation) {
+      return presenceService.recordBookingSeen(input, getVerifiedRequestIdentity(), moduleKey);
     },
     requireProfiles(profileKeysValue: readonly string[]): RequestIdentity {
       const profiles = requestedProfiles(profileKeysValue, declaredLocalProfiles);

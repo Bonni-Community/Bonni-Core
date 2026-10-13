@@ -1,0 +1,12 @@
+{
+  "schema": "bonni.app-install-trust/v1",
+  "keys": [
+    {
+      "keyId": "bonni-release-set-01",
+      "scopes": [
+        "RELEASE"
+      ],
+      "publicKey": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAyulAGehQth9XnZxIwsRvwxKpJ388y9Yq16sz6kN4m6Q=\n-----END PUBLIC KEY-----\n"
+    }
+  ]
+}

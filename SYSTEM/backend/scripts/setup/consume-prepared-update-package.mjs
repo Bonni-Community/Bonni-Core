@@ -255,9 +255,7 @@ function manifestView(manifest) {
   if (!isPlainObject(manifest) || typeof manifest.schema !== "string") {
     fail("READY_UPDATE_MANIFEST_INVALID");
   }
-  const signed = new Set(["bonni.update/v2", "bonni.update/v3"]).has(manifest.schema)
-    ? manifest.signed
-    : manifest;
+  const signed = manifest.schema === "bonni.update/v2" ? manifest.signed : manifest;
   if (
     !isPlainObject(signed)
     || typeof signed.updateId !== "string"

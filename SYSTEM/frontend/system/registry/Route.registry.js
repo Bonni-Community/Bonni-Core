@@ -6,6 +6,7 @@ import StorePage from "../../platform/control-center/store/StorePage.jsx";
 import BackupPage from "../../platform/control-center/backup/BackupPage.jsx";
 import SystemPage from "../../platform/control-center/system/SystemPage.jsx";
 import ExplorerPage from "../../platform/control-center/explorer/ExplorerPage.jsx";
+import CoreDiagnosticsPage from "../../platform/control-center/diagnostics/CoreDiagnosticsPage.jsx";
 
 export const moduleRoutes = {
   user: UserPage,
@@ -15,6 +16,7 @@ export const moduleRoutes = {
   store: StorePage,
   backup: BackupPage,
   system: SystemPage,
+  diagnostics: CoreDiagnosticsPage,
   explorer: ExplorerPage,
 };
 

@@ -350,7 +350,7 @@ export async function assertCanManageUsers(
   const permissionKeys = account?.roles.flatMap((entry) => (
     entry.role.permissions.map((rolePermission) => rolePermission.permission.key)
   )) || [];
-  const allowed = Boolean(account?.isActive) && (
+  const allowed = Boolean(account?.isActive) && Boolean(account && PERSONAL_ACCOUNT_TYPES.has(account.type)) && (
     roleKeys.includes("admin")
     || permissionKeys.some((permission) => ["*", "system.admin", "auth.users.write"].includes(permission))
   );
@@ -915,14 +915,25 @@ export async function updateLocalMemberProfile(
     : existing.type;
   if (
     updatesModuleAccess
-    && existing.person?.member
-    && accountType !== AccountType.MEMBER
+    && PERSONAL_ACCOUNT_TYPES.has(existing.type) !== PERSONAL_ACCOUNT_TYPES.has(accountType)
   ) {
     throw new UserMutationError(
-      "TECHNICAL_ACCESS_REQUIRES_SEPARATE_ACCOUNT",
-      "Technische Funktionen benötigen einen getrennten Benutzerzugang und dürfen nicht dem Mitgliedslogin zugewiesen werden.",
+      "ACCOUNT_USAGE_IMMUTABLE",
+      "Die Kontoart ist seit der Anlage festgelegt. Persönliche und technische Zugänge können nicht ineinander umgewandelt werden. Bitte einen getrennten Zugang verwenden.",
       409,
     );
+  }
+  if (updatesModuleAccess && accountType === AccountType.TERMINAL) {
+    const terminalProfiles = new Set(moduleAccess.flatMap((assignment) => (
+      (assignment.profiles || []).map((profile) => `${assignment.moduleKey}:${profile.key}`)
+    )));
+    if (terminalProfiles.size !== 1) {
+      throw new UserMutationError(
+        "TERMINAL_ACCOUNT_SINGLE_PROFILE_REQUIRED",
+        "Ein Terminal-Zugang darf genau eine technische App-Oberfläche haben. Bitte nur eine Funktion auswählen.",
+        409,
+      );
+    }
   }
 
   try {
@@ -950,7 +961,8 @@ export async function updateLocalMemberProfile(
       const eligibilityChanged = existing.isActive !== isActive || existing.type !== accountType;
       const technicalCleanupRequired = TECHNICAL_ACCOUNT_TYPES.has(accountType)
         && await technicalAccountSecurityCleanupRequired(transaction, accountId);
-      const securityTransitionRequired = eligibilityChanged || technicalCleanupRequired;
+      const securityTransitionRequired = eligibilityChanged || technicalCleanupRequired
+        || (updatesModuleAccess && existing.type === AccountType.TERMINAL);
       if (securityTransitionRequired) {
         await transitionAccountSecurity(transaction, {
           accountId,
@@ -1092,10 +1104,10 @@ export async function updateLocalMemberAccess(
         423,
       );
     }
-    if (!PERSONAL_ACCOUNT_TYPES.has(existing.type)) {
+    if (!PERSONAL_ACCOUNT_TYPES.has(existing.type) && existing.type !== AccountType.TERMINAL) {
       throw new UserMutationError(
         "TECHNICAL_ACCOUNT_PASSWORD_FORBIDDEN",
-        "Technische Terminal- und Dienstkonten dürfen kein interaktives Passwort besitzen.",
+        "Reine Dienstkonten dürfen kein interaktives Passwort besitzen.",
         409,
       );
     }
@@ -1114,43 +1126,58 @@ export async function updateLocalMemberAccess(
   }
 
   const account = await prisma.$transaction(async (transaction) => {
-    const updated = await transaction.account.updateMany({
-      where: {
-        id: accountId,
-        credentialRevision: existing.credentialRevision,
-        ...(passwordHash ? { passwordRecoveryLockedAt: null } : {}),
-      },
-      data: {
-        ...(updatesEmail ? { email } : {}),
-        ...(passwordHash ? {
-          passwordHash,
-          credentialRevision: { increment: 1 },
-        } : {}),
-      },
-    });
-    if (updated.count !== 1) {
-      throw new UserMutationError(
-        "LOCAL_MEMBER_ACCESS_CHANGED",
-        "Die Zugangsdaten wurden gleichzeitig geändert. Bitte erneut laden.",
-        409,
-      );
-    }
-    if (passwordHash) {
-      await advanceTwoFactorAfterPasswordChange(transaction, {
+    if (passwordHash && existing.type === AccountType.TERMINAL) {
+      await transitionAccountSecurity(transaction, {
         accountId,
         previousRevision: existing.credentialRevision,
-        nextRevision: existing.credentialRevision + 1,
-        twoFactorProviderId: existing.twoFactorProviderId,
+        previousType: existing.type,
+        previousIsActive: existing.isActive,
+        nextType: existing.type,
+        nextIsActive: existing.isActive,
+        force: true,
+        terminalPasswordHash: passwordHash,
+        accountData: updatesEmail ? { email } : {},
       });
-      const now = new Date();
-      await transaction.session.updateMany({
-        where: { accountId, endedAt: null },
-        data: { endedAt: now },
+    } else {
+      const updated = await transaction.account.updateMany({
+        where: {
+          id: accountId,
+          type: existing.type,
+          credentialRevision: existing.credentialRevision,
+          ...(passwordHash ? { passwordRecoveryLockedAt: null } : {}),
+        },
+        data: {
+          ...(updatesEmail ? { email } : {}),
+          ...(passwordHash ? {
+            passwordHash,
+            credentialRevision: { increment: 1 },
+          } : {}),
+        },
       });
-      await transaction.refreshToken.updateMany({
-        where: { accountId, revokedAt: null },
-        data: { revokedAt: now },
-      });
+      if (updated.count !== 1) {
+        throw new UserMutationError(
+          "LOCAL_MEMBER_ACCESS_CHANGED",
+          "Die Zugangsdaten wurden gleichzeitig geändert. Bitte erneut laden.",
+          409,
+        );
+      }
+      if (passwordHash) {
+        await advanceTwoFactorAfterPasswordChange(transaction, {
+          accountId,
+          previousRevision: existing.credentialRevision,
+          nextRevision: existing.credentialRevision + 1,
+          twoFactorProviderId: existing.twoFactorProviderId,
+        });
+        const now = new Date();
+        await transaction.session.updateMany({
+          where: { accountId, endedAt: null },
+          data: { endedAt: now },
+        });
+        await transaction.refreshToken.updateMany({
+          where: { accountId, revokedAt: null },
+          data: { revokedAt: now },
+        });
+      }
     }
     return transaction.account.findUnique({
       where: { id: accountId },

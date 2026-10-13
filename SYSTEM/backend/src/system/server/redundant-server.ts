@@ -1,6 +1,8 @@
 import "dotenv/config";
 
 import type { Server } from "node:http";
+import { beginBoundedServerDrain } from "./local-supervisor-shutdown.js";
+import { applyHttpServerPolicy } from "./http-server-policy.js";
 
 process.env.SYSTEM_SLOT_NAME ||= "backend-redundant";
 process.env.SYSTEM_SLOT_ROLE ||= "redundant";
@@ -42,7 +44,7 @@ async function main() {
   const port = env.PORT;
   let shuttingDown = false;
 
-  const server: Server = app.listen(port, bind, async () => {
+  const server: Server = applyHttpServerPolicy(app.listen(port, bind, async () => {
     const notlauf = await getRuntimeJsonFallbackStatus();
     const metadata = {
       surface: "redundant",
@@ -57,7 +59,7 @@ async function main() {
       module: "redundant-server",
       ...metadata,
     });
-  });
+  }));
 
   async function shutdown(signal: NodeJS.Signals) {
     if (shuttingDown) return;
@@ -69,16 +71,20 @@ async function main() {
       runtime,
     });
 
-    await new Promise<void>((resolve) => {
-      server.close(() => resolve());
-    });
+    await beginBoundedServerDrain([server]);
 
     await disconnectPrismaClients();
     process.exit(0);
   }
 
-  process.once("SIGTERM", (signal) => void shutdown(signal));
-  process.once("SIGINT", (signal) => void shutdown(signal));
+  function requestShutdown(signal: NodeJS.Signals) {
+    void shutdown(signal).catch(error => {
+      logger.error("Redundant backend shutdown failed", { module: "redundant-server", error: errorDetails(error) });
+      process.exitCode = 1;
+    });
+  }
+  process.once("SIGTERM", requestShutdown);
+  process.once("SIGINT", requestShutdown);
 
   process.on("uncaughtException", (error) => {
     logger.error("Redundant backend uncaught exception", {

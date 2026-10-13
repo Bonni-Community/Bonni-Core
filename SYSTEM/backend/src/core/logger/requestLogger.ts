@@ -1,9 +1,9 @@
 import type { Request, Response, NextFunction } from "express";
-import { randomUUID } from "node:crypto";
 import { logger } from "./logger.js";
+import { safeLogHeader, safeLogPath, safeRequestId } from "./http-log-context.js";
 
 export function requestLogger(req: Request, res: Response, next: NextFunction) {
-  const requestId = req.header("x-request-id") ?? randomUUID();
+  const requestId = safeRequestId(req.header("x-request-id"));
   const startedAt = Date.now();
 
   res.setHeader("x-request-id", requestId);
@@ -13,13 +13,13 @@ export function requestLogger(req: Request, res: Response, next: NextFunction) {
       module: "http",
       requestId,
       method: req.method,
-      path: req.originalUrl,
+      path: safeLogPath(req.originalUrl),
       statusCode: res.statusCode,
       durationMs: Date.now() - startedAt,
       ipAddress: req.ip,
-      userAgent: req.header("user-agent"),
-      terminalId: req.header("x-terminal-id") ?? null,
-      localNodeId: req.header("x-local-node-id") ?? null
+      userAgent: safeLogHeader(req.header("user-agent")),
+      terminalId: safeLogHeader(req.header("x-terminal-id")),
+      localNodeId: safeLogHeader(req.header("x-local-node-id"))
     });
   });
 

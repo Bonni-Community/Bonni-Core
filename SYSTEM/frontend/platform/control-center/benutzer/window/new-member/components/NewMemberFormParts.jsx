@@ -1,4 +1,6 @@
 import {
+  APP_SURFACE,
+  TECHNICAL_USAGE,
   getNewMemberModulePermissions,
   getSelectedModulePermissions,
   getSelectedNewMemberModules,
@@ -77,7 +79,7 @@ function moduleStatusLabel(module) {
   return "Verfügbar";
 }
 
-export function NewMemberModuleRows({ modules, selectedModuleKeys, onModuleToggle, loading = false, error = "" }) {
+export function NewMemberModuleRows({ modules, selectedModuleKeys, onModuleToggle, loading = false, error = "", singleSelection = false }) {
   const selectedKeys = Array.isArray(selectedModuleKeys) ? selectedModuleKeys : [];
 
   if (loading) return <div className="cc-member-window-empty">Module werden geladen...</div>;
@@ -101,7 +103,8 @@ export function NewMemberModuleRows({ modules, selectedModuleKeys, onModuleToggl
           >
             <input
               className="cc-member-window-choice-input"
-              type="checkbox"
+              type={singleSelection ? "radio" : "checkbox"}
+              name={singleSelection ? "account-module" : undefined}
               checked={selected}
               onChange={() => onModuleToggle(module.key)}
               aria-label={`${module.label} auswählen`}
@@ -121,8 +124,10 @@ export function NewMemberModuleRows({ modules, selectedModuleKeys, onModuleToggl
   );
 }
 
-export function NewMemberPermissionGroups({ draft, moduleCatalog, onPermissionToggle }) {
+export function NewMemberPermissionGroups({ draft, moduleCatalog, onPermissionToggle, declaredOnly = false }) {
   const modules = getSelectedNewMemberModules(draft, moduleCatalog);
+  const singleSelection = draft.usage === TECHNICAL_USAGE && draft.surface === APP_SURFACE;
+  const conflictingSelection = singleSelection && modules.reduce((total, module) => total + getSelectedModulePermissions(draft, module.key).length, 0) > 1;
 
   if (!draft.surface) {
     return <div className="cc-member-window-empty">Bitte zuerst in der Übersicht einen Bereich auswählen.</div>;
@@ -133,12 +138,12 @@ export function NewMemberPermissionGroups({ draft, moduleCatalog, onPermissionTo
 
   return (
     <div className="cc-member-window-permission-groups">
+      {conflictingSelection ? <p className="cc-member-error" role="status">Mehrere technische Funktionen sind zugewiesen. Bitte genau eine auswählen und speichern.</p> : null}
       {modules.map((module) => {
-        const selectedPermissions = getSelectedModulePermissions(draft, module.key);
-        const options = [...new Set([
-          ...getNewMemberModulePermissions(module, draft.usage),
-          ...selectedPermissions,
-        ])];
+        const declared = getNewMemberModulePermissions(module, draft.usage);
+        const selectedPermissions = getSelectedModulePermissions(draft, module.key)
+          .filter((permission) => !declaredOnly || declared.includes(permission));
+        const options = [...new Set([...declared, ...selectedPermissions])];
 
         return (
           <article key={module.key} className="cc-member-window-permission-group">
@@ -154,6 +159,20 @@ export function NewMemberPermissionGroups({ draft, moduleCatalog, onPermissionTo
               <div className="cc-member-window-role-options" aria-label={`${module.label} Berechtigungen`}>
                 {options.map((permission) => {
                   const selected = selectedPermissions.includes(permission);
+
+                  if (singleSelection) return (
+                    <label key={permission} className={selected ? "cc-member-window-role-option is-selected" : "cc-member-window-role-option"}>
+                      <input
+                        className="cc-member-window-choice-input"
+                        type="radio"
+                        name={`account-function-${module.key}`}
+                        value={permission}
+                        checked={selected && !conflictingSelection}
+                        onChange={() => onPermissionToggle(module.key, permission)}
+                      />
+                      <span>{permission}</span>
+                    </label>
+                  );
 
                   return (
                     <button

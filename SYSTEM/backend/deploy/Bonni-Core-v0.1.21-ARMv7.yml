@@ -68,6 +68,7 @@ services:
     ports:
       - "4000:4000"
     volumes:
+      - core_update:/app/UPDATE
       - core_storage:/app/storage
       - run_system:/app/run_system
       - core_logs:/app/backend/archives/logs
@@ -87,6 +88,7 @@ services:
 
 volumes:
   postgres_data:
+  core_update:
   core_storage:
   run_system:
   core_logs:
