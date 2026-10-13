@@ -231,6 +231,7 @@ jobs:
             const latest = await validate();
             const start = "<!-- bonni-container-summary:start -->", end = "<!-- bonni-container-summary:end -->";
             const cleaned = String(latest.release.body || "").replace(/<!-- bonni-container-summary:start -->[\s\S]*?<!-- bonni-container-summary:end -->/g, "")
+              .replace(/Die YML verwendet den Einzelbetrieb \(Core \+ PostgreSQL\)\.(?: Anleitung beachten\.)?/g, "Die YML richtet Core, PostgreSQL und den unabhängigen Update-Dienst automatisch ein.")
               .split("\n").filter(line => !line.startsWith(resultPrefix) && !line.startsWith("<!-- bonni-container-built:")).join("\n").trim();
             const code = "https://github.com/" + repository + "/tree/" + env.SOURCE_COMMIT + "/SYSTEM";
             const downloads = containerBundles(coreVersion, platforms).map(bundle =>
@@ -564,109 +565,58 @@ jobs:
               throw new Error("CONTAINER_COMPOSE_INPUT_INVALID");
             }
             return `# Bonni Core v${version} – ${containerArchitecture(platform)}
-          # Docker Compose: passende Architektur wählen und diese YAML verwenden.
-          # Vor dem Start die DREI BITTE-Werte unten durch eigene Werte ersetzen.
-          # DB-Kennwort: mindestens 24 Zeichen. MASTER_KEY: mindestens 43 Zeichen.
+          # Vor dem ersten Start die drei BITTE-Werte durch eigene Werte ersetzen.
+          # DB: mindestens 24 Zeichen; MASTER_KEY: mindestens 43 Zeichen.
           # Admin: mindestens 16 Zeichen, Groß-/Kleinbuchstaben, Zahl und Sonderzeichen.
-          # Für Passwörter kein Dollarzeichen verwenden (Compose-Interpolation).
-          # Anwendung immer gleich benennen: bonni-core. Daten-Volumes behalten!
-          # Einzelbetrieb: Core + PostgreSQL. Der externe Update-/Notlauf-Stack ist separat.
+          # Keine Dollarzeichen oder einfachen Anführungszeichen in diesen Werten.
+          # Datenordner: absoluter, dauerhaft gespeicherter Pfad auf diesem Server.
+          # Core, Datenbank und Update-Dienst werden automatisch eingerichtet.
           
-          x-bonni-environment: &bonni_environment
-            POSTGRES_PASSWORD: &db_password "BITTE_EIGENES_DATENBANKKENNWORT_EINTRAGEN"
-            MASTER_KEY: "BITTE_EIGENEN_ZUFAELLIGEN_MASTER_KEY_EINTRAGEN"
-            BONNI_BOOTSTRAP_ADMIN_PASSWORD: "BITTE_EIGENES_ADMIN_KENNWORT_EINTRAGEN"
-            BONNI_BOOTSTRAP_FIRST_INSTALL_ONLY: "true"
-            NODE_ENV: production
-            PORT: "4000"
-            LOCAL_AUTH_BIND: 0.0.0.0
-            LOCAL_AUTH_PORT: "4001"
-            SYSTEM_VERSION: "${version.replace(/-([a-z])$/, "+$1")}"
-            SYSTEM_SLOT_ROLE: active
-            SYSTEM_SLOT_NAME: backend-single
-            AUTH_MODE: LOCAL
-            DATABASE_OPERATION_MODE: server-only
-            BONNI_PROJECT_ROOT: /app
-            RUN_SYSTEM_ROOT: /app/run_system
-            BONNI_STORAGE_ROOT: /app/storage
-            MEDIA_STORAGE_ROOT: /app/storage/media
-            FRONTEND_DIST_ROOT: /app/public
-            TZ: Europe/Berlin
+          x-bonni-root: &bonni_root /var/lib/bonni-core
           
           services:
+            # Image-Referenz für Download/Offline-Export; der Controller startet die DB.
             db:
+              profiles: [bonni-images]
               image: ${databaseImage}
               platform: ${platform}
-              restart: unless-stopped
-              environment:
-                POSTGRES_USER: bonni
-                POSTGRES_DB: bonni_core
-                POSTGRES_PASSWORD: *db_password
-              volumes:
-                - postgres_data:/var/lib/postgresql/data
-              healthcheck:
-                test: ["CMD-SHELL", "pg_isready -U bonni -d bonni_core"]
-                interval: 5s
-                timeout: 5s
-                retries: 30
-              networks: [database]
           
             bonni-core:
               image: ${image}
               platform: ${platform}
               init: true
               restart: unless-stopped
-              depends_on:
-                db:
-                  condition: service_healthy
-              environment: *bonni_environment
-              command:
-                - /bin/sh
-                - -ec
-                - |
-                  export DATABASE_URL="$$(node -e 'const e=process.env; for (const [k,n] of [["POSTGRES_PASSWORD",24],["MASTER_KEY",43],["BONNI_BOOTSTRAP_ADMIN_PASSWORD",16]]) { if (!e[k] || e[k].length<n || /BITTE_|change.?me|example|placeholder/i.test(e[k])) throw Error("Bitte eigenen Wert setzen: "+k); } process.stdout.write("postgresql://bonni:"+encodeURIComponent(e.POSTGRES_PASSWORD)+"@db:5432/bonni_core?schema=public");')"
-                  test -n "$$DATABASE_URL"
-                  export SERVER_DATABASE_URL="$$DATABASE_URL"
-                  node scripts/runtime/bootstrap-production-database.mjs
-                  npm run backup:restore-pending
-                  exec npm run start
-              ports:
-                - "4000:4000"
+              pid: host
+              network_mode: host
+              environment:
+                BONNI_HOST_PROJECT_ROOT: *bonni_root
+                BONNI_INITIAL_IMAGE: ${image}
+                BONNI_DATABASE_IMAGE: ${databaseImage}
+                BONNI_PLATFORM: ${platform}
+                BONNI_OFFLINE: "false"
+                BONNI_HTTP_PORT: "4000"
+                POSTGRES_PASSWORD: "BITTE_EIGENES_DATENBANKKENNWORT_EINTRAGEN"
+                MASTER_KEY: "BITTE_EIGENEN_ZUFAELLIGEN_MASTER_KEY_EINTRAGEN"
+                BONNI_BOOTSTRAP_ADMIN_PASSWORD: "BITTE_EIGENES_ADMIN_KENNWORT_EINTRAGEN"
+              command: ["/bin/bash", "/app/backend/scripts/deployment/entrypoint.sh"]
               volumes:
-                - core_update:/app/UPDATE
-                - core_storage:/app/storage
-                - run_system:/app/run_system
-                - core_logs:/app/backend/archives/logs
-                - core_apps:/app/app
-                - core_addons:/app/addons
-                - core_plugins:/app/plugins
-                - core_bridges:/app/bridges
+                - /var/run/docker.sock:/var/run/docker.sock
+                - /etc/localtime:/etc/localtime:ro
+                - type: bind
+                  source: *bonni_root
+                  target: *bonni_root
+                  bind:
+                    create_host_path: true
               healthcheck:
-                test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:4000/api/health/ready').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+                test: ["CMD", "node", "/app/backend/scripts/deployment/controller.mjs", "--health"]
                 interval: 10s
-                timeout: 5s
-                retries: 18
+                timeout: 10s
+                retries: 60
                 start_period: 90s
-              stop_grace_period: 30s
+              stop_grace_period: 10m
               security_opt: ["no-new-privileges:true"]
-              networks: [database, frontend]
-          
-          volumes:
-            postgres_data:
-            core_update:
-            core_storage:
-            run_system:
-            core_logs:
-            core_apps:
-            core_addons:
-            core_plugins:
-            core_bridges:
-          
-          networks:
-            database:
-              internal: true
-            frontend:
           `;
+          
           }
           function composeFilename(version, platform) {
             // Reuse validation so filenames cannot escape the output directory.
@@ -717,12 +667,14 @@ jobs:
             const smoke = text.replace("BITTE_EIGENES_DATENBANKKENNWORT_EINTRAGEN", randomBytes(32).toString("hex"))
               .replace("BITTE_EIGENEN_ZUFAELLIGEN_MASTER_KEY_EINTRAGEN", randomBytes(32).toString("hex"))
               .replace("BITTE_EIGENES_ADMIN_KENNWORT_EINTRAGEN", "A7!" + randomBytes(24).toString("hex"))
-              .replace('"4000:4000"', '"127.0.0.1::4000"');
+              .replace('/var/lib/bonni-core', '/tmp/bonni-deployment-ci-' + process.env.GITHUB_RUN_ID + '-' + process.env.GITHUB_RUN_ATTEMPT + '-' + containerArchitecture(platform).toLowerCase());
             await fs.writeFile("smoke/" + containerArchitecture(platform).toLowerCase() + ".yml", smoke, {mode: 0o600});
             const localImage = localContainerImageTag(image, version, platform);
             const localDatabase = localContainerImageTag(databaseImage, version, platform, true);
-            const offline = source => source.replace('image: ' + image, 'image: ' + localImage + '\n    pull_policy: never')
-              .replace('image: ' + databaseImage, 'image: ' + localDatabase + '\n    pull_policy: never');
+            const offline = source => source.replaceAll(image, localImage).replaceAll(databaseImage, localDatabase)
+              .replace('image: ' + localImage, 'image: ' + localImage + '\n    pull_policy: never')
+              .replace('image: ' + localDatabase, 'image: ' + localDatabase + '\n    pull_policy: never')
+              .replace('BONNI_OFFLINE: \"false\"', 'BONNI_OFFLINE: \"true\"');
             const offlineFilename = filename.replace(/\.yml$/, '-Offline.yml');
             const offlineText = '# Offline: zuerst Core-TAR und Datenbank-TAR unter Images importieren.\n' + offline(text);
             await fs.writeFile('compose-assets/' + offlineFilename, offlineText);
@@ -743,32 +695,7 @@ jobs:
           PLATFORMS: ${{ inputs.platforms }}
         run: |
           set -euo pipefail
-          for PLATFORM in ${PLATFORMS//,/ }; do
-            echo "Checking container startup and restart: ${PLATFORM}"
-            ARCH=${PLATFORM#linux/}
-            if [ "${PLATFORM}" = linux/arm/v7 ]; then ARCH=armv7; fi
-            PROJECT="bonni-ci-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${ARCH}"
-            FILE="smoke/${ARCH}.yml"
-            trap 'docker compose -p "$PROJECT" -f "$FILE" down --volumes --remove-orphans >/dev/null 2>&1 || true' EXIT
-            docker compose -p "$PROJECT" -f "$FILE" config --quiet
-            docker compose -p "$PROJECT" -f "$FILE" pull
-            while IFS= read -r TEST_IMAGE; do
-              DETECTED=$(docker image inspect --format '{{.Os}}/{{.Architecture}}{{if eq .Architecture "arm"}}/{{.Variant}}{{end}}' "$TEST_IMAGE")
-              if [ "${DETECTED}" != "${PLATFORM}" ]; then
-                echo "Image architecture mismatch: ${DETECTED}, expected ${PLATFORM}" >&2
-                exit 1
-              fi
-            done < <(docker compose -p "$PROJECT" -f "$FILE" config --images)
-            if ! docker compose -p "$PROJECT" -f "$FILE" up -d --wait --wait-timeout 600; then
-              docker compose -p "$PROJECT" -f "$FILE" logs --tail 100
-              exit 1
-            fi
-            docker compose -p "$PROJECT" -f "$FILE" exec -T bonni-core node -e "fetch('http://127.0.0.1:4000/').then(async r=>{if(!r.ok || !(await r.text()).includes('<html')) process.exit(1)}).catch(()=>process.exit(1))"
-            docker compose -p "$PROJECT" -f "$FILE" restart bonni-core
-            docker compose -p "$PROJECT" -f "$FILE" up -d --wait --wait-timeout 600
-            docker compose -p "$PROJECT" -f "$FILE" down --volumes --remove-orphans
-            trap - EXIT
-          done
+          node release/PAYLOAD/SYSTEM/backend/scripts/deployment/smoke.mjs online
 
       - name: Check ARMv7 ELF files for 32K page alignment
         if: contains(inputs.platforms, 'linux/arm/v7')
@@ -825,7 +752,7 @@ jobs:
             docker rm "$CID"
             rm -f armv7-rootfs.tar
             trap - EXIT
-          done < <(docker compose -f smoke/armv7.yml config --images)
+          done < <(docker compose --profile bonni-images -f smoke/armv7.yml config --images)
           echo 'ARMv7: start/restart and ELF 32K precheck passed. Hardware test remains required.' >> "${GITHUB_STEP_SUMMARY}"
 
       - name: Export and verify the tested Core and database images
@@ -957,28 +884,7 @@ jobs:
           }
           
           BONNI_OFFLINE_LOAD
-          for PLATFORM in ${PLATFORMS//,/ }; do
-            ARCH=${PLATFORM#linux/}
-            if [ "$PLATFORM" = linux/arm/v7 ]; then ARCH=armv7; fi
-            PROJECT="bonni-offline-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${ARCH}"
-            FILE="smoke/${ARCH}-offline.yml"
-            trap 'docker compose -p "$PROJECT" -f "$FILE" down --volumes --remove-orphans >/dev/null 2>&1 || true' EXIT
-            PLATFORM="$PLATFORM" node load-offline-images.mjs
-            docker compose -p "$PROJECT" -f "$FILE" config --quiet
-            if ! docker compose -p "$PROJECT" -f "$FILE" up -d --pull never --wait --wait-timeout 600; then
-              docker compose -p "$PROJECT" -f "$FILE" logs --tail 100
-              exit 1
-            fi
-            docker compose -p "$PROJECT" -f "$FILE" exec -T bonni-core node -e "fetch('http://127.0.0.1:4000/').then(async r=>{if(!r.ok || !(await r.text()).includes('<html')) process.exit(1)}).catch(()=>process.exit(1))"
-            docker compose -p "$PROJECT" -f "$FILE" restart bonni-core
-            docker compose -p "$PROJECT" -f "$FILE" up -d --pull never --wait --wait-timeout 600
-            docker compose -p "$PROJECT" -f "$FILE" down --volumes --remove-orphans
-            while IFS= read -r TEST_IMAGE; do
-              docker image rm "$TEST_IMAGE"
-            done < <(docker compose -p "$PROJECT" -f "$FILE" config --images)
-            df -h .
-            trap - EXIT
-          done
+          node release/PAYLOAD/SYSTEM/backend/scripts/deployment/smoke.mjs offline
 
       - name: Bundle downloads into separate architecture folders
         run: |
@@ -1127,10 +1033,10 @@ jobs:
           set -euo pipefail
           node bonni-release-reconcile.mjs
           test -n "${DIGEST}"
-          RETAINED=()
-          if docker buildx imagetools inspect "${IMAGE}:${VERSION}" --raw > existing-image-index.json 2> existing-image-error.txt; then
-            node --input-type=module > retained-image-refs.txt <<'BONNI_IMAGE_MERGE'
-          import fs from "node:fs";
+          node --input-type=module <<'BONNI_IMAGE_MERGE'
+          import fsSync from "node:fs";
+          import {execFileSync} from "node:child_process";
+          import {createHash} from "node:crypto";
           function canonicalContainerPlatforms(raw) {
             const supported = ["linux/amd64", "linux/arm64", "linux/arm/v7"];
             if (!Array.isArray(raw) || !raw.length || raw.length > supported.length
@@ -1139,36 +1045,209 @@ jobs:
             }
             return supported.filter(p => raw.includes(p));
           }
-          function retainedContainerManifests(index, platforms) {
+          function containerDescriptorPlatform(entry) {
+            const p = entry?.platform;
+            if (!p || !/^[a-z0-9][a-z0-9_.-]*$/.test(p.os || "")
+              || !/^[a-z0-9][a-z0-9_.-]*$/.test(p.architecture || "")
+              || p.os === "unknown" || p.architecture === "unknown") return null;
+            if (p.architecture === "arm" && !/^v[0-9]+$/.test(p.variant || "")) return null;
+            // OCI permits an explicit v8 on arm64; it is the same Bonni target.
+            const variant = p.architecture === "arm64" && p.variant === "v8" ? "" : (p.variant || "");
+            if (variant && !/^[a-zA-Z0-9_.-]+$/.test(variant)) return null;
+            return p.os + "/" + p.architecture + (variant ? "/" + variant : "");
+          }
+          function validateContainerDescriptor(entry) {
+            if (!entry || !/^sha256:[a-f0-9]{64}$/.test(entry.digest || "")) throw Error("BONNI_EXISTING_IMAGE_DIGEST_INVALID");
+            if (!Number.isSafeInteger(entry.size) || entry.size <= 0
+              || !["application/vnd.oci.image.manifest.v1+json", "application/vnd.docker.distribution.manifest.v2+json"].includes(entry.mediaType)) {
+              throw Error("BONNI_EXISTING_IMAGE_DESCRIPTOR_INVALID");
+            }
+          }
+          function containerAttestationTarget(entry) {
+            return entry?.annotations?.["vnd.docker.reference.type"] === "attestation-manifest"
+              ? entry.annotations["vnd.docker.reference.digest"] : null;
+          }
+          function retainedContainerDescriptors(index, platforms) {
             const selected = canonicalContainerPlatforms(platforms);
             if (index?.schemaVersion !== 2 || !Array.isArray(index.manifests)) throw Error("BONNI_EXISTING_IMAGE_INDEX_INVALID");
-            const retained = [], seen = new Set();
+            const images = [], seen = new Set();
             for (const entry of index.manifests) {
-              if (!/^sha256:[a-f0-9]{64}$/.test(entry.digest || "")) throw Error("BONNI_EXISTING_IMAGE_DIGEST_INVALID");
-              if (entry.annotations?.["vnd.docker.reference.type"] === "attestation-manifest") continue;
-              const p = entry.platform;
-              if (!p?.os || !p?.architecture || p.os === "unknown" || p.architecture === "unknown") throw Error("BONNI_EXISTING_IMAGE_PLATFORM_INVALID");
-              const platform = p.os + "/" + p.architecture + (p.architecture === "arm" ? "/" + p.variant : "");
-              if (selected.includes(platform)) continue;
-              if (seen.has(platform)) throw Error("BONNI_EXISTING_IMAGE_PLATFORM_AMBIGUOUS");
-              seen.add(platform); retained.push(entry.digest);
+              validateContainerDescriptor(entry);
+              if (entry.annotations?.["vnd.docker.reference.type"] === "attestation-manifest") {
+                if (!/^sha256:[a-f0-9]{64}$/.test(containerAttestationTarget(entry) || "")) throw Error("BONNI_EXISTING_ATTESTATION_TARGET_INVALID");
+                continue;
+              }
+              const platform = containerDescriptorPlatform(entry);
+              if (!platform) throw Error("BONNI_EXISTING_IMAGE_PLATFORM_INVALID: " + entry.digest);
+              if (seen.has(platform)) throw Error("BONNI_EXISTING_IMAGE_PLATFORM_AMBIGUOUS: " + platform);
+              seen.add(platform);
+              if (!selected.includes(platform)) images.push(entry);
             }
-            for (const entry of index.manifests) {
-              if (entry.annotations?.["vnd.docker.reference.type"] === "attestation-manifest"
-                && retained.includes(entry.annotations["vnd.docker.reference.digest"])) retained.push(entry.digest);
-            }
-            return [...new Set(retained)];
+            const digests = new Set(images.map(e => e.digest));
+            return images.concat(index.manifests.filter(e => digests.has(containerAttestationTarget(e))));
           }
-          const refs=retainedContainerManifests(JSON.parse(fs.readFileSync("existing-image-index.json","utf8")),process.env.PLATFORMS.split(","));
-          for(const digest of refs) console.log(process.env.IMAGE+"@"+digest);
+          async function normalizeContainerImageIndex(index, {readManifest, readBlob}) {
+            if (index?.schemaVersion !== 2 || !Array.isArray(index.manifests) || !index.manifests.length
+              || index.manifests.length > 128) throw Error("BONNI_EXISTING_IMAGE_INDEX_INVALID");
+            const normalized = structuredClone(index), runnable = new Set(), seen = new Set();
+            for (const entry of normalized.manifests) {
+              validateContainerDescriptor(entry);
+              if (seen.has(entry.digest)) throw Error("BONNI_EXISTING_IMAGE_DESCRIPTOR_DUPLICATE");
+              seen.add(entry.digest);
+              if (containerDescriptorPlatform(entry) && !entry.artifactType && !entry.annotations?.["vnd.docker.reference.type"]) runnable.add(entry.digest);
+            }
+            for (const entry of normalized.manifests) {
+              if (runnable.has(entry.digest)) continue;
+              let target = containerAttestationTarget(entry);
+              if (!/^sha256:[a-f0-9]{64}$/.test(target || "")) {
+                // Older digest-only merges stripped the annotations. Verify the child
+                // manifest instead of treating every unknown/unknown entry as metadata.
+                const manifest = await readManifest(entry);
+                const layers = manifest?.layers;
+                const isAttestation = manifest?.schemaVersion === 2 && Array.isArray(layers) && layers.length > 0
+                  && layers.length <= 64 && layers.every(l => l.mediaType === "application/vnd.in-toto+json");
+                if (!isAttestation) throw Error("BONNI_EXISTING_IMAGE_PLATFORM_INVALID: " + entry.digest);
+                if (manifest.artifactType === "application/vnd.docker.attestation.manifest.v1+json"
+                  && /^sha256:[a-f0-9]{64}$/.test(manifest.subject?.digest || "")) {
+                  target = manifest.subject.digest;
+                } else {
+                  // The legacy format stores its target in the in-toto statements.
+                  const targets = new Set();
+                  for (const layer of layers) {
+                    const statement = await readBlob(layer);
+                    if (!["https://in-toto.io/Statement/v0.1", "https://in-toto.io/Statement/v1"].includes(statement?._type)
+                      || !Array.isArray(statement.subject)) throw Error("BONNI_EXISTING_ATTESTATION_STATEMENT_INVALID");
+                    for (const subject of statement.subject) {
+                      const digest = "sha256:" + subject?.digest?.sha256;
+                      if (runnable.has(digest)) targets.add(digest);
+                    }
+                  }
+                  if (targets.size !== 1) throw Error("BONNI_EXISTING_ATTESTATION_TARGET_INVALID: " + entry.digest);
+                  target = [...targets][0];
+                }
+              }
+              entry.platform = {os: "unknown", architecture: "unknown"};
+              entry.annotations = {...entry.annotations, "vnd.docker.reference.type": "attestation-manifest", "vnd.docker.reference.digest": target};
+            }
+            return normalized;
+          }
+          function verifyContainerMerge(expected, index) {
+            if (index?.schemaVersion !== 2 || !Array.isArray(index.manifests) || index.manifests.length !== expected.length) {
+              throw Error("BONNI_PROMOTED_IMAGE_MISMATCH");
+            }
+            const canonical = value => JSON.stringify(value, Object.keys(value || {}).sort());
+            const seen = new Set();
+            for (const actual of index.manifests) {
+              const entry = expected.find(e => e.digest === actual.digest);
+              if (!entry || seen.has(actual.digest) || entry.size !== actual.size || entry.mediaType !== actual.mediaType
+                || canonical(entry.platform) !== canonical(actual.platform)
+                || Object.entries(entry.annotations || {}).some(([k, v]) => actual.annotations?.[k] !== v)) {
+                throw Error("BONNI_PROMOTED_IMAGE_MISMATCH");
+              }
+              seen.add(actual.digest);
+            }
+          }
+          function parseContainerRegistryJSON(bytes, descriptor, allowTrailingNewline = false) {
+            let data = Buffer.from(bytes);
+            const matches = value => value.length === descriptor.size && "sha256:" + createHash("sha256").update(value).digest("hex") === descriptor.digest;
+            if (!matches(data) && allowTrailingNewline && data.at(-1) === 10) data = data.subarray(0, -1);
+            if (!matches(data)) throw Error("BONNI_REGISTRY_CONTENT_MISMATCH");
+            return JSON.parse(data.toString("utf8"));
+          }
+          function createContainerBlobReader(image, env = process.env, fetchImpl = fetch) {
+            if (!/^ghcr\.io\/[a-z0-9][a-z0-9._-]*\/[a-z0-9][a-z0-9._-]*$/.test(image)) throw Error("BONNI_REGISTRY_IMAGE_INVALID");
+            const repository = image.slice("ghcr.io/".length);
+            let token;
+            async function bounded(response, limit) {
+              if (!response.ok) throw Error("BONNI_REGISTRY_READ_FAILED: HTTP " + response.status);
+              if (Number(response.headers.get("content-length") || 0) > limit) throw Error("BONNI_REGISTRY_CONTENT_TOO_LARGE");
+              const chunks = []; let total = 0;
+              for await (const chunk of response.body) {
+                total += chunk.length;
+                if (total > limit) throw Error("BONNI_REGISTRY_CONTENT_TOO_LARGE");
+                chunks.push(chunk);
+              }
+              return Buffer.concat(chunks);
+            }
+            return async descriptor => {
+              if (!/^sha256:[a-f0-9]{64}$/.test(descriptor?.digest || "") || !Number.isSafeInteger(descriptor.size)
+                || descriptor.size <= 0 || descriptor.size > 96 * 1024 * 1024) throw Error("BONNI_REGISTRY_BLOB_INVALID");
+              if (!token) {
+                const url = new URL("https://ghcr.io/token");
+                url.searchParams.set("service", "ghcr.io"); url.searchParams.set("scope", "repository:" + repository + ":pull");
+                const headers = {};
+                if (env.GH_TOKEN && env.GITHUB_ACTOR) headers.Authorization = "Basic " + Buffer.from(env.GITHUB_ACTOR + ":" + env.GH_TOKEN).toString("base64");
+                const response = await fetchImpl(url, {headers, redirect: "error", signal: AbortSignal.timeout(30000)});
+                const auth = JSON.parse((await bounded(response, 65536)).toString("utf8"));
+                token = auth.token || auth.access_token;
+                if (typeof token !== "string" || !token) throw Error("BONNI_REGISTRY_AUTH_FAILED");
+              }
+              let url = new URL("https://ghcr.io/v2/" + repository + "/blobs/" + descriptor.digest);
+              for (let redirects = 0; redirects <= 4; redirects++) {
+                if (url.protocol !== "https:" || url.username || url.password) throw Error("BONNI_REGISTRY_REDIRECT_INVALID");
+                const headers = url.origin === "https://ghcr.io" ? {Authorization: "Bearer " + token} : {};
+                const response = await fetchImpl(url, {headers, redirect: "manual", signal: AbortSignal.timeout(120000)});
+                if ([301, 302, 303, 307, 308].includes(response.status)) {
+                  const location = response.headers.get("location");
+                  await response.body?.cancel();
+                  if (!location) throw Error("BONNI_REGISTRY_REDIRECT_INVALID");
+                  url = new URL(location, url); continue;
+                }
+                return parseContainerRegistryJSON(await bounded(response, descriptor.size), descriptor);
+              }
+              throw Error("BONNI_REGISTRY_REDIRECT_LIMIT");
+            };
+          }
+          async function promoteContainerImage({env = process.env,
+            run = args => execFileSync("docker", args, {encoding: "utf8", maxBuffer: 16 * 1024 * 1024, timeout: 180000, stdio: ["ignore", "pipe", "pipe"]}),
+            readBlob = createContainerBlobReader(env.IMAGE, env), directory = "."} = {}) {
+            const image = env.IMAGE, version = env.VERSION, digest = env.DIGEST;
+            if (!/^ghcr\.io\/[a-z0-9][a-z0-9._-]*\/[a-z0-9][a-z0-9._-]*$/.test(image || "")
+              || !/^\d+\.\d+\.\d+(?:-[a-z])?$/.test(version || "") || !/^sha256:[a-f0-9]{64}$/.test(digest || "")) throw Error("BONNI_PROMOTION_INPUT_INVALID");
+            const platforms = canonicalContainerPlatforms((env.PLATFORMS || "").split(","));
+            const inspect = ref => run(["buildx", "imagetools", "inspect", ref, "--raw"]);
+            const readers = {readBlob, readManifest: entry => parseContainerRegistryJSON(inspect(image + "@" + entry.digest), entry, true)};
+            const current = await normalizeContainerImageIndex(JSON.parse(inspect(image + "@" + digest)), readers);
+            // Nothing untested may enter a promotion through the freshly built index.
+            if (retainedContainerDescriptors(current, platforms).length !== 0) throw Error("BONNI_NEW_IMAGE_PLATFORM_UNEXPECTED");
+            const actualPlatforms = current.manifests.filter(e => !containerAttestationTarget(e)).map(containerDescriptorPlatform);
+            if (actualPlatforms.length !== platforms.length || platforms.some(p => !actualPlatforms.includes(p))) throw Error("BONNI_NEW_IMAGE_PLATFORM_MISSING");
+            let previousRaw;
+            try { previousRaw = inspect(image + ":" + version); }
+            catch (error) {
+              const message = String(error.stderr || "");
+              // Authentication/network failures must never be interpreted as a new tag.
+              if (/unauthorized|denied|forbidden|\b40[13]\b/i.test(message)
+                || !/manifest unknown|no such manifest|:\s*not found\s*$/im.test(message)) throw error;
+            }
+            const retained = previousRaw ? retainedContainerDescriptors(await normalizeContainerImageIndex(JSON.parse(previousRaw), readers), platforms) : [];
+            const expected = current.manifests.concat(retained);
+            const currentTargets = new Set(expected.filter(e => !containerAttestationTarget(e)).map(e => e.digest));
+            if (expected.some(e => containerAttestationTarget(e) && !currentTargets.has(containerAttestationTarget(e)))) throw Error("BONNI_ATTESTATION_TARGET_MISSING");
+            const files = [], args = ["buildx", "imagetools", "create", "--tag", image + ":" + version, "--tag", image + ":stable"];
+            try {
+              // Supply full descriptors for both new and retained entries. Buildx infers
+              // their shared repository from the target tags; no mutable source tag is read.
+              for (const [key, value] of Object.entries(current.annotations || {})) {
+                if (typeof value !== "string") throw Error("BONNI_IMAGE_ANNOTATION_INVALID");
+                args.push("--annotation", "index:" + key + "=" + value);
+              }
+              for (const [n, descriptor] of expected.entries()) {
+                const file = directory + "/bonni-promotion-image-" + n + ".json";
+                fsSync.writeFileSync(file, JSON.stringify(descriptor), {flag: "wx", mode: 0o600}); files.push(file);
+                args.push("--file", file);
+              }
+              // Dry-run catches lost annotations/platforms before either tag is changed.
+              verifyContainerMerge(expected, JSON.parse(run([...args, "--dry-run"])));
+              run(args);
+              verifyContainerMerge(expected, JSON.parse(inspect(image + ":" + version)));
+              verifyContainerMerge(expected, JSON.parse(inspect(image + ":stable")));
+              console.log("Bonni: " + platforms.join(", ") + " veröffentlicht; " + retained.filter(e => !containerAttestationTarget(e)).length + " vorhandene Architektur(en) beibehalten.");
+            } finally { for (const file of files) fsSync.rmSync(file, {force: true}); }
+          }
+          await promoteContainerImage();
           
           BONNI_IMAGE_MERGE
-            mapfile -t RETAINED < retained-image-refs.txt
-          elif ! grep -Eqi 'manifest unknown|not found|no such manifest' existing-image-error.txt; then
-            cat existing-image-error.txt >&2
-            exit 1
-          fi
-          docker buildx imagetools create --tag "${IMAGE}:${VERSION}" --tag "${IMAGE}:stable" "${IMAGE}@${DIGEST}" "${RETAINED[@]}"
           if [[ ",${PLATFORMS}," == *",linux/arm/v7,"* ]]; then
             docker buildx imagetools create --tag "${IMAGE}-database:${VERSION}-armv7" "${IMAGE}-database@${DATABASE_DIGEST}"
           fi
