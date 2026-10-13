@@ -77,18 +77,29 @@ jobs:
           }
           function containerBundles(version, platforms) {
             if (!/^\d+\.\d+\.\d+(?:[+-][a-z])?$/.test(version)) throw new Error("CONTAINER_VERSION_INVALID");
-            return canonicalContainerPlatforms(platforms).flatMap(platform => {
+            const selected = canonicalContainerPlatforms(platforms);
+            const bundles = selected.map(platform => {
               const architecture = containerArchitecture(platform);
               const prefix = platform === "linux/arm/v7" ? "32-Bit" : "64-Bit";
-              const names = [`${prefix}-Bonni-Core-v${version}-${architecture}`];
-              if (platform === "linux/arm64") names.push(`Raspi-Bonni-Core-v${version}-ARM64`);
-              return names.map(folder => ({folder, filename: folder + ".zip", platform, architecture}));
+              const folder = `${prefix}-Bonni-Core-v${version}-${architecture}`;
+              return {folder, filename: folder + ".zip", platform, architecture,
+                variants: [{platform, architecture, subfolder: ""}]};
             });
+            // One Raspi package always contains both variants. Never publish a partial
+            // Raspi ZIP when only one of its required architectures was built.
+            if (selected.includes("linux/arm64") && selected.includes("linux/arm/v7")) {
+              const folder = `Raspi-Bonni-Core-v${version}`;
+              bundles.push({folder, filename: folder + ".zip", variants: [
+                {platform: "linux/arm/v7", architecture: "ARMv7", subfolder: "32-Bit-ARMv7"},
+                {platform: "linux/arm64", architecture: "ARM64", subfolder: "64-Bit-ARM64"},
+              ]});
+            }
+            return bundles;
           }
           function containerDownloadNames(version, platforms) {
             const files = canonicalContainerPlatforms(platforms).flatMap(platform => {
               const base = `Bonni-Core-v${version}-${containerArchitecture(platform)}`;
-              return [base + ".yml", base + ".yml.sha256", base + ".tar", base + ".tar.sha256"];
+              return [".yml", ".yml.sha256", "-Offline.yml", "-Offline.yml.sha256", ".tar", ".tar.sha256", "-Datenbank.tar", "-Datenbank.tar.sha256"].map(suffix => base + suffix);
             });
             return files.concat(containerBundles(version, platforms).flatMap(b => [b.filename, b.filename + ".sha256"]));
           }
@@ -227,7 +238,7 @@ jobs:
             const qualification = platforms.includes("linux/arm/v7")
               ? "\n\nARMv7: Start/Neustart unter Emulation und ELF-32K-Vorprüfung bestanden. Hardwaretest noch erforderlich." : "";
             const body = cleaned + "\n\n" + start + "\nGeprüfter Container: `" + env.IMAGE + "@" + env.DIGEST
-              + "`.\n\nDownload-Pakete (je ein Ordner, ohne Anleitung):\n" + downloads + qualification + "\n\nPassender Quellcode: [SYSTEM](" + code + ").\n" + end
+              + "`.\n\nDownload-Pakete (je ein Ordner; eigene Anleitung, sofern hinterlegt):\n" + downloads + qualification + "\n\nPassender Quellcode: [SYSTEM](" + code + ").\n" + end
               + "\n\n<!-- bonni-container-built:" + env.DIGEST + " -->\n" + resultPrefix + JSON.stringify(result) + " -->\n";
             await api(releasePath, {method: "PATCH", json: {name: "Bonni Core v" + coreVersion, body, draft: false}});
             log("Release vollständig aktualisiert: " + release.html_url);
@@ -299,18 +310,29 @@ jobs:
           }
           function containerBundles(version, platforms) {
             if (!/^\d+\.\d+\.\d+(?:[+-][a-z])?$/.test(version)) throw new Error("CONTAINER_VERSION_INVALID");
-            return canonicalContainerPlatforms(platforms).flatMap(platform => {
+            const selected = canonicalContainerPlatforms(platforms);
+            const bundles = selected.map(platform => {
               const architecture = containerArchitecture(platform);
               const prefix = platform === "linux/arm/v7" ? "32-Bit" : "64-Bit";
-              const names = [`${prefix}-Bonni-Core-v${version}-${architecture}`];
-              if (platform === "linux/arm64") names.push(`Raspi-Bonni-Core-v${version}-ARM64`);
-              return names.map(folder => ({folder, filename: folder + ".zip", platform, architecture}));
+              const folder = `${prefix}-Bonni-Core-v${version}-${architecture}`;
+              return {folder, filename: folder + ".zip", platform, architecture,
+                variants: [{platform, architecture, subfolder: ""}]};
             });
+            // One Raspi package always contains both variants. Never publish a partial
+            // Raspi ZIP when only one of its required architectures was built.
+            if (selected.includes("linux/arm64") && selected.includes("linux/arm/v7")) {
+              const folder = `Raspi-Bonni-Core-v${version}`;
+              bundles.push({folder, filename: folder + ".zip", variants: [
+                {platform: "linux/arm/v7", architecture: "ARMv7", subfolder: "32-Bit-ARMv7"},
+                {platform: "linux/arm64", architecture: "ARM64", subfolder: "64-Bit-ARM64"},
+              ]});
+            }
+            return bundles;
           }
           function containerDownloadNames(version, platforms) {
             const files = canonicalContainerPlatforms(platforms).flatMap(platform => {
               const base = `Bonni-Core-v${version}-${containerArchitecture(platform)}`;
-              return [base + ".yml", base + ".yml.sha256", base + ".tar", base + ".tar.sha256"];
+              return [".yml", ".yml.sha256", "-Offline.yml", "-Offline.yml.sha256", ".tar", ".tar.sha256", "-Datenbank.tar", "-Datenbank.tar.sha256"].map(suffix => base + suffix);
             });
             return files.concat(containerBundles(version, platforms).flatMap(b => [b.filename, b.filename + ".sha256"]));
           }
@@ -478,18 +500,29 @@ jobs:
           }
           function containerBundles(version, platforms) {
             if (!/^\d+\.\d+\.\d+(?:[+-][a-z])?$/.test(version)) throw new Error("CONTAINER_VERSION_INVALID");
-            return canonicalContainerPlatforms(platforms).flatMap(platform => {
+            const selected = canonicalContainerPlatforms(platforms);
+            const bundles = selected.map(platform => {
               const architecture = containerArchitecture(platform);
               const prefix = platform === "linux/arm/v7" ? "32-Bit" : "64-Bit";
-              const names = [`${prefix}-Bonni-Core-v${version}-${architecture}`];
-              if (platform === "linux/arm64") names.push(`Raspi-Bonni-Core-v${version}-ARM64`);
-              return names.map(folder => ({folder, filename: folder + ".zip", platform, architecture}));
+              const folder = `${prefix}-Bonni-Core-v${version}-${architecture}`;
+              return {folder, filename: folder + ".zip", platform, architecture,
+                variants: [{platform, architecture, subfolder: ""}]};
             });
+            // One Raspi package always contains both variants. Never publish a partial
+            // Raspi ZIP when only one of its required architectures was built.
+            if (selected.includes("linux/arm64") && selected.includes("linux/arm/v7")) {
+              const folder = `Raspi-Bonni-Core-v${version}`;
+              bundles.push({folder, filename: folder + ".zip", variants: [
+                {platform: "linux/arm/v7", architecture: "ARMv7", subfolder: "32-Bit-ARMv7"},
+                {platform: "linux/arm64", architecture: "ARM64", subfolder: "64-Bit-ARM64"},
+              ]});
+            }
+            return bundles;
           }
           function containerDownloadNames(version, platforms) {
             const files = canonicalContainerPlatforms(platforms).flatMap(platform => {
               const base = `Bonni-Core-v${version}-${containerArchitecture(platform)}`;
-              return [base + ".yml", base + ".yml.sha256", base + ".tar", base + ".tar.sha256"];
+              return [".yml", ".yml.sha256", "-Offline.yml", "-Offline.yml.sha256", ".tar", ".tar.sha256", "-Datenbank.tar", "-Datenbank.tar.sha256"].map(suffix => base + suffix);
             });
             return files.concat(containerBundles(version, platforms).flatMap(b => [b.filename, b.filename + ".sha256"]));
           }
@@ -577,6 +610,7 @@ jobs:
               ports:
                 - "4000:4000"
               volumes:
+                - core_update:/app/UPDATE
                 - core_storage:/app/storage
                 - run_system:/app/run_system
                 - core_logs:/app/backend/archives/logs
@@ -596,6 +630,7 @@ jobs:
           
           volumes:
             postgres_data:
+            core_update:
             core_storage:
             run_system:
             core_logs:
@@ -632,6 +667,13 @@ jobs:
             }
             return image.split("@")[0] + "@" + matches[0].digest;
           }
+          function localContainerImageTag(reference, version, platform, database = false) {
+            if (!/^[a-z0-9][a-z0-9._:/-]*@sha256:[a-f0-9]{64}$/.test(reference)
+              || !/^\d+\.\d+\.\d+(?:[+-][a-z])?$/.test(version)
+              || !['linux/amd64', 'linux/arm64', 'linux/arm/v7'].includes(platform)) throw Error('BONNI_EXPORT_REFERENCE_INVALID');
+            const arch = platform === 'linux/arm/v7' ? 'armv7' : platform.split('/')[1];
+            return `bonni-core${database ? '-database' : ''}:${version.replace('+', '-')}-${arch}-${reference.split('sha256:')[1]}`;
+          }
           const version = process.env.VERSION.replace(/-([a-z])$/, "+$1");
           const platforms = process.env.PLATFORMS.split(",");
           if (!/^sha256:[a-f0-9]{64}$/.test(process.env.DIGEST)) throw Error("CONTAINER_IMAGE_DIGEST_INVALID");
@@ -639,6 +681,7 @@ jobs:
           const databaseIndex = JSON.parse(await fs.readFile("postgres-image-index.json", "utf8"));
           await fs.mkdir("compose-assets", {recursive: true});
           await fs.mkdir("smoke", {recursive: true, mode: 0o700});
+          const exportPlan = [];
           for (const platform of platforms) {
             const image = resolvePlatformImage(process.env.IMAGE + "@" + process.env.DIGEST, coreIndex, platform);
             const databaseImage = platform === "linux/arm/v7"
@@ -653,7 +696,21 @@ jobs:
               .replace("BITTE_EIGENES_ADMIN_KENNWORT_EINTRAGEN", "A7!" + randomBytes(24).toString("hex"))
               .replace('"4000:4000"', '"127.0.0.1::4000"');
             await fs.writeFile("smoke/" + containerArchitecture(platform).toLowerCase() + ".yml", smoke, {mode: 0o600});
+            const localImage = localContainerImageTag(image, version, platform);
+            const localDatabase = localContainerImageTag(databaseImage, version, platform, true);
+            const offline = source => source.replace('image: ' + image, 'image: ' + localImage + '\n    pull_policy: never')
+              .replace('image: ' + databaseImage, 'image: ' + localDatabase + '\n    pull_policy: never');
+            const offlineFilename = filename.replace(/\.yml$/, '-Offline.yml');
+            const offlineText = '# Offline: zuerst Core-TAR und Datenbank-TAR unter Images importieren.\n' + offline(text);
+            await fs.writeFile('compose-assets/' + offlineFilename, offlineText);
+            await fs.writeFile('compose-assets/' + offlineFilename + '.sha256', createHash('sha256').update(offlineText).digest('hex') + '  ' + offlineFilename + '\n');
+            await fs.writeFile('smoke/' + containerArchitecture(platform).toLowerCase() + '-offline.yml', offline(smoke), {mode:0o600});
+            exportPlan.push({platform, images:[
+              {service:'bonni-core',reference:image,tag:localImage,file:filename.replace(/\.yml$/, '.tar')},
+              {service:'db',reference:databaseImage,tag:localDatabase,file:filename.replace(/\.yml$/, '-Datenbank.tar')},
+            ]});
           }
+          await fs.writeFile("export-plan.json", JSON.stringify(exportPlan));
           await fs.writeFile("bundle-plan.json", JSON.stringify(containerBundles(version, platforms)));
           
           BONNI_COMPOSE_SCRIPT
@@ -748,40 +805,116 @@ jobs:
           done < <(docker compose -f smoke/armv7.yml config --images)
           echo 'ARMv7: start/restart and ELF 32K precheck passed. Hardware test remains required.' >> "${GITHUB_STEP_SUMMARY}"
 
-      - name: Export and verify downloadable Docker TAR images
+      - name: Export and verify the tested Core and database images
         env:
-          GH_TOKEN: ${{ github.token }}
-          RELEASE_ID: ${{ inputs.release_id }}
-          PLATFORMS: ${{ inputs.platforms }}
           VERSION: ${{ inputs.version }}
-          BUILDER: ${{ steps.bonni_builder.outputs.name }}
           SOURCE_COMMIT: ${{ steps.bonni_source.outputs.source_commit }}
           SOURCE_SHA256: ${{ inputs.asset_sha256 }}
         run: |
           set -euo pipefail
+          cat > verify-image-archive.py <<'BONNI_ARCHIVE_CHECK'
+          import hashlib, json, pathlib, re, sys, tarfile
+          filename, tag, expected_id, expected_platform = sys.argv[1:]
+          with tarfile.open(filename, 'r:') as archive:
+              members = archive.getmembers()
+              names = [m.name for m in members]
+              if len(set(names)) != len(names) or any(m.issym() or m.islnk() or m.name.startswith('/') or '..' in pathlib.PurePosixPath(m.name).parts for m in members):
+                  raise ValueError('BONNI_ARCHIVE_UNSAFE')
+              def read_json(name):
+                  member = archive.getmember(name)
+                  if not member.isfile() or member.size > 16*1024*1024:
+                      raise ValueError('BONNI_ARCHIVE_JSON_INVALID')
+                  data = archive.extractfile(member).read()
+                  return data, json.loads(data)
+              _, manifest = read_json('manifest.json')
+              if not isinstance(manifest, list) or len(manifest) != 1 or manifest[0].get('RepoTags') != [tag]:
+                  raise ValueError('BONNI_ARCHIVE_TAG_INVALID')
+              entry = manifest[0]
+              data, config = read_json(entry['Config'])
+              if 'sha256:' + hashlib.sha256(data).hexdigest() != expected_id:
+                  raise ValueError('BONNI_ARCHIVE_CONFIG_MISMATCH')
+              platform = config['os'] + '/' + config['architecture'] + ('/' + config.get('variant','') if config['architecture'] == 'arm' else '')
+              if platform != expected_platform:
+                  raise ValueError('BONNI_ARCHIVE_PLATFORM_MISMATCH')
+              layers = entry['Layers']
+              digests = config['rootfs']['diff_ids']
+              if not layers or len(layers) != len(digests):
+                  raise ValueError('BONNI_ARCHIVE_LAYERS_INVALID')
+              for name, digest in zip(layers, digests):
+                  member = archive.getmember(name)
+                  if not member.isfile():
+                      raise ValueError('BONNI_ARCHIVE_LAYER_INVALID')
+                  with archive.extractfile(member) as source:
+                      if 'sha256:' + hashlib.file_digest(source, 'sha256').hexdigest() != digest:
+                          raise ValueError('BONNI_ARCHIVE_LAYER_MISMATCH')
+          print('Verified Docker image archive: ' + pathlib.Path(filename).name)
+          
+          BONNI_ARCHIVE_CHECK
+          node --input-type=module <<'BONNI_EXPORT_SCRIPT'
+          import fs from "node:fs";
+          import {execFileSync} from "node:child_process";
+          import {createHash} from "node:crypto";
+          function localContainerImageTag(reference, version, platform, database = false) {
+            if (!/^[a-z0-9][a-z0-9._:/-]*@sha256:[a-f0-9]{64}$/.test(reference)
+              || !/^\d+\.\d+\.\d+(?:[+-][a-z])?$/.test(version)
+              || !['linux/amd64', 'linux/arm64', 'linux/arm/v7'].includes(platform)) throw Error('BONNI_EXPORT_REFERENCE_INVALID');
+            const arch = platform === 'linux/arm/v7' ? 'armv7' : platform.split('/')[1];
+            return `bonni-core${database ? '-database' : ''}:${version.replace('+', '-')}-${arch}-${reference.split('sha256:')[1]}`;
+          }
+          
+          const docker = (...args) => execFileSync('docker', args, {encoding:'utf8', maxBuffer:16*1024*1024});
+          const plans = JSON.parse(fs.readFileSync('export-plan.json','utf8'));
+          for (const plan of plans) {
+            for (const item of plan.images) {
+              if (item.tag !== localContainerImageTag(item.reference, process.env.VERSION, plan.platform, item.service === 'db')
+                || !/^Bonni-Core-v\d+\.\d+\.\d+(?:[+-][a-z])?-(AMD64|ARM64|ARMv7)(?:-Datenbank)?\.tar$/.test(item.file)) throw Error('BONNI_EXPORT_PLAN_INVALID');
+              const details = JSON.parse(docker('image','inspect',item.reference));
+              if (details.length !== 1) throw Error('BONNI_EXPORT_IMAGE_AMBIGUOUS');
+              const config = details[0];
+              const platform = config.Os + '/' + config.Architecture + (config.Architecture === 'arm' ? '/' + config.Variant : '');
+              if (platform !== plan.platform || !/^sha256:[a-f0-9]{64}$/.test(config.Id)) throw Error('BONNI_EXPORT_PLATFORM_INVALID');
+              if (item.service === 'bonni-core') {
+                const labels = config.Config?.Labels || {};
+                if (labels['org.opencontainers.image.revision'] !== process.env.SOURCE_COMMIT
+                  || labels['io.bonni.source-package.sha256'] !== process.env.SOURCE_SHA256
+                  || labels['org.opencontainers.image.version'] !== process.env.VERSION) throw Error('BONNI_EXPORT_SOURCE_MISMATCH');
+              }
+              docker('image','tag',config.Id,item.tag);
+              const file = 'compose-assets/' + item.file;
+              docker('image','save','--output',file,item.tag);
+              execFileSync('python3',['verify-image-archive.py',file,item.tag,config.Id,plan.platform],{stdio:'inherit'});
+              docker('image','rm',item.tag);
+              docker('image','load','--input',file);
+              if (docker('image','inspect','--format','{{.Id}}',item.tag).trim() !== config.Id) throw Error('BONNI_EXPORT_ROUNDTRIP_MISMATCH');
+              const hash = createHash('sha256');
+              for await (const chunk of fs.createReadStream(file)) hash.update(chunk);
+              fs.writeFileSync(file+'.sha256',hash.digest('hex')+'  '+item.file+'\n');
+            }
+          }
+          
+          BONNI_EXPORT_SCRIPT
+
+      - name: Start and restart the application from imported TAR images without pulling
+        env:
+          PLATFORMS: ${{ inputs.platforms }}
+        run: |
+          set -euo pipefail
           for PLATFORM in ${PLATFORMS//,/ }; do
             ARCH=${PLATFORM#linux/}
-            if [ "${PLATFORM}" = linux/arm/v7 ]; then ARCH=armv7; fi
-            ARCH_LABEL=${ARCH^^}
-            if [ "${ARCH}" = armv7 ]; then ARCH_LABEL=ARMv7; fi
-            CORE_VERSION=$(node -e 'process.stdout.write(process.env.VERSION.replace(/-([a-z])$/, "+$1"))')
-            FILE="Bonni-Core-v${CORE_VERSION}-${ARCH_LABEL}.tar"
-            IMAGE_TAG="bonni-core:${VERSION}-${ARCH}"
-            docker buildx build --builder "${BUILDER}" --platform "${PLATFORM}" \
-              --build-arg "BONNI_CORE_REVISION=${SOURCE_COMMIT}" \
-              --file release/PAYLOAD/SYSTEM/backend/Dockerfile --provenance=false \
-              --label "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}" \
-              --label "org.opencontainers.image.revision=${SOURCE_COMMIT}" \
-              --label "org.opencontainers.image.version=${VERSION}" \
-              --label "io.bonni.source-package.sha256=${SOURCE_SHA256}" \
-              --tag "${IMAGE_TAG}" --output "type=docker,dest=${FILE}" release/PAYLOAD
-            tar -xOf "${FILE}" manifest.json > image-manifest.json
-            CONFIG=$(IMAGE_TAG="${IMAGE_TAG}" node -e 'const m = require("./image-manifest.json"); if (!Array.isArray(m) || m.length !== 1 || !Array.isArray(m[0].RepoTags) || !m[0].RepoTags.includes(process.env.IMAGE_TAG) || !/^blobs\/sha256\/[a-f0-9]{64}$|^[a-f0-9]{64}\.json$/.test(m[0].Config)) process.exit(1); process.stdout.write(m[0].Config);')
-            tar -xOf "${FILE}" "${CONFIG}" > image-config.json
-            DETECTED=$(node -e 'const c = require("./image-config.json"); const labels = c.config?.Labels || {}; if (labels["org.opencontainers.image.revision"] !== process.env.SOURCE_COMMIT || labels["io.bonni.source-package.sha256"] !== process.env.SOURCE_SHA256 || labels["org.opencontainers.image.version"] !== process.env.VERSION) throw new Error("Container source labels do not match the release code"); process.stdout.write(c.os + "/" + c.architecture + (c.architecture === "arm" ? "/" + c.variant : ""));')
-            test "${DETECTED}" = "${PLATFORM}"
-            sha256sum "${FILE}" > "${FILE}.sha256"
-            mv "${FILE}" "${FILE}.sha256" compose-assets/
+            if [ "$PLATFORM" = linux/arm/v7 ]; then ARCH=armv7; fi
+            PROJECT="bonni-offline-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${ARCH}"
+            FILE="smoke/${ARCH}-offline.yml"
+            trap 'docker compose -p "$PROJECT" -f "$FILE" down --volumes --remove-orphans >/dev/null 2>&1 || true' EXIT
+            docker compose -p "$PROJECT" -f "$FILE" config --quiet
+            if ! docker compose -p "$PROJECT" -f "$FILE" up -d --pull never --wait --wait-timeout 600; then
+              docker compose -p "$PROJECT" -f "$FILE" logs --tail 100
+              exit 1
+            fi
+            docker compose -p "$PROJECT" -f "$FILE" exec -T bonni-core node -e "fetch('http://127.0.0.1:4000/').then(async r=>{if(!r.ok || !(await r.text()).includes('<html')) process.exit(1)}).catch(()=>process.exit(1))"
+            docker compose -p "$PROJECT" -f "$FILE" restart bonni-core
+            docker compose -p "$PROJECT" -f "$FILE" up -d --pull never --wait --wait-timeout 600
+            docker compose -p "$PROJECT" -f "$FILE" down --volumes --remove-orphans
+            trap - EXIT
           done
 
       - name: Bundle downloads into separate architecture folders
@@ -790,6 +923,22 @@ jobs:
           python3 - <<'BONNI_BUNDLES'
           import hashlib, json, os, pathlib, re, shutil, zipfile
           root = pathlib.Path('compose-assets')
+          instruction_file = pathlib.Path('release/PAYLOAD/SYSTEM/backend/deploy/bonni-container-instructions.json')
+          instructions = {}
+          if instruction_file.is_symlink():
+              raise ValueError('BONNI_INSTRUCTIONS_INPUT_INVALID')
+          if instruction_file.exists():
+              if not instruction_file.is_file() or instruction_file.stat().st_size > 2097152:
+                  raise ValueError('BONNI_INSTRUCTIONS_INPUT_INVALID')
+              document = json.loads(instruction_file.read_text(encoding='utf-8'))
+              if not isinstance(document, dict) or set(document) != {'schema','instructions'} or document['schema'] != 'bonni.container-instructions/v1':
+                  raise ValueError('BONNI_INSTRUCTIONS_SCHEMA_INVALID')
+              instructions = document['instructions']
+              if not isinstance(instructions, dict) or set(instructions) - {'armv7','amd64','arm64','raspi'}:
+                  raise ValueError('BONNI_INSTRUCTIONS_INVALID')
+              for key, text in instructions.items():
+                  if not isinstance(text, str) or len(text.encode('utf-8')) > 65536 or re.search(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', text):
+                      raise ValueError('BONNI_INSTRUCTIONS_TEXT_INVALID: ' + key)
           plans = json.loads(pathlib.Path('bundle-plan.json').read_text())
           if not isinstance(plans, list) or not 1 <= len(plans) <= 4:
               raise ValueError('BONNI_BUNDLE_PLAN_INVALID')
@@ -799,42 +948,82 @@ jobs:
           seen = set()
           for plan in plans:
               folder, filename = plan['folder'], plan['filename']
-              match = re.fullmatch(r'(32-Bit|64-Bit|Raspi)-Bonni-Core-v(\d+\.\d+\.\d+(?:[+-][a-z])?)-(AMD64|ARM64|ARMv7)', folder)
-              if not match or filename != folder + '.zip' or filename in seen:
+              match = re.fullmatch(r'(32-Bit|64-Bit)-Bonni-Core-v(\d+\.\d+\.\d+(?:[+-][a-z])?)-(AMD64|ARM64|ARMv7)', folder)
+              raspi = re.fullmatch(r'Raspi-Bonni-Core-v(\d+\.\d+\.\d+(?:[+-][a-z])?)', folder)
+              if not (match or raspi) or filename != folder + '.zip' or filename in seen:
                   raise ValueError('BONNI_BUNDLE_NAME_INVALID')
               seen.add(filename)
-              prefix, version, arch = match.groups()
-              platform = {'AMD64':'linux/amd64','ARM64':'linux/arm64','ARMv7':'linux/arm/v7'}[arch]
-              if plan['architecture'] != arch or plan['platform'] != platform or prefix not in ({'ARMv7':['32-Bit'], 'AMD64':['64-Bit'], 'ARM64':['64-Bit','Raspi']}[arch]):
+              if raspi:
+                  version = raspi.group(1)
+                  variants = [
+                      {'platform':'linux/arm/v7','architecture':'ARMv7','subfolder':'32-Bit-ARMv7'},
+                      {'platform':'linux/arm64','architecture':'ARM64','subfolder':'64-Bit-ARM64'},
+                  ]
+              else:
+                  prefix, version, arch = match.groups()
+                  platform = {'AMD64':'linux/amd64','ARM64':'linux/arm64','ARMv7':'linux/arm/v7'}[arch]
+                  if plan.get('architecture') != arch or plan.get('platform') != platform or prefix != ('32-Bit' if arch == 'ARMv7' else '64-Bit'):
+                      raise ValueError('BONNI_BUNDLE_PLATFORM_INVALID')
+                  variants = [{'platform':platform,'architecture':arch,'subfolder':''}]
+              if plan.get('variants') != variants:
                   raise ValueError('BONNI_BUNDLE_PLATFORM_INVALID')
-              stem = 'Bonni-Core-v' + version + '-' + arch
-              names = [stem + suffix for suffix in ('.yml', '.yml.sha256', '.tar', '.tar.sha256')]
-              for name in names:
-                  path = root / name
-                  if path.is_symlink() or not path.is_file() or path.stat().st_size == 0:
-                      raise ValueError('BONNI_BUNDLE_INPUT_INVALID: ' + name)
-              for ext in ('.yml', '.tar'):
-                  name = stem + ext
-                  expected = digest(root / name) + '  ' + name + '\n'
-                  if (root / (name + '.sha256')).read_text() != expected:
-                      raise ValueError('BONNI_BUNDLE_CHECKSUM_MISMATCH: ' + name)
+              instruction_key = 'raspi' if raspi else arch.lower()
+              instruction_text = instructions.get(instruction_key, '')
+              instruction_member = folder + '/Anleitung.txt'
+              members = []
+              for variant in variants:
+                  stem = 'Bonni-Core-v' + version + '-' + variant['architecture']
+                  names = [stem + suffix for suffix in ('.yml', '.yml.sha256', '-Offline.yml', '-Offline.yml.sha256', '.tar', '.tar.sha256', '-Datenbank.tar', '-Datenbank.tar.sha256')]
+                  directory = folder + '/' + (variant['subfolder'] + '/' if variant['subfolder'] else '')
+                  for name in names:
+                      path = root / name
+                      if path.is_symlink() or not path.is_file() or path.stat().st_size == 0:
+                          raise ValueError('BONNI_BUNDLE_INPUT_INVALID: ' + name)
+                      members.append((name, directory + name))
+                  for ext in ('.yml', '-Offline.yml', '.tar', '-Datenbank.tar'):
+                      name = stem + ext
+                      expected = digest(root / name) + '  ' + name + '\n'
+                      if (root / (name + '.sha256')).read_text() != expected:
+                          raise ValueError('BONNI_BUNDLE_CHECKSUM_MISMATCH: ' + name)
+              # Only explicit, documented placeholders are expanded, once. No code evaluation.
+              paths = lambda suffix: '\n'.join((v['subfolder'] + '/' if v['subfolder'] else '') + 'Bonni-Core-v' + version + '-' + v['architecture'] + suffix for v in variants)
+              tokens = {
+                  'VERSION': version, 'PAKETNAME': filename,
+                  'ARCHITEKTUR': 'ARMv7 (32 Bit) und ARM64 (64 Bit)' if raspi else arch,
+                  'YAML_DATEI': paths('.yml'), 'OFFLINE_YAML_DATEI': paths('-Offline.yml'),
+                  'TAR_DATEI': paths('.tar'), 'DATENBANK_TAR_DATEI': paths('-Datenbank.tar'),
+                  'DATEIEN': '\n'.join(member[len(folder)+1:] for name, member in members),
+              }
+              instruction_text = re.sub(r'\{\{([A-Z_]+)\}\}', lambda m: tokens.get(m.group(1), m.group(0)), instruction_text)
+              instruction_bytes = instruction_text.encode('utf-8') if instruction_text.strip() else None
+              if instruction_bytes is not None and len(instruction_bytes) > 1048576:
+                  raise ValueError('BONNI_INSTRUCTIONS_EXPANDED_TOO_LARGE')
               temporary = root / (filename + '.tmp')
               try:
                   # Stable timestamps and metadata: identical inputs give identical ZIPs.
                   # Stream large TARs so AMD64 and Raspi archives never fill Python memory.
                   with zipfile.ZipFile(temporary, 'w', compression=zipfile.ZIP_DEFLATED, compresslevel=6, allowZip64=True) as archive:
-                      for name in names:
-                          info = zipfile.ZipInfo(folder + '/' + name, date_time=(1980,1,1,0,0,0))
+                      for name, member in members:
+                          info = zipfile.ZipInfo(member, date_time=(1980,1,1,0,0,0))
                           info.create_system = 3
                           info.external_attr = 0o100644 << 16
                           info.compress_type = zipfile.ZIP_DEFLATED
                           with open(root / name, 'rb') as source, archive.open(info, 'w', force_zip64=True) as destination:
                               shutil.copyfileobj(source, destination, length=1024*1024)
+                      if instruction_bytes is not None:
+                          info = zipfile.ZipInfo(instruction_member, date_time=(1980,1,1,0,0,0))
+                          info.create_system = 3
+                          info.external_attr = 0o100644 << 16
+                          info.compress_type = zipfile.ZIP_DEFLATED
+                          archive.writestr(info, instruction_bytes)
                   with zipfile.ZipFile(temporary) as archive:
-                      if archive.namelist() != [folder + '/' + name for name in names] or archive.testzip() is not None:
+                      expected_members = [member for name, member in members] + ([instruction_member] if instruction_bytes is not None else [])
+                      if archive.namelist() != expected_members or archive.testzip() is not None:
                           raise ValueError('BONNI_BUNDLE_VERIFICATION_FAILED')
-                      for name in names:
-                          with archive.open(folder + '/' + name) as source:
+                      if instruction_bytes is not None and archive.read(instruction_member) != instruction_bytes:
+                          raise ValueError('BONNI_INSTRUCTIONS_CONTENT_MISMATCH')
+                      for name, member in members:
+                          with archive.open(member) as source:
                               if hashlib.file_digest(source, 'sha256').hexdigest() != digest(root / name):
                                   raise ValueError('BONNI_BUNDLE_CONTENT_MISMATCH: ' + name)
                   os.replace(temporary, root / filename)
