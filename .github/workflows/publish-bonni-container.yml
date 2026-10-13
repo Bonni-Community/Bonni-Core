@@ -434,6 +434,7 @@ jobs:
         if: contains(inputs.platforms, 'linux/arm/v7')
         uses: docker/build-push-action@v6
         with:
+          builder: ${{ steps.bonni_builder.outputs.name }}
           context: release/PAYLOAD
           file: release/PAYLOAD/SYSTEM/backend/Dockerfile.armv7-db
           platforms: linux/arm/v7
@@ -447,10 +448,22 @@ jobs:
           tags: |
             ${{ inputs.image }}-database:build-${{ github.run_id }}-${{ github.run_attempt }}
 
+      - name: Release ARMv7 database build cache
+        if: contains(inputs.platforms, 'linux/arm/v7')
+        env:
+          BUILDER_NAME: ${{ steps.bonni_builder.outputs.name }}
+        run: |
+          set -euo pipefail
+          test -n "$BUILDER_NAME"
+          df -h .
+          docker buildx prune --builder "$BUILDER_NAME" --all --force
+          df -h .
+
       - name: Build and publish the finished container
         id: bonni_image
         uses: docker/build-push-action@v6
         with:
+          builder: ${{ steps.bonni_builder.outputs.name }}
           context: release/PAYLOAD
           file: release/PAYLOAD/SYSTEM/backend/Dockerfile
           platforms: ${{ inputs.platforms }}
@@ -466,6 +479,16 @@ jobs:
             io.bonni.source-package.sha256=${{ inputs.asset_sha256 }}
           tags: |
             ${{ inputs.image }}:build-${{ github.run_id }}-${{ github.run_attempt }}
+
+      - name: Release completed container build cache before image tests
+        env:
+          BUILDER_NAME: ${{ steps.bonni_builder.outputs.name }}
+        run: |
+          set -euo pipefail
+          test -n "$BUILDER_NAME"
+          df -h .
+          docker buildx prune --builder "$BUILDER_NAME" --all --force
+          df -h .
 
       - name: Create versioned Compose files pinned to platform images
         env:
@@ -879,18 +902,31 @@ jobs:
                   || labels['io.bonni.source-package.sha256'] !== process.env.SOURCE_SHA256
                   || labels['org.opencontainers.image.version'] !== process.env.VERSION) throw Error('BONNI_EXPORT_SOURCE_MISMATCH');
               }
+              const disk = fs.statfsSync('compose-assets');
+              const available = disk.bavail * disk.bsize;
+              if (!Number.isSafeInteger(config.Size) || config.Size < 0) throw Error('BONNI_EXPORT_SIZE_INVALID');
+              // Reserve room for Docker's temporary archive and the final TAR, plus a
+              // margin. This is a preflight estimate; concurrent writes can still fail.
+              const required = config.Size * 2 + 256 * 1024 * 1024;
+              console.log('Export disk bytes: available=' + available + ', estimated required=' + required + ', file=' + item.file);
+              if (available < required) throw Error('BONNI_EXPORT_DISK_SPACE_LOW: ' + item.file + ', available=' + available + ', required=' + required);
               docker('image','tag',config.Id,item.tag);
               const file = 'compose-assets/' + item.file;
               docker('image','save','--output',file,item.tag);
               execFileSync('python3',['verify-image-archive.py',file,item.tag,config.Id,plan.platform],{stdio:'inherit'});
-              docker('image','rm',item.tag);
+              // The archive is verified. Drop only these exact references before loading
+              // it again, so completed architectures do not accumulate in Docker storage.
+              docker('image','rm',item.tag,item.reference);
               docker('image','load','--input',file);
               if (docker('image','inspect','--format','{{.Id}}',item.tag).trim() !== config.Id) throw Error('BONNI_EXPORT_ROUNDTRIP_MISMATCH');
               const hash = createHash('sha256');
               for await (const chunk of fs.createReadStream(file)) hash.update(chunk);
               fs.writeFileSync(file+'.sha256',hash.digest('hex')+'  '+item.file+'\n');
+              docker('image','rm',item.tag);
+              console.log('Released exported image: ' + item.file);
             }
           }
+          
           
           BONNI_EXPORT_SCRIPT
 
@@ -899,12 +935,35 @@ jobs:
           PLATFORMS: ${{ inputs.platforms }}
         run: |
           set -euo pipefail
+          cat > load-offline-images.mjs <<'BONNI_OFFLINE_LOAD'
+          import fs from 'node:fs';
+          import {createHash} from 'node:crypto';
+          import {execFileSync} from 'node:child_process';
+          const plans = JSON.parse(fs.readFileSync('export-plan.json','utf8'));
+          const selected = plans.filter(plan => plan.platform === process.env.PLATFORM);
+          if (selected.length !== 1 || selected[0].images.length !== 2) throw Error('BONNI_OFFLINE_PLAN_INVALID');
+          for (const item of selected[0].images) {
+            if (!/^Bonni-Core-v\d+\.\d+\.\d+(?:[+-][a-z])?-(AMD64|ARM64|ARMv7)(?:-Datenbank)?\.tar$/.test(item.file)) throw Error('BONNI_OFFLINE_FILE_INVALID');
+            const file = 'compose-assets/' + item.file;
+            const hash = createHash('sha256');
+            for await (const chunk of fs.createReadStream(file)) hash.update(chunk);
+            if (fs.readFileSync(file+'.sha256','utf8') !== hash.digest('hex')+'  '+item.file+'\n') throw Error('BONNI_OFFLINE_CHECKSUM_MISMATCH');
+            execFileSync('docker',['image','load','--input',file],{stdio:'inherit'});
+            const config = JSON.parse(execFileSync('docker',['image','inspect',item.tag],{encoding:'utf8',maxBuffer:16*1024*1024}));
+            if (config.length !== 1) throw Error('BONNI_OFFLINE_IMAGE_AMBIGUOUS');
+            const image = config[0];
+            const platform = image.Os + '/' + image.Architecture + (image.Architecture === 'arm' ? '/' + image.Variant : '');
+            if (platform !== process.env.PLATFORM) throw Error('BONNI_OFFLINE_PLATFORM_MISMATCH');
+          }
+          
+          BONNI_OFFLINE_LOAD
           for PLATFORM in ${PLATFORMS//,/ }; do
             ARCH=${PLATFORM#linux/}
             if [ "$PLATFORM" = linux/arm/v7 ]; then ARCH=armv7; fi
             PROJECT="bonni-offline-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${ARCH}"
             FILE="smoke/${ARCH}-offline.yml"
             trap 'docker compose -p "$PROJECT" -f "$FILE" down --volumes --remove-orphans >/dev/null 2>&1 || true' EXIT
+            PLATFORM="$PLATFORM" node load-offline-images.mjs
             docker compose -p "$PROJECT" -f "$FILE" config --quiet
             if ! docker compose -p "$PROJECT" -f "$FILE" up -d --pull never --wait --wait-timeout 600; then
               docker compose -p "$PROJECT" -f "$FILE" logs --tail 100
@@ -914,6 +973,10 @@ jobs:
             docker compose -p "$PROJECT" -f "$FILE" restart bonni-core
             docker compose -p "$PROJECT" -f "$FILE" up -d --pull never --wait --wait-timeout 600
             docker compose -p "$PROJECT" -f "$FILE" down --volumes --remove-orphans
+            while IFS= read -r TEST_IMAGE; do
+              docker image rm "$TEST_IMAGE"
+            done < <(docker compose -p "$PROJECT" -f "$FILE" config --images)
+            df -h .
             trap - EXIT
           done
 
