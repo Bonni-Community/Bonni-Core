@@ -325,13 +325,19 @@ jobs:
               const read = await send(`https://ghcr.io/v2/${repository}/tags/list?n=1`, {headers});
               // A not-yet-created package has no tags. Its creation permission is tested next.
               if (read.status !== 200 && read.status !== 404) throw Error(`BONNI_REGISTRY_READ_DENIED (HTTP ${read.status}). ${hint}`);
-              const upload = await send(`https://ghcr.io/v2/${repository}/blobs/uploads/`, {method: "POST", headers: {...headers, "Content-Length": "0"}});
+              const uploadUrl = `https://ghcr.io/v2/${repository}/blobs/uploads/`;
+              const upload = await send(uploadUrl, {method: "POST", headers: {...headers, "Content-Length": "0"}});
               if (upload.status !== 202) throw Error(`BONNI_REGISTRY_WRITE_DENIED (HTTP ${upload.status}). ${hint}`);
               const location = upload.headers.get("location");
               if (!location) throw Error("BONNI_REGISTRY_UPLOAD_LOCATION_MISSING");
-              const cancel = new URL(location, "https://ghcr.io");
+              // Registry upload Locations are opaque; GHCR can return /blobs/upload/.
+              // Preserve the returned path/query and resolve relative URLs at the POST.
+              // Credentials remain restricted to HTTPS GHCR, with redirects disabled.
+              let cancel;
+              try { cancel = new URL(location, uploadUrl); }
+              catch { throw Error("BONNI_REGISTRY_UPLOAD_LOCATION_INVALID"); }
               if (cancel.origin !== "https://ghcr.io" || cancel.username || cancel.password
-                || !cancel.pathname.startsWith(`/v2/${repository}/blobs/uploads/`)) throw Error("BONNI_REGISTRY_UPLOAD_LOCATION_INVALID");
+                || cancel.hash) throw Error("BONNI_REGISTRY_UPLOAD_LOCATION_INVALID");
               const cancelled = await send(cancel.href, {method: "DELETE", headers});
               if (![204, 404].includes(cancelled.status)) throw Error("BONNI_REGISTRY_PROBE_CLEANUP_FAILED");
               log("Paket-Lese- und Schreibzugriff geprüft: " + target);
