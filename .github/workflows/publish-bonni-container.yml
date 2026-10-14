@@ -338,9 +338,26 @@ jobs:
               catch { throw Error("BONNI_REGISTRY_UPLOAD_LOCATION_INVALID"); }
               if (cancel.origin !== "https://ghcr.io" || cancel.username || cancel.password
                 || cancel.hash) throw Error("BONNI_REGISTRY_UPLOAD_LOCATION_INVALID");
-              const cancelled = await send(cancel.href, {method: "DELETE", headers});
-              if (![204, 404].includes(cancelled.status)) throw Error("BONNI_REGISTRY_PROBE_CLEANUP_FAILED");
-              log("Paket-Lese- und Schreibzugriff geprüft: " + target);
+              log(`Registry-Vorprüfung ${target}: Lesetest HTTP ${read.status}; leerer Upload angenommen (HTTP 202).`);
+              // Only cleanup is non-blocking. Authentication, read access, POST acceptance
+              // and the upload URL were validated above. No payload or manifest is sent.
+              // Unfinished sessions expire server-side; do not demand image-delete rights
+              // or invent another endpoint when cancellation is unsupported.
+              let cleanupStatus = null;
+              try {
+                const cancelled = await send(cancel.href, {method: "DELETE", headers: {...headers, "Content-Length": "0"}});
+                cleanupStatus = cancelled.status;
+              } catch {
+                // Exception messages may contain the signed session URL. Never log them.
+              }
+              if (cleanupStatus === 204 || cleanupStatus === 404) {
+                log(`Leerer Testupload beendet oder bereits entfallen: ${target} (HTTP ${cleanupStatus}).`);
+              } else if (cleanupStatus >= 200 && cleanupStatus < 300) {
+                log(`Abbruch des leeren Testuploads von ${target} angenommen (HTTP ${cleanupStatus}).`);
+              } else {
+                const reason = cleanupStatus === null ? "Netzwerkfehler oder Zeitüberschreitung" : `HTTP ${cleanupStatus}`;
+                log(`::warning title=Registry-Testupload::${target}: Abbruch des leeren Testuploads nicht bestätigt (${reason}). Keine Bilddaten und kein Tag übertragen. Die Veröffentlichung wird beim tatsächlichen Push erneut geprüft.`);
+              }
             }
           }
           await checkContainerRegistryAccess();
