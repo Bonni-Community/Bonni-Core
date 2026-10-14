@@ -3,6 +3,10 @@ name: Publish Bonni Core container
 on:
   workflow_dispatch:
     inputs:
+      build_secret:
+        description: Name of the version-scoped build secret prepared by Bonni Windows
+        required: true
+        type: string
       release_id:
         description: Existing Bonni release or new draft identifier
         required: true
@@ -121,12 +125,13 @@ jobs:
               const file = path.join(dir, name), stat = await fs.lstat(file);
               if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 1024 * 1024) throw Error("BONNI_UPDATE_MANIFEST_FILE_INVALID");
               const manifest = JSON.parse(await fs.readFile(file, "utf8"));
-              verify(manifest, {trustedKeys, runnerVersion: "0.4.0", nodeEnv: "production", expectedChannel: "stable"});
+              verify(manifest, {trustedKeys, runnerVersion: "0.5.0", nodeEnv: "production", expectedChannel: "stable"});
               const identity = manifest.artifact?.imageIdentity;
               const actualPlatform = identity?.platform?.os + "/" + identity?.platform?.architecture + (identity?.platform?.architecture === "arm" ? "/" + identity.platform.variant : "");
               const archiveName = `Bonni-Core-Update-v${env.VERSION}-${arch}-${manifest.artifact?.sha256}.oci`;
               const url = `https://github.com/Bonni-Community/bonni-core/releases/download/${encodeURIComponent("v" + version)}/${archiveName}`;
-              if (manifest.version !== version || actualPlatform !== platform || !/^[a-f0-9]{64}$/.test(manifest.artifact?.sha256 || "")
+              if (manifest.buildAuthorization?.buildCertificate?.sourceSha256 !== env.ASSET_SHA256 || manifest.minimumRunnerVersion !== "0.5.0"
+                || manifest.version !== version || actualPlatform !== platform || !/^[a-f0-9]{64}$/.test(manifest.artifact?.sha256 || "")
                 || manifest.artifact?.source?.kind !== "https" || manifest.artifact.source.url !== url
                 || (await fs.readdir(dir)).sort().join("\n") !== [archiveName, name].sort().join("\n")) throw Error("BONNI_UPDATE_ASSET_PAIR_INVALID");
               archives.push({name: archiveName, file: path.join(dir, archiveName), expectedDigest: "sha256:" + manifest.artifact.sha256, expectedSize: manifest.artifact.sizeBytes, immutable: true});
@@ -390,23 +395,29 @@ jobs:
             node -e 'const fs = require("node:fs"); const plan = JSON.parse(fs.readFileSync("release/PAYLOAD/SYSTEM/backend/bonni-container-build.json", "utf8")); if (plan.schema !== "bonni.container-build/v1" || !Array.isArray(plan.platforms) || plan.platforms.join(",") !== process.env.PLATFORMS) throw new Error("Container architecture selection differs from the signed package");'
           fi
 
-      - name: Check enrolled Core release signing key before building
+      - name: Check version-scoped build authorization before building
         env:
-          SIGNING_KEY: ${{ secrets.BONNI_CORE_RELEASE_PRIVATE_KEY }}
-          KEY_ID: ${{ vars.BONNI_CORE_RELEASE_KEY_ID }}
+          BUILD_SIGNING_BUNDLE: ${{ secrets[inputs.build_secret] }}
         run: |
           set -euo pipefail
           node --input-type=module <<'BONNI_SIGNING_PREFLIGHT'
           async function checkContainerSigningKey({env = process.env} = {}) {
-            const fs = await import("node:fs/promises"), crypto = await import("node:crypto");
-            if (!env.SIGNING_KEY || !env.KEY_ID) throw Error("BONNI_CORE_RELEASE_SIGNING_NOT_CONFIGURED: Environment bonni-core-release benötigt Secret BONNI_CORE_RELEASE_PRIVATE_KEY und Variable BONNI_CORE_RELEASE_KEY_ID.");
-            const privateKey = crypto.createPrivateKey(env.SIGNING_KEY);
-            if (privateKey.asymmetricKeyType !== "ed25519") throw Error("BONNI_CORE_RELEASE_KEY_NOT_ED25519");
-            const trust = JSON.parse(await fs.readFile("release/PAYLOAD/SYSTEM/APP-INSTALL-TRUST.json", "utf8"));
-            const keys = trust.schema === "bonni.app-install-trust/v1" && trust.keys?.filter(k => k.keyId === env.KEY_ID && k.scopes?.includes("RELEASE"));
-            if (!keys || keys.length !== 1 || !crypto.createPublicKey(keys[0].publicKey).equals(crypto.createPublicKey(privateKey))) {
-              throw Error("BONNI_CORE_RELEASE_KEY_NOT_ENROLLED: Der öffentliche GitHub-Release-Schlüssel muss mit RELEASE-Berechtigung in APP-INSTALL-TRUST.json hinterlegt sein.");
-            }
+            const fs = await import("node:fs/promises"), crypto = await import("node:crypto"), path = await import("node:path");
+            const {pathToFileURL} = await import("node:url");
+            if(!env.BUILD_SIGNING_BUNDLE) throw Error("BONNI_CORE_BUILD_SIGNING_NOT_CONFIGURED: Den Bau mit Bonni Windows v176 oder neuer starten. Master- und Core-Schlüssel bleiben lokal.");
+            let bundle;
+            try { if(env.BUILD_SIGNING_BUNDLE.length>40000)throw Error(); bundle=JSON.parse(env.BUILD_SIGNING_BUNDLE); }
+            catch {throw Error('BONNI_CORE_BUILD_SIGNING_INVALID');}
+            if(!bundle || Object.keys(bundle).sort().join(',')!=='authorization,keyId,privateKey' || typeof bundle.privateKey!=='string')throw Error('BONNI_CORE_BUILD_SIGNING_INVALID');
+            const privateKey=crypto.createPrivateKey(bundle.privateKey);
+            if(privateKey.asymmetricKeyType!=='ed25519')throw Error('BONNI_CORE_BUILD_SIGNING_INVALID');
+            const trust=JSON.parse(await fs.readFile('release/PAYLOAD/SYSTEM/APP-INSTALL-TRUST.json','utf8'));
+            if(trust.schema!=='bonni.app-install-trust/v1'||!Array.isArray(trust.keys))throw Error('BONNI_CORE_BUILD_TRUST_INVALID');
+            const trustedKeys=Object.fromEntries(trust.keys.filter(k=>k.scopes?.includes('RELEASE')).map(k=>[k.keyId,k.publicKey]));
+            const {verifyBuildAuthorization}=await import(pathToFileURL(path.resolve('release/PAYLOAD/SYSTEM/backend/src/system/update-runner/build-authorization.mjs')).href);
+            const key=verifyBuildAuthorization(bundle.authorization,{trustedKeys,version:env.VERSION?.replace(/-([a-z])$/,'+$1'),keyId:bundle.keyId,sourceSha256:env.ASSET_SHA256});
+            if(!key.equals(crypto.createPublicKey(privateKey)))throw Error('BONNI_CORE_BUILD_SIGNING_KEY_MISMATCH');
+            return bundle;
           }
           await checkContainerSigningKey();
           
@@ -1149,8 +1160,7 @@ jobs:
 
       - name: Prepare signed Core updates from the tested images
         env:
-          SIGNING_KEY: ${{ secrets.BONNI_CORE_RELEASE_PRIVATE_KEY }}
-          KEY_ID: ${{ vars.BONNI_CORE_RELEASE_KEY_ID }}
+          BUILD_SIGNING_BUNDLE: ${{ secrets[inputs.build_secret] }}
           SOURCE_COMMIT: ${{ steps.bonni_source.outputs.source_commit }}
         run: |
           set -euo pipefail
@@ -1204,15 +1214,22 @@ jobs:
             return `bonni-core${database ? '-database' : ''}:${version.replace('+', '-')}-${arch}-${reference.split('sha256:')[1]}`;
           }
           async function checkContainerSigningKey({env = process.env} = {}) {
-            const fs = await import("node:fs/promises"), crypto = await import("node:crypto");
-            if (!env.SIGNING_KEY || !env.KEY_ID) throw Error("BONNI_CORE_RELEASE_SIGNING_NOT_CONFIGURED: Environment bonni-core-release benötigt Secret BONNI_CORE_RELEASE_PRIVATE_KEY und Variable BONNI_CORE_RELEASE_KEY_ID.");
-            const privateKey = crypto.createPrivateKey(env.SIGNING_KEY);
-            if (privateKey.asymmetricKeyType !== "ed25519") throw Error("BONNI_CORE_RELEASE_KEY_NOT_ED25519");
-            const trust = JSON.parse(await fs.readFile("release/PAYLOAD/SYSTEM/APP-INSTALL-TRUST.json", "utf8"));
-            const keys = trust.schema === "bonni.app-install-trust/v1" && trust.keys?.filter(k => k.keyId === env.KEY_ID && k.scopes?.includes("RELEASE"));
-            if (!keys || keys.length !== 1 || !crypto.createPublicKey(keys[0].publicKey).equals(crypto.createPublicKey(privateKey))) {
-              throw Error("BONNI_CORE_RELEASE_KEY_NOT_ENROLLED: Der öffentliche GitHub-Release-Schlüssel muss mit RELEASE-Berechtigung in APP-INSTALL-TRUST.json hinterlegt sein.");
-            }
+            const fs = await import("node:fs/promises"), crypto = await import("node:crypto"), path = await import("node:path");
+            const {pathToFileURL} = await import("node:url");
+            if(!env.BUILD_SIGNING_BUNDLE) throw Error("BONNI_CORE_BUILD_SIGNING_NOT_CONFIGURED: Den Bau mit Bonni Windows v176 oder neuer starten. Master- und Core-Schlüssel bleiben lokal.");
+            let bundle;
+            try { if(env.BUILD_SIGNING_BUNDLE.length>40000)throw Error(); bundle=JSON.parse(env.BUILD_SIGNING_BUNDLE); }
+            catch {throw Error('BONNI_CORE_BUILD_SIGNING_INVALID');}
+            if(!bundle || Object.keys(bundle).sort().join(',')!=='authorization,keyId,privateKey' || typeof bundle.privateKey!=='string')throw Error('BONNI_CORE_BUILD_SIGNING_INVALID');
+            const privateKey=crypto.createPrivateKey(bundle.privateKey);
+            if(privateKey.asymmetricKeyType!=='ed25519')throw Error('BONNI_CORE_BUILD_SIGNING_INVALID');
+            const trust=JSON.parse(await fs.readFile('release/PAYLOAD/SYSTEM/APP-INSTALL-TRUST.json','utf8'));
+            if(trust.schema!=='bonni.app-install-trust/v1'||!Array.isArray(trust.keys))throw Error('BONNI_CORE_BUILD_TRUST_INVALID');
+            const trustedKeys=Object.fromEntries(trust.keys.filter(k=>k.scopes?.includes('RELEASE')).map(k=>[k.keyId,k.publicKey]));
+            const {verifyBuildAuthorization}=await import(pathToFileURL(path.resolve('release/PAYLOAD/SYSTEM/backend/src/system/update-runner/build-authorization.mjs')).href);
+            const key=verifyBuildAuthorization(bundle.authorization,{trustedKeys,version:env.VERSION?.replace(/-([a-z])$/,'+$1'),keyId:bundle.keyId,sourceSha256:env.ASSET_SHA256});
+            if(!key.equals(crypto.createPublicKey(privateKey)))throw Error('BONNI_CORE_BUILD_SIGNING_KEY_MISMATCH');
+            return bundle;
           }
           async function prepareContainerUpdateAssets({env = process.env, dockerImpl, prepareRelease} = {}) {
             const fs = await import("node:fs/promises"), path = await import("node:path");
@@ -1225,7 +1242,7 @@ jobs:
             if (!/^\d+\.\d+\.\d+(?:\+[a-z])?$/.test(version || "")
               || env.GITHUB_REPOSITORY?.toLowerCase() !== "bonni-community/bonni-core"
               || !/^[a-f0-9]{40}$/.test(env.SOURCE_COMMIT || "") || !/^[a-f0-9]{64}$/.test(env.ASSET_SHA256 || "")) throw Error("BONNI_UPDATE_PUBLICATION_INPUT_INVALID");
-            await checkContainerSigningKey({env});
+            const signing = await checkContainerSigningKey({env});
             const prepare = prepareRelease || (await import(pathToFileURL(path.resolve("release/PAYLOAD/SYSTEM/backend/scripts/update-release/prepare-public-release.mjs")).href)).preparePublicRelease;
             const plans = JSON.parse(await fs.readFile("export-plan.json", "utf8"));
             if (!Array.isArray(plans) || plans.map(p => p.platform).join(",") !== platforms.join(",")) throw Error("BONNI_UPDATE_EXPORT_PLAN_INVALID");
@@ -1234,7 +1251,7 @@ jobs:
             const scratch = await fs.mkdtemp(path.join(path.resolve(env.RUNNER_TEMP || "."), "bonni-update-sign-"));
             const key = path.join(scratch, "release-key.pem");
             try {
-              await fs.writeFile(key, env.SIGNING_KEY, {mode: 0o600, flag: "wx"});
+              await fs.writeFile(key, signing.privateKey, {mode: 0o600, flag: "wx"});
               for (const plan of plans) {
                 const arch = containerArchitecture(plan.platform), slug = arch.toLowerCase();
                 const matches = plan.images?.filter(i => i.service === "bonni-core");
@@ -1262,7 +1279,7 @@ jobs:
                   await docker("cp", container + ":/app/APP-INSTALL-TRUST.json", trust);
                   await docker("image", "tag", config.Id, updateTag); tagged = true;
                   await docker("image", "save", "--output", archive, updateTag);
-                  const result = await prepare({archive, version, privateKey: key, keyId: env.KEY_ID, trust, outputDir: path.join(output, arch)});
+                  const result = await prepare({archive, version, privateKey: key, keyId: signing.keyId, buildAuthorization: signing.authorization, trust, outputDir: path.join(output, arch)});
                   if (result.architecture !== arch) throw Error("BONNI_UPDATE_SIGNED_PLATFORM_MISMATCH");
                 } finally {
                   if (container && /^[a-f0-9]{12,64}$/.test(container)) await docker("rm", container);
@@ -1271,7 +1288,7 @@ jobs:
                   await fs.rm(archive, {force: true});
                 }
               }
-            } finally { await fs.rm(scratch, {recursive: true, force: true}); }
+            } finally { signing.privateKey = ""; await fs.rm(scratch, {recursive: true, force: true}); }
           }
           await prepareContainerUpdateAssets();
           
