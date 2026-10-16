@@ -304,7 +304,7 @@ jobs:
             *) echo "Unsupported container architectures" >&2; exit 1 ;;
           esac
 
-      - name: Check package read and write access before building
+      - name: Check package authentication and read access before building
         env:
           GITHUB_ACTOR: ${{ github.actor }}
         run: |
@@ -328,41 +328,12 @@ jobs:
               if (typeof token !== "string" || !token) throw Error("BONNI_REGISTRY_TOKEN_MISSING");
               const headers = {Authorization: "Bearer " + token};
               const read = await send(`https://ghcr.io/v2/${repository}/tags/list?n=1`, {headers});
-              // A not-yet-created package has no tags. Its creation permission is tested next.
+              // A not-yet-created package may return 404. Creation/write permission is not proven here.
               if (read.status !== 200 && read.status !== 404) throw Error(`BONNI_REGISTRY_READ_DENIED (HTTP ${read.status}). ${hint}`);
-              const uploadUrl = `https://ghcr.io/v2/${repository}/blobs/uploads/`;
-              const upload = await send(uploadUrl, {method: "POST", headers: {...headers, "Content-Length": "0"}});
-              if (upload.status !== 202) throw Error(`BONNI_REGISTRY_WRITE_DENIED (HTTP ${upload.status}). ${hint}`);
-              const location = upload.headers.get("location");
-              if (!location) throw Error("BONNI_REGISTRY_UPLOAD_LOCATION_MISSING");
-              // Registry upload Locations are opaque; GHCR can return /blobs/upload/.
-              // Preserve the returned path/query and resolve relative URLs at the POST.
-              // Credentials remain restricted to HTTPS GHCR, with redirects disabled.
-              let cancel;
-              try { cancel = new URL(location, uploadUrl); }
-              catch { throw Error("BONNI_REGISTRY_UPLOAD_LOCATION_INVALID"); }
-              if (cancel.origin !== "https://ghcr.io" || cancel.username || cancel.password
-                || cancel.hash) throw Error("BONNI_REGISTRY_UPLOAD_LOCATION_INVALID");
-              log(`Registry-Vorprüfung ${target}: Lesetest HTTP ${read.status}; leerer Upload angenommen (HTTP 202).`);
-              // Only cleanup is non-blocking. Authentication, read access, POST acceptance
-              // and the upload URL were validated above. No payload or manifest is sent.
-              // Unfinished sessions expire server-side; do not demand image-delete rights
-              // or invent another endpoint when cancellation is unsupported.
-              let cleanupStatus = null;
-              try {
-                const cancelled = await send(cancel.href, {method: "DELETE", headers: {...headers, "Content-Length": "0"}});
-                cleanupStatus = cancelled.status;
-              } catch {
-                // Exception messages may contain the signed session URL. Never log them.
-              }
-              if (cleanupStatus === 204 || cleanupStatus === 404) {
-                log(`Leerer Testupload beendet oder bereits entfallen: ${target} (HTTP ${cleanupStatus}).`);
-              } else if (cleanupStatus >= 200 && cleanupStatus < 300) {
-                log(`Abbruch des leeren Testuploads von ${target} angenommen (HTTP ${cleanupStatus}).`);
-              } else {
-                const reason = cleanupStatus === null ? "Netzwerkfehler oder Zeitüberschreitung" : `HTTP ${cleanupStatus}`;
-                log(`::warning title=Registry-Testupload::${target}: Abbruch des leeren Testuploads nicht bestätigt (${reason}). Keine Bilddaten und kein Tag übertragen. Die Veröffentlichung wird beim tatsächlichen Push erneut geprüft.`);
-              }
+              // Token issuance does not prove push authorization. Do not create an upload
+              // merely to test access: GHCR may refuse cancellation with HTTP 405.
+              // The real build push remains mandatory and fails on denied write access.
+              log(`Registry-Vorprüfung ${target}: Anmeldung erfolgreich; Lesetest HTTP ${read.status}. Schreibzugriff wird erst beim echten Upload geprüft. Kein Testupload angelegt.`);
             }
           }
           await checkContainerRegistryAccess();
@@ -559,14 +530,14 @@ jobs:
           node -e 'const fs=require("node:fs"); fs.appendFileSync(process.env.GITHUB_OUTPUT, "core_version=" + process.env.VERSION.replace(/-([a-z])$/, "+$1") + "\n")'
 
       - name: Enable emulation
-        uses: docker/setup-qemu-action@v3
+        uses: docker/setup-qemu-action@v4.2.0
 
       - name: Prepare Docker Buildx
         id: bonni_builder
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4.4.1
 
       - name: Sign in to GitHub Container Registry
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4.6.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -575,7 +546,7 @@ jobs:
       - name: Build ARMv7 PostgreSQL with 32K-compatible alignment
         id: bonni_database
         if: contains(inputs.platforms, 'linux/arm/v7')
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7.4.0
         with:
           builder: ${{ steps.bonni_builder.outputs.name }}
           context: release/PAYLOAD
@@ -604,7 +575,7 @@ jobs:
 
       - name: Build and publish the finished container
         id: bonni_image
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7.4.0
         with:
           builder: ${{ steps.bonni_builder.outputs.name }}
           context: release/PAYLOAD
