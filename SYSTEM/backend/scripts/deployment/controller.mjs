@@ -6,6 +6,7 @@ import crypto from 'node:crypto';
 import {execFile,spawn} from 'node:child_process';
 import {promisify} from 'node:util';
 import {pathToFileURL} from 'node:url';
+import {createControllerReadiness,controllerStartupReady} from './controller-readiness.mjs';
 const execute=promisify(execFile);
 const delay=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 const immutable=/^sha256:[a-f0-9]{64}$/;
@@ -105,15 +106,21 @@ export async function deploymentHealthy(state,docker){
   const details=JSON.parse(await docker(['inspect',...ids]));
   return RUNTIME_SERVICES.every(name=>details.filter(d=>d.Config?.Labels?.['com.docker.compose.service']===name&&d.State?.Running&&d.State.Health?.Status==='healthy').length===1);
 }
+export async function controllerHealthy(state,docker,startupReady=controllerStartupReady){
+  if(state?.phase!=='ready'||!await startupReady())return false;
+  return await deploymentHealthy(state,docker)&&await startupReady();
+}
 async function main(){
   const root=process.env.BONNI_HOST_PROJECT_ROOT;
   const docker=async args=>(await execute('docker',args,{maxBuffer:8*1024*1024,timeout:20*60_000})).stdout;
   if(process.argv.includes('--health')){
     const state=await regularJson(path.join(root,'.bonni-deployment.json'));
-    process.exit(state?.phase==='ready'&&await deploymentHealthy(state,docker)?0:1);
+    process.exit(await controllerHealthy(state,docker)?0:1);
   }
   // flock is held by the parent shell across the complete controller lifetime.
   if(process.env.BONNI_DEPLOYMENT_LOCK_HELD!=='true')throw Error('DEPLOYMENT_LOCK_REQUIRED');
+  const readiness=await createControllerReadiness();
+  try {
   const state=await prepareDeployment({root,sourceRoot:'/opt/bonni-deployment/backend',docker});
   const backend=path.join(root,'SYSTEM','backend');
   const environment={...process.env,BONNI_HOST_PROJECT_ROOT:root,BONNI_INITIAL_IMAGE:state.initialImage,
@@ -125,12 +132,13 @@ async function main(){
     child.once('error',reject);child.once('exit',code=>code===0?resolve():reject(Error('DEPLOYMENT_'+action.toUpperCase()+'_FAILED')));
   });
   let stopping=false;
-  process.on('SIGTERM',()=>{stopping=true;});process.on('SIGINT',()=>{stopping=true;});
-  await run('start');
+  process.on('SIGTERM',()=>{stopping=true;readiness.stop();});process.on('SIGINT',()=>{stopping=true;readiness.stop();});
+  await readiness.start(()=>run('start'),()=>stopping);
   console.log('Bonni Core und Update-Dienst sind eingerichtet und gestartet.');
   while(!stopping)await delay(1000);
   // A requested shutdown waits for the runner's transaction boundary. A forced
   // host stop is recovered by the normal boot gate on the following startup.
   for(;;){try{await run('stop');break;}catch{console.error('Warte auf sicheren Abschluss des laufenden Updates.');await delay(2000);}}
+  } finally {await readiness.close();}
 }
 if(process.argv[1]&&import.meta.url===pathToFileURL(path.resolve(process.argv[1])).href)main().catch(error=>{console.error(error.message);process.exitCode=1;});

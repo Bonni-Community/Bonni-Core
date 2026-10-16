@@ -1,0 +1,54 @@
+Bonni Core 0.1.20h-DEV.46 – Startfreigabe und Webprüfung
+
+Kumulative Core-Bauquelle einschließlich DEV.45 und aller Vorgänger.
+Diese Anleitung ersetzt die älteren Auswahlhinweise für den nächsten Bau.
+DEV-Quellpaket; kein signiertes Produktivupdate und kein fertiges Containerimage.
+
+Fortschritt aus dem neuen GitHub-Lauf
+Image-Bau: completed nach 23m11s.
+Der ARM64-Prozess wurde als Absturzziel akzeptiert. Nach dem Testsignal wurde
+ein tatsächlicher Docker-Neustart mit geändertem Startzeitpunkt erkannt.
+Das Protokoll meldet anschließend healthy. Die in DEV.45 korrigierte
+Prozesserkennung hat damit den vorherigen Fehler überwunden.
+Danach scheitert der Abruf von http://127.0.0.1:4000/ im Webtest.
+Der alte Test meldet dafür nur Exitcode 1. Ob Verbindung, HTTP-Status oder
+fehlender HTML-Inhalt die konkrete Ursache war, lässt sich daraus nicht ablesen.
+
+Was DEV.46 ändert
+1. Die Controller-Gesundheitsprüfung verlangt jetzt zusätzlich die Startfreigabe
+   des aktuell laufenden Controllers. Sie wird erst nach erfolgreichem Ende
+   von start-runtime.sh erteilt. Bei Stopp oder Prozessende gilt sie nicht mehr.
+   Dafür wird ein lokaler Unix-Socket im Controller-Container verwendet;
+   es wird kein zusätzlicher Netzwerk-Port geöffnet.
+2. Bisher konnten die gespeicherte Installation und noch gesunde Unterdienste
+   schon vor Ende dieses Startablaufs healthy ergeben. Diese im Code belegte
+   Lücke ist geschlossen. Ihr Anteil am konkreten HTTP-Fehler bleibt unbestätigt.
+3. Der Webtest wartet je Phase höchstens 120 Sekunden, mit maximal 5 Sekunden
+   je HTTP-Anfrage und 2 Sekunden Abstand. Erfolgreicher HTTP-Status UND HTML
+   bleiben erforderlich. Dauerhafte Fehler brechen den Bau weiterhin ab.
+4. Diagnose: Web-Prüfung mit Phase initial/restart/recovery, Versuch, Grund,
+   HTTP-Status und verstrichener Zeit. Antwortinhalte und Zugangsdaten werden
+   dabei nicht ausgegeben. Schlussfehler: SMOKE_WEB_NOT_READY.
+
+Anwendung
+1. Bonni Windows v181 weiterverwenden; diese Korrektur benötigt kein neues
+   Windows-Paket. Die vorhandene Vier-Stunden-Grenze bleibt bestehen.
+2. Dieses ZIP in den UPDATE-Eingang legen und die DEV-Liste aktualisieren.
+3. DEV.46 als einzige Core-Bauquelle wählen, Zielversion 0.1.21 und ARM64.
+4. Einen neuen Container-Bau aus Bonni starten und den ausgewählten Stand prüfen.
+5. Bei erneutem Abbruch die Zeilen „Web-Prüfung:“ und „SMOKE_WEB_NOT_READY“
+   sowie die unmittelbar vorhergehende Fehlermeldung senden.
+6. Erst der vollständige erfolgreiche Lauf einschließlich Export, Offline-Import
+   und Freigabe bestätigt die auslieferbare Version.
+
+Lokale Prüfung
+49 Tests bestanden, kein Fehler; zwei Integrationstests umgebungsbedingt
+ausgelassen: Unix-Socket-Bindung (EPERM) und echte PID-/proc-Prozessinspektion.
+Startzustand, verspäteter/fehlgeschlagener Start, Stopp während Start,
+Gesundheitsentscheidung, begrenzte Web-Wiederholungen und Fehlerdiagnosen sind
+getestet. Das Stream-Protokoll wurde zusätzlich über Loopback geprüft.
+Bestehende Tests für Absturz-Zielprüfung, Wiederherstellung, Aufräumen und
+Versionsbindung bestehen. Testumgebung: Node v24.19.0.
+Kein Live-Docker/QEMU-Test und kein GitHub- oder Windows-Lauf in dieser Umgebung.
+Das neue Startfreigabe-Protokoll muss im nächsten ARM64-Lauf bestätigt werden.
+Prüfbericht und vollständiges TAP-Protokoll liegen in SYSTEM/PRUEFUNG-DEV.46.*.

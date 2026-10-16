@@ -2,8 +2,8 @@
   "schema": "bonni.container-source/v1",
   "version": "0.1.21",
   "image": "ghcr.io/bonni-community/bonni-core:0.1.21",
-  "sourcePackageSha256": "1a5688fa97f4825d4114fd33f9740afe53ca4777d28b0e008968e408d1ec1fea",
+  "sourcePackageSha256": "e8ee2b73441913905633145c74095c75fc86ffad680604d34cb71e3a44c24e6c",
   "platforms": [
-    "linux/amd64"
+    "linux/arm64"
   ]
 }

@@ -1,0 +1,40 @@
+{
+  "schema": "bonni.arm64-process-diagnostics-validation/v1",
+  "date": "2026-10-16",
+  "coreSourceVersion": "0.1.20+h-DEV.44",
+  "completeSource": true,
+  "includes": "DEV.43 and predecessors",
+  "purpose": "Bounded redacted diagnostics for the still-unresolved ARM64 crash preflight mismatch",
+  "error": "SMOKE_CONTROLLER_CRASH_PREFLIGHT_FAILED: SMOKE_CRASH_PROCESS_MISMATCH",
+  "tests": {
+    "tests": 36,
+    "pass": 35,
+    "fail": 0,
+    "skipped": 1
+  },
+  "testCommand": "node --test tests/deployment-smoke-recovery.test.mjs tests/container-deployment.test.mjs tests/deployment-ci-cleanup.test.mjs tests/current-release-version.test.mjs",
+  "testLogSha256": "6dcf1e496dfc66562534a850957fb0b783f5dc294fccf53529eed444cf3e11ea",
+  "changed": [
+    "Role-only argv diagnostics on mismatch",
+    "Strict validation at logging boundary",
+    "Core source version markers"
+  ],
+  "unchanged": [
+    "Allowed crash targets",
+    "Container, namespace, cgroup and PID-reuse guards",
+    "Production recovery logic",
+    "Release and signing gates"
+  ],
+  "skipped": [
+    "Real Linux process test: executor PID namespace differs from mounted /proc"
+  ],
+  "notExecuted": [
+    "Docker/QEMU runtime",
+    "GitHub Actions build",
+    "Native Windows installation"
+  ],
+  "notClaimed": [
+    "Root cause of run #23 proven",
+    "ARM64 runtime recovery fixed or verified"
+  ]
+}

@@ -1,0 +1,42 @@
+Bonni Core 0.1.20h-DEV.44 – ARM64-Prozessdiagnose
+
+Kumulativer Core-Quellstand einschließlich DEV.43. Diese Anleitung gilt für
+den nächsten Versuch und ersetzt die älteren Auswahlhinweise im Paket.
+DEV-Bauquelle, kein signiertes Produktivupdate.
+
+Nächster Schritt
+1. Zuerst Bonni Windows v181 installieren (separates Windows-Update).
+2. Dieses DEV.44-ZIP in den gemeinsamen UPDATE-Eingang legen.
+3. In Bonni die DEV-Liste aktualisieren und DEV.44 als Core-Bauquelle wählen.
+   Die älteren Core-DEV-Pakete müssen nicht zusätzlich gewählt werden.
+4. Zielversion 0.1.21 und zunächst nur 64 Bit – ARM64 wählen.
+5. Einen neuen Container-Bau aus Bonni starten. Re-run des alten GitHub-Laufs
+   übernimmt die neue Quelle und den neuen Workflow nicht.
+6. Bei erneutem Fehler die Zeile „Controller-Prozessdiagnose:“ und den
+   folgenden Fehlercode senden. Die Diagnose erscheint im Schritt
+   „Start and restart the Compose application for every architecture“.
+
+Was DEV.44 macht
+Die Prozessprüfung lehnt im Lauf #23 die erkannte ARM64-Kommandozeile ab.
+Image-Bau, Erststart und regulärer Neustart waren zuvor erfolgreich.
+DEV.44 ergänzt bei dieser Ablehnung die Argumentzahl und feste Rollenbezeichner,
+zum Beispiel qemu-aarch64, node und controller-exact. Unbekannte Argumente
+und andere Pfade werden maskiert; maximal zwölf Rollen werden ausgegeben.
+Die Ausgabe wird vor dem Protokollieren nochmals geprüft.
+
+Dies ist ein Diagnosepaket. Es erweitert nicht die zugelassenen Prozessformen.
+Der genaue Grund der Abweichung ist weiterhin offen; ein erfolgreicher
+ARM64-Absturztest wird durch dieses Paket nicht behauptet.
+Alle bisherigen Ziel-, Containerzugehörigkeits-, PID- und Startzeitprüfungen
+sowie Freigabe-, Signatur- und Wiederherstellungsprüfungen bleiben wirksam.
+Eine abgelehnte Vorprüfung sendet kein Signal.
+
+Die Vier-Stunden-Grenze wird von Windows v181 im erzeugten GitHub-Workflow
+gesetzt. Sie gehört nicht zur Core-Laufzeit und beendet keinen produktiven Core.
+
+Lokale Prüfung
+35 Tests bestanden, kein Fehler; ein echter Linux-Prozesstest wegen abweichender
+PID-/proc-Abbildung des Executors ausgelassen. Getestet: sichere Diagnose,
+Maskierung, manipulierte Diagnoseausgaben, keine Signale an abgelehnte Ziele,
+bisherige Wiederanlauf- und Aufräumlogik sowie konsistente Versionsangaben.
+Kein echter Docker-, QEMU-, GitHub- oder Windows-Lauf in dieser Umgebung.

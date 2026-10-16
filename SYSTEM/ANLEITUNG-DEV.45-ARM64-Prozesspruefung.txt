@@ -1,0 +1,51 @@
+Bonni Core 0.1.20h-DEV.45 – ARM64-Prozessprüfung
+
+Kumulative Core-Bauquelle einschließlich DEV.44 und aller Vorgänger.
+Diese Anleitung ersetzt für den nächsten Bau die älteren Auswahlhinweise.
+DEV-Quellpaket, kein signiertes Produktivupdate und kein fertiges Containerimage.
+
+Was jetzt belegt ist
+Die neue GitHub-Diagnose zeigt vier Argumente:
+qemu-aarch64 | /usr/local/bin/node | node | controller-exact
+Die bisherige Prüfung erlaubte nur zwei direkte Argumente oder drei mit QEMU.
+Deshalb wurde die dokumentierte Form vor dem eigentlichen Absturztest abgelehnt.
+Der zusätzliche Node-Name passt zu erhaltenem argv[0] unter binfmt/QEMU.
+Die tatsächlichen binfmt-Flags des Runners wurden noch nicht ausgelesen.
+
+Was DEV.45 korrigiert
+Genau die beobachtete Vier-Argumente-Form wird zusätzlich erkannt:
+- Emulator-Basisname exakt qemu-aarch64;
+- Executable-Argument exakt /usr/local/bin/node;
+- zusätzliches Argument exakt node;
+- Skriptpfad exakt /app/backend/scripts/deployment/controller.mjs.
+Andere Vier-Argumente-Formen, fremde Skripte und zusätzliche Optionen bleiben
+abgelehnt. Die bisherigen direkten und dreiteiligen Formen bleiben zulässig.
+Container-Projekt, Service, Mount, Namespace, Cgroup, PID und Prozessstartzeit
+werden weiterhin geprüft. Erst danach darf das Testsignal gesendet werden.
+Die anschließende Prüfung auf tatsächlichen Absturz und automatischen Neustart
+mit erhöhtem RestartCount, neuer Startzeit und healthy bleibt erforderlich.
+
+Anwendung
+1. Bonni Windows v181 verwenden. Wegen dieser Core-Korrektur ist kein weiteres
+   Windows-Update erforderlich. v181 enthält die Vier-Stunden-Grenze des Baujobs.
+2. Dieses DEV.45-ZIP in den UPDATE-Eingang legen und die DEV-Liste aktualisieren.
+3. DEV.45 als Core-Bauquelle wählen; ältere Core-DEV-Pakete nicht zusätzlich
+   auswählen. Zielversion 0.1.21 und zunächst ARM64 einstellen.
+4. Einen neuen Container-Bau aus Bonni starten. Den Quellstand DEV.45 prüfen;
+   Re-run des alten Laufs ist kein Nachweis, dass die neue Quelle verwendet wird.
+5. Im Schritt „Start and restart the Compose application for every architecture“
+   müssen Zielprüfung, tatsächlicher Absturz und automatische Wiederherstellung
+   erfolgreich sein. Export, Offline-Import und Freigabe bleiben weitere Gates.
+6. Bei einem weiteren Fehler die erste Fehlermeldung und vorhandene
+   Controller-Prozessdiagnose beziehungsweise Wiederherstellungsdiagnose senden.
+
+Prüfstand
+Die beobachtete Argumentform wurde mit dem bisherigen Code lokal abgelehnt.
+Nach Korrektur: 39 Tests bestanden, 0 fehlgeschlagen, 1 ausgelassen.
+Getestet wurden die neue Prozessform, Ablehnung ähnlicher/fremder Ziele,
+PID-Wiederverwendung, bestehende Wiederherstellung, Aufräumen und Versionen.
+Der echte Linux-Prozesstest wurde wegen abweichender PID-/proc-Abbildung dieses
+Executors ausgelassen. Testlauf mit Node v24.19.0; vollständiges TAP-Protokoll
+und Prüfbericht liegen in SYSTEM/PRUEFUNG-DEV.45.*.
+Docker/QEMU, GitHub Actions und Windows konnten hier nicht real ausgeführt
+werden. Der erfolgreiche ARM64-Gesamtlauf steht daher noch aus.

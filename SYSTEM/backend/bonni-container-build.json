@@ -2,7 +2,7 @@
   "schema": "bonni.container-build/v1",
   "version": "0.1.21",
   "platforms": [
-    "linux/amd64"
+    "linux/arm64"
   ],
   "dockerfile": "SYSTEM/backend/Dockerfile"
 }

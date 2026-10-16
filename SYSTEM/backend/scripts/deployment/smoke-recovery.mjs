@@ -1,18 +1,27 @@
 // CI only: simulate a process crash, not an operator's Docker stop/kill.
 // Docker kill marks a container manually stopped and suppresses restart policy.
+import {describeCrashProcess,readCrashProcessDiagnostic} from './smoke-process-diagnostics.mjs';
 export function inspectCrashTarget({pid,fsImpl,pathImpl,
   controllerPath='/app/backend/scripts/deployment/controller.mjs'}) {
   if(!Number.isSafeInteger(pid)||pid<=1)throw Error('SMOKE_CRASH_PID_INVALID');
   const proc='/proc/'+pid;
   const argv=fsImpl.readFileSync(proc+'/cmdline','utf8').split('\0').filter(Boolean);
   // With pid:host Docker does not insert tini, even when init:true is set.
-  // entrypoint.sh execs this Node controller. Under binfmt an explicit QEMU
-  // interpreter may prefix the same two arguments; no other command is allowed.
+  // entrypoint.sh execs this Node controller. QEMU may prefix its argv.
+  // DEV.44 also recorded the exact ARM64 form with preserved original argv[0].
+  // Only that four-argument shape is added; no arbitrary QEMU options are allowed.
   const emulated=argv.length===3
     &&/^qemu-(arm|aarch64)(-static)?$/.test(pathImpl.basename(argv[0]));
-  const command=emulated?argv.slice(1):argv;
+  const preservedArm64=argv.length===4
+    &&pathImpl.basename(argv[0])==='qemu-aarch64'
+    &&argv[1]==='/usr/local/bin/node'&&argv[2]==='node';
+  const command=preservedArm64?[argv[1],argv[3]]:emulated?argv.slice(1):argv;
   if(command.length!==2||pathImpl.basename(command[0]||'')!=='node'
-    ||command[1]!==controllerPath)throw Error('SMOKE_CRASH_PROCESS_MISMATCH');
+    ||command[1]!==controllerPath) {
+    const error=Error('SMOKE_CRASH_PROCESS_MISMATCH');
+    error.processDiagnostic=describeCrashProcess(argv,controllerPath,pathImpl);
+    throw error;
+  }
   if(fsImpl.readlinkSync(proc+'/ns/mnt')!==fsImpl.readlinkSync('/proc/self/ns/mnt')
     ||fsImpl.readFileSync(proc+'/cgroup','utf8')!==fsImpl.readFileSync('/proc/self/cgroup','utf8'))
     throw Error('SMOKE_CRASH_CONTAINER_MISMATCH');
@@ -24,6 +33,7 @@ export function inspectCrashTarget({pid,fsImpl,pathImpl,
 
 export const crashControllerScript = `
 const fs=require('node:fs'),path=require('node:path');
+const describeCrashProcess=${describeCrashProcess.toString()};
 const inspectCrashTarget=${inspectCrashTarget.toString()};
 try {
   const target=inspectCrashTarget({pid:Number(process.argv[1]),fsImpl:fs,pathImpl:path});
@@ -33,6 +43,8 @@ try {
     process.kill(target.pid,'SIGKILL');
   } else throw Error('SMOKE_CRASH_ACTION_INVALID');
 } catch(error) {
+  if(error.message==='SMOKE_CRASH_PROCESS_MISMATCH'&&error.processDiagnostic)
+    process.stdout.write(JSON.stringify(error.processDiagnostic));
   process.stderr.write(/^SMOKE_CRASH_[A-Z_]+$/.test(error.message)
     ?error.message:'SMOKE_CRASH_INJECTION_ERROR');
   process.exitCode=42;
@@ -64,12 +76,21 @@ export async function testControllerRecovery({docker,id,project,root,delay,
     const value=String(error?.stderr||'').trim();
     return /^SMOKE_CRASH_[A-Z_]+$/.test(value)?value:'SMOKE_CRASH_EXEC_FAILED';
   };
+  const logProcessDiagnostic=error=>{
+    if(safeReason(error)!=='SMOKE_CRASH_PROCESS_MISMATCH')return;
+    const diagnostic=readCrashProcessDiagnostic(error?.stdout);
+    if(diagnostic) {
+      log('Controller-Prozessdiagnose: '+JSON.stringify(diagnostic));
+      log('Controller-Soll: node + controller-exact; optional QEMU-Präfix. Zusätzlich exakt qemu-aarch64 + /usr/local/bin/node + node + controller-exact. Unbekannte Argumente sind maskiert.');
+    }
+  };
   let target;
   try {
     target=JSON.parse(docker(execArgs('validate')));
     if(target.pid!==before.State.Pid||typeof target.startTicks!=='string'
       ||!/^\d+$/.test(target.startTicks))throw Error();
   } catch(error) {
+    logProcessDiagnostic(error);
     throw Error('SMOKE_CONTROLLER_CRASH_PREFLIGHT_FAILED: '+safeReason(error));
   }
   // Attached exec makes rejected targets visible. The kill exec may lose its
@@ -78,6 +99,7 @@ export async function testControllerRecovery({docker,id,project,root,delay,
   log('Controller-Absturzziel geprüft: Host-PID '+target.pid+'.');
   try {docker([...execArgs('kill'),target.startTicks]);}
   catch(error) {
+    logProcessDiagnostic(error);
     if(error.status===42)throw Error('SMOKE_CONTROLLER_CRASH_INJECTION_FAILED: '+safeReason(error));
     log('Abbruchaufruf beendet; tatsächlicher Prozessabbruch wird am Containerzustand geprüft.');
   }

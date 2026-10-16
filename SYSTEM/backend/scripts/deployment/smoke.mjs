@@ -34,18 +34,18 @@ for(const platform of env.PLATFORMS.split(',')){
       if(actual!==platform)throw Error('SMOKE_IMAGE_PLATFORM_MISMATCH');
     }
     run(['up','-d','--pull','never','--wait','--wait-timeout','1200']);
-    const probe="fetch('http://127.0.0.1:4000/').then(async r=>{if(!r.ok||!(await r.text()).includes('<html'))process.exit(1)}).catch(()=>process.exit(1))";
-    script(probe);
+    const checkWeb=phase=>run(['exec','-T','bonni-core','node','/app/backend/scripts/deployment/smoke-web.mjs',phase]);
+    checkWeb('initial');
     const before=script("const fs=require('fs'),p=process.env.BONNI_HOST_PROJECT_ROOT;fs.writeFileSync(p+'/UPDATE/deployment-smoke','preserve');process.stdout.write(fs.readFileSync(p+'/.bonni-deployment.json','utf8'))");
     run(['restart','bonni-core']);
     run(['up','-d','--pull','never','--wait','--wait-timeout','1200']);
     const identity=()=>script("const fs=require('fs'),p=process.env.BONNI_HOST_PROJECT_ROOT;if(fs.readFileSync(p+'/UPDATE/deployment-smoke','utf8')!=='preserve')process.exit(1);process.stdout.write(fs.readFileSync(p+'/.bonni-deployment.json','utf8'))");
     if(identity()!==before)throw Error('SMOKE_PERSISTED_STATE_CHANGED');
-    script(probe);
+    checkWeb('restart');
     const id=docker([...compose,'ps','-q','bonni-core']).trim();
     await testControllerRecovery({docker,id,project,root,delay});
     if(identity()!==before)throw Error('SMOKE_RECOVERY_CHANGED_STATE');
-    script(probe);
+    checkWeb('recovery');
     console.log(platform+': Core, Datenbank, Notlauf, Proxy und Update-Dienst nach Erststart/Neustart/Controller-Abbruch gesund.');
   }catch(error){try{run(['logs','--tail','100']);}catch{}throw error;}
   },cleanup:()=>cleanupSmokeProject({run,root})});

@@ -1,0 +1,316 @@
+TAP version 13
+# Subtest: normal installation persists complete isolated runtime config, release trust and encoded credentials
+ok 1 - normal installation persists complete isolated runtime config, release trust and encoded credentials
+  ---
+  duration_ms: 48.76494
+  type: 'test'
+  ...
+# Subtest: restart preserves upgraded pins, source, data and identity despite changed initial inputs
+ok 2 - restart preserves upgraded pins, source, data and identity despite changed initial inputs
+  ---
+  duration_ms: 27.581527
+  type: 'test'
+  ...
+# Subtest: interrupted first installation resumes same settings without inventing a second instance
+ok 3 - interrupted first installation resumes same settings without inventing a second instance
+  ---
+  duration_ms: 16.146092
+  type: 'test'
+  ...
+# Subtest: offline missing image does not pull, wrong platform and missing deployment contract stop initialization
+ok 4 - offline missing image does not pull, wrong platform and missing deployment contract stop initialization
+  ---
+  duration_ms: 12.380686
+  type: 'test'
+  ...
+# Subtest: existing data and symbolic-link state are never silently taken over
+ok 5 - existing data and symbolic-link state are never silently taken over
+  ---
+  duration_ms: 3.117096
+  type: 'test'
+  ...
+# Subtest: healthy requires all five normal services including a healthy update runner
+ok 6 - healthy requires all five normal services including a healthy update runner
+  ---
+  duration_ms: 0.77502
+  type: 'test'
+  ...
+# Subtest: managed controller resumes only its exact dead-owner latch; standalone and competing live owners stay blocked
+ok 7 - managed controller resumes only its exact dead-owner latch; standalone and competing live owners stay blocked
+  ---
+  duration_ms: 44.197906
+  type: 'test'
+  ...
+# Subtest: deployment template keeps recovery topology and excludes helper builds
+ok 8 - deployment template keeps recovery topology and excludes helper builds
+  ---
+  duration_ms: 1.990869
+  type: 'test'
+  ...
+# Subtest: HTTP proxy forwards normal content, replaces spoofed forwarding headers and exposes health
+ok 9 - HTTP proxy forwards normal content, replaces spoofed forwarding headers and exposes health
+  ---
+  duration_ms: 64.770275
+  type: 'test'
+  ...
+# Subtest: proxy falls back for public GET only, never for mutations, auth, encoded sensitive paths or credentials
+ok 10 - proxy falls back for public GET only, never for mutations, auth, encoded sensitive paths or credentials
+  ---
+  duration_ms: 44.133356
+  type: 'test'
+  ...
+# Subtest: unreachable active falls back for public route and reports 502 without replay for protected route
+ok 11 - unreachable active falls back for public route and reports 502 without replay for protected route
+  ---
+  duration_ms: 8.624039
+  type: 'test'
+  ...
+# Subtest: WebSocket upgrades go only to Active and preserve the upgraded byte stream
+ok 12 - WebSocket upgrades go only to Active and preserve the upgraded byte stream
+  ---
+  duration_ms: 5.869757
+  type: 'test'
+  ...
+# Subtest: the clean SYSTEM payload is bound to Bonni Core 0.1.20h-DEV.46
+ok 13 - the clean SYSTEM payload is bound to Bonni Core 0.1.20h-DEV.46
+  ---
+  duration_ms: 11.695518
+  type: 'test'
+  ...
+# Subtest: container removes contents and marker, leaving mounted root for host
+ok 14 - container removes contents and marker, leaving mounted root for host
+  ---
+  duration_ms: 13.483039
+  type: 'test'
+  ...
+# Subtest: host teardown removes only empty root after cleanup container and outer Compose down
+ok 15 - host teardown removes only empty root after cleanup container and outer Compose down
+  ---
+  duration_ms: 5.365083
+  type: 'test'
+  ...
+# Subtest: invalid production path or identity never triggers Docker or deletion
+ok 16 - invalid production path or identity never triggers Docker or deletion
+  ---
+  duration_ms: 7.399252
+  type: 'test'
+  ...
+# Subtest: inner runtime teardown failure prevents removal of files
+ok 17 - inner runtime teardown failure prevents removal of files
+  ---
+  duration_ms: 4.056974
+  type: 'test'
+  ...
+# Subtest: child deletion error is not swallowed and identity marker remains
+ok 18 - child deletion error is not swallowed and identity marker remains
+  ---
+  duration_ms: 5.920371
+  type: 'test'
+  ...
+# Subtest: outer Compose down still runs on cleanup error; host directory is preserved
+ok 19 - outer Compose down still runs on cleanup error; host directory is preserved
+  ---
+  duration_ms: 2.331791
+  type: 'test'
+  ...
+# Subtest: failed stop skips destructive inner cleanup, and residual files block host rmdir
+ok 20 - failed stop skips destructive inner cleanup, and residual files block host rmdir
+  ---
+  duration_ms: 3.606267
+  type: 'test'
+  ...
+# Subtest: primary test failure is retained while secondary cleanup failure is reported
+ok 21 - primary test failure is retained while secondary cleanup failure is reported
+  ---
+  duration_ms: 0.59832
+  type: 'test'
+  ...
+# Subtest: old healthy services cannot release health while this controller is still starting
+ok 22 - old healthy services cannot release health while this controller is still starting
+  ---
+  duration_ms: 1.666272
+  type: 'test'
+  ...
+# Subtest: startup failure and stop during startup never publish ready
+ok 23 - startup failure and stop during startup never publish ready
+  ---
+  duration_ms: 0.75404
+  type: 'test'
+  ...
+# Subtest: health rechecks current startup readiness after checking service states
+ok 24 - health rechecks current startup readiness after checking service states
+  ---
+  duration_ms: 0.279932
+  type: 'test'
+  ...
+# Subtest: missing endpoint, non-socket files and symlinks fail closed without deleting files
+ok 25 - missing endpoint, non-socket files and symlinks fail closed without deleting files
+  ---
+  duration_ms: 16.905564
+  type: 'test'
+  ...
+# Subtest: unresponsive or malformed readiness endpoints are bounded and not accepted
+ok 26 - unresponsive or malformed readiness endpoints are bounded and not accepted
+  ---
+  duration_ms: 43.060062
+  type: 'test'
+  ...
+# Subtest: real controller endpoint disappears on process death and stale socket cannot make next startup healthy
+ok 27 - real controller endpoint disappears on process death and stale socket cannot make next startup healthy # SKIP Executor forbids Unix-domain socket binding (EPERM).
+  ---
+  duration_ms: 6.063287
+  type: 'test'
+  ...
+# Subtest: process crash recovers automatically without Docker kill, start, restart or detached exec
+ok 28 - process crash recovers automatically without Docker kill, start, restart or detached exec
+  ---
+  duration_ms: 3.023409
+  type: 'test'
+  ...
+# Subtest: lost exec connection is accepted only with independently confirmed automatic recovery
+ok 29 - lost exec connection is accepted only with independently confirmed automatic recovery
+  ---
+  duration_ms: 1.23667
+  type: 'test'
+  ...
+# Subtest: preflight rejection is visible immediately and never sends a signal
+ok 30 - preflight rejection is visible immediately and never sends a signal
+  ---
+  duration_ms: 0.534156
+  type: 'test'
+  ...
+# Subtest: kill validation rejection is visible immediately instead of waiting for recovery
+ok 31 - kill validation rejection is visible immediately instead of waiting for recovery
+  ---
+  duration_ms: 0.408651
+  type: 'test'
+  ...
+# Subtest: healthy unchanged controller fails after 30 seconds with distinct missing-crash diagnosis
+ok 32 - healthy unchanged controller fails after 30 seconds with distinct missing-crash diagnosis
+  ---
+  duration_ms: 0.530901
+  type: 'test'
+  ...
+# Subtest: stopped, unhealthy, unchanged start time and absent auto-restart remain failures
+ok 33 - stopped, unhealthy, unchanged start time and absent auto-restart remain failures
+  ---
+  duration_ms: 1.362314
+  type: 'test'
+  ...
+# Subtest: raw exec errors cannot disclose environment values
+ok 34 - raw exec errors cannot disclose environment values
+  ---
+  duration_ms: 0.491172
+  type: 'test'
+  ...
+# Subtest: scope, service, init, PID, root mount, policy and unhealthy target are rejected before injection
+ok 35 - scope, service, init, PID, root mount, policy and unhealthy target are rejected before injection
+  ---
+  duration_ms: 1.810073
+  type: 'test'
+  ...
+# Subtest: host-PID Node controller is validated without tini; validation alone does not kill
+ok 36 - host-PID Node controller is validated without tini; validation alone does not kill
+  ---
+  duration_ms: 3.181581
+  type: 'test'
+  ...
+# Subtest: exact emulated controller argv forms are accepted; unrelated arguments are rejected
+ok 37 - exact emulated controller argv forms are accepted; unrelated arguments are rejected
+  ---
+  duration_ms: 8.983988
+  type: 'test'
+  ...
+# Subtest: observed ARM64 four-argument controller validates without signalling, then permits the exact target
+ok 38 - observed ARM64 four-argument controller validates without signalling, then permits the exact target
+  ---
+  duration_ms: 4.516075
+  type: 'test'
+  ...
+# Subtest: observed ARM64 form passes both production injector calls and still requires independently observed recovery
+ok 39 - observed ARM64 form passes both production injector calls and still requires independently observed recovery
+  ---
+  duration_ms: 8.104093
+  type: 'test'
+  ...
+# Subtest: observed ARM64 form still rejects foreign containers and reused or invalid process identities
+ok 40 - observed ARM64 form still rejects foreign containers and reused or invalid process identities
+  ---
+  duration_ms: 12.399534
+  type: 'test'
+  ...
+# Subtest: nearby four-argument forms, extra flags and other scripts remain rejected
+ok 41 - nearby four-argument forms, extra flags and other scripts remain rejected
+  ---
+  duration_ms: 14.449576
+  type: 'test'
+  ...
+# Subtest: PID one, foreign containers, reused PIDs, malformed start time and invalid action never receive a signal
+ok 42 - PID one, foreign containers, reused PIDs, malformed start time and invalid action never receive a signal
+  ---
+  duration_ms: 9.610475
+  type: 'test'
+  ...
+# Subtest: unverified ARM forms expose role labels while leaving the crash gate closed
+ok 43 - unverified ARM forms expose role labels while leaving the crash gate closed
+  ---
+  duration_ms: 2.903421
+  type: 'test'
+  ...
+# Subtest: unknown arguments are redacted and output is bounded, including control sequences
+ok 44 - unknown arguments are redacted and output is bounded, including control sequences
+  ---
+  duration_ms: 1.000802
+  type: 'test'
+  ...
+# Subtest: untrusted exec output is never copied verbatim into diagnostics
+ok 45 - untrusted exec output is never copied verbatim into diagnostics
+  ---
+  duration_ms: 1.380901
+  type: 'test'
+  ...
+# Subtest: real Linux process: preflight sees Node, reused identity is rejected, exact child receives SIGKILL
+ok 46 - real Linux process: preflight sees Node, reused identity is rejected, exact child receives SIGKILL # SKIP This executor exposes /proc from a different PID namespace; child PID cannot be inspected.
+  ---
+  duration_ms: 83.639824
+  type: 'test'
+  ...
+# Subtest: HTTP errors, missing HTML, timeouts and network failures retain distinct safe reasons
+ok 47 - HTTP errors, missing HTML, timeouts and network failures retain distinct safe reasons
+  ---
+  duration_ms: 6.237708
+  type: 'test'
+  ...
+# Subtest: request has a finite abort signal and success still requires HTTP success plus HTML
+ok 48 - request has a finite abort signal and success still requires HTTP success plus HTML
+  ---
+  duration_ms: 1.000453
+  type: 'test'
+  ...
+# Subtest: transient post-restart failures are retried within budget and successful HTML ends the wait
+ok 49 - transient post-restart failures are retried within budget and successful HTML ends the wait
+  ---
+  duration_ms: 1.011038
+  type: 'test'
+  ...
+# Subtest: permanent errors stop at the deadline with phase and last failure instead of passing
+ok 50 - permanent errors stop at the deadline with phase and last failure instead of passing
+  ---
+  duration_ms: 1.222879
+  type: 'test'
+  ...
+# Subtest: request time counts against the overall deadline and invalid phase cannot enter diagnostics
+ok 51 - request time counts against the overall deadline and invalid phase cannot enter diagnostics
+  ---
+  duration_ms: 0.329234
+  type: 'test'
+  ...
+1..51
+# tests 51
+# suites 0
+# pass 49
+# fail 0
+# cancelled 0
+# skipped 2
+# todo 0
+# duration_ms 390.030614
