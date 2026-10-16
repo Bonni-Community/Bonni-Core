@@ -1,4 +1,5 @@
 import {prepareInstalledAppDatabase,ensureAppDatabaseRuntime,forgetAppDatabaseRuntime} from './app-database-runtime.js';
+import {getSystemRuntimeConfig} from '../../../system/runtime/index.js';
 import { Router } from 'express';
 import fs from 'node:fs/promises';
 import path from 'node:path';
@@ -77,6 +78,7 @@ function service() {
   if(!servicePromise)servicePromise=(async()=>{
     const module=await import(pathToFileURL(path.join(backendRoot,'scripts/apps/app-installer.mjs')).href);
     return module.createAppInstaller({productRoot:getProductRoot(),systemRoot:resolveBonniProjectRoot(),backendRoot,trustRoot:path.dirname(backendRoot),stateRoot:getRuntimeStateRoot(),preflight,rollback,
+      getInstalled:async()=>{const db:any=getPrismaClient();return db.installedModule.findMany({where:{key:{startsWith:'app.'}},select:{key:true,version:true}});},
       beforeReplace:async(_checked:any,context:any)=>{if(context.before?.status==='ENABLED') {
         const result=await deactivateModulePackage(context.key);if(!result.ok)throw appIdError('APP_DEACTIVATION_FAILED');
       }
@@ -91,6 +93,21 @@ function service() {
   })();
   return servicePromise;
 }
+let checkerPromise:Promise<any>|null=null;
+function checker() {
+  if(!checkerPromise)checkerPromise=(async()=>{
+    const module=await import(pathToFileURL(path.join(backendRoot,'scripts/apps/app-update-check.mjs')).href);
+    const installer=await service();
+    return module.createAppUpdateChecker({list:installer.list,settings:installer.settings});
+  })();
+  return checkerPromise;
+}
+export async function startAppUpdateChecker() {
+  const runtime=getSystemRuntimeConfig();
+  if(runtime.slotRole!=='active'||runtime.updateProbeMode)return {started:false};
+  (await checker()).start();return {started:true,intervalHours:6};
+}
+export async function stopAppUpdateChecker() {if(checkerPromise)(await checkerPromise.catch(()=>null))?.stop();}
 export const appDistributionRouter=Router();
 function route(action:(req:any,service:any)=>Promise<any>) {
   return async(req:any,res:any)=>{
@@ -102,6 +119,9 @@ function route(action:(req:any,service:any)=>Promise<any>) {
   };
 }
 appDistributionRouter.get('/settings',route(async(_req,s)=>({ok:true,...await s.settings()})));
-appDistributionRouter.put('/settings',route(async(req,s)=>({ok:true,...await s.saveSource(req.body?.repository)})));
+appDistributionRouter.put('/settings',route(async(req,s)=>({ok:true,...await s.saveSource(req.body?.repository,req.body?.checkAutomatically)})));
 appDistributionRouter.get('/packages',route(async(req,s)=>s.list({online:req.query.online==='true'})));
 appDistributionRouter.post('/install',route(async(req,s)=>s.apply(req.body)));
+
+appDistributionRouter.get('/check-status',route(async(_req,s)=>({...await s.settings(),...(await checker()).status()})));
+appDistributionRouter.post('/check',route(async()=> (await checker()).check()));

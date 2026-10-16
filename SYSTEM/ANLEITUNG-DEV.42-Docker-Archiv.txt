@@ -1,0 +1,63 @@
+Bonni Core 0.1.20h-DEV.42 – Docker-Archivprüfung
+
+Kumulativer Core-Quellstand einschließlich DEV.41 und aller früheren Änderungen.
+Dieses Paket ist eine DEV-Bauquelle, kein signiertes Produktivupdate.
+
+Verwendung
+1. ZIP in den gemeinsamen UPDATE-Eingang legen und die DEV-Liste neu laden.
+2. DEV.42 als Core-Bauquelle auswählen. Die älteren Core-DEV-Pakete müssen
+   dafür nicht zusätzlich ausgewählt werden.
+3. Zielversion 0.1.21 beibehalten und zunächst AMD64 auswählen.
+4. Einen neuen Bau aus Bonni starten, damit die neue Quelle verwendet wird.
+   Die Wiederholung eines bisherigen GitHub-Laufs übernimmt DEV.42 nicht.
+
+Befund
+Die neuen Bilder zeigen einen bestandenen Start-/Neustarttest aus importierten
+TAR-Dateien. Der spätere Schritt "Prepare signed Core updates from the tested
+images" scheitert mit RELEASE_ARCHIVE_CONFIG_PATH_INVALID.
+Die bisherige Archivprüfung akzeptierte nur <sha256>.json und .../layer.tar.
+Der offizielle Docker-Exporter unterstützt auch Konfiguration und Layer unter
+blobs/sha256/<sha256>, ergänzt um oci-layout, index.json, ein OCI-Manifest und
+ältere V1-Layer-Konfigurationen zur Kompatibilität.
+Die tatsächlich fehlgeschlagene TAR-Datei lag hier nicht vor. Mit einer echten,
+kleinen TAR-Testdatei dieses Layouts wurde derselbe Fehler reproduziert:
+DEV.41 lehnt sie mit RELEASE_ARCHIVE_CONFIG_PATH_INVALID ab; DEV.42 prüft sie.
+
+Änderung
+- Unterstützt beide Docker-save-Layouts bei der Manifest- und Identitätsprüfung.
+- Prüft den OCI-Index und das OCI-Manifest auf genau ein Image, passende
+  Konfiguration, geordnete Layer, Größen, Tags und optionale Plattformangaben.
+- Prüft Inhaltsprüfsummen der Konfiguration, Layer und Metadaten.
+- Erkennt Dockers V1-Konfigurationen nur mit passender Struktur, einer vollständigen
+  Elternkette und Übereinstimmung mit der ausgewählten Image-Identität.
+- Behält die Prüfung von Core-Inhalt, Frontend, Lizenzen, Pfaden und privaten
+  Schlüsseln bei. Private PEM-Inhalte werden auch in dekodierten JSON-Texten erkannt.
+- Es werden keine fremden Archivpfade extrahiert oder externen Blob-URLs geladen.
+
+Geltungsbereich
+Unterstützt werden die unkomprimierten Layer-TARs des vorhandenen Bonni-
+Exportablaufs. Die vorherige Exportprüfung vergleicht diese bereits direkt mit
+rootfs.diff_ids. Beliebige OCI-Archive, komprimierte Layer, zusätzliche Images
+oder Attestierungen werden mit diesem Paket nicht pauschal freigegeben.
+Die signierte Datei bleibt bytegenau das geprüfte Archiv; sie wird nicht umgebaut.
+
+Prüfung
+75 lokale Prüfungen bestanden, keine fehlgeschlagen, zwei ausgelassen.
+Getestet wurden echte TAR-Testdateien für AMD64, ARM64 und ARMv7, beide Layouts,
+mehrere Layer, OCI-Verweise und absichtlich manipulierte Archive. Außerdem wurde
+preparePublicRelease einschließlich create-release, begrenztem Test-Bauschlüssel,
+Ed25519-Signierung, Signaturprüfung und unverändertem Archivinhalt ausgeführt.
+Der hierfür benötigte Release-Verifier wurde aus dem passenden Quellstand kompiliert.
+
+Ausgelassen wurden der echte Controller-Prozesstest wegen der abweichenden
+PID-/proc-Abbildung dieses Executors sowie der Test einer vorgebauten Frontend-
+Datei, die im reinen Quellpaket absichtlich nicht enthalten ist.
+Es wurden kein echter Docker-Build, kein QEMU-Lauf und kein GitHub-Lauf gestartet.
+Die TARs wurden als Testdateien erstellt, nicht von einem lokalen Docker-Daemon.
+Der neue GitHub-Lauf muss die Prüfung des tatsächlichen Images bestätigen.
+
+Quellen zum Format
+https://github.com/opencontainers/image-spec/blob/main/image-layout.md
+https://github.com/moby/moby/blob/v28.0.0/image/tarexport/save.go
+https://github.com/moby/moby/blob/v28.0.0/image/image.go
+https://github.com/containerd/containerd/blob/main/core/images/archive/exporter.go

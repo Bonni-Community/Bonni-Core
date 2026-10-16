@@ -1,0 +1,154 @@
+{
+  "schema": "bonni.source-consolidation/v1",
+  "version": "0.1.20+h-DEV.35",
+  "completeSource": true,
+  "supersedes": [
+    "DEV.30",
+    "DEV.32",
+    "DEV.33",
+    "DEV.34"
+  ],
+  "additionalWindowsPackage": "v174",
+  "sources": [
+    {
+      "version": "DEV.30",
+      "file": "Bonni-Core-0.1.20h-DEV.30-App-Installation.zip",
+      "sha256": "942ff2c95738ffdf8653334d31ff979d02dc88462f6e1e4852626145a0aa2495",
+      "files": 1193
+    },
+    {
+      "version": "DEV.32",
+      "file": "Bonni-Core-0.1.20h-DEV.32-Container-Update-Dienst.zip",
+      "sha256": "80cd7b617bf1e825aee352cea45b6cd70e2bd2947af076cc62c66462b7f927e7",
+      "files": 1209
+    },
+    {
+      "version": "DEV.33",
+      "file": "Bonni-Core-0.1.20h-DEV.33-App-Updatepruefung.zip",
+      "sha256": "eccbd5c609f18a2f6caab77120ce682a0ab211cfb6ce22d54142a8cf8ef24efe",
+      "files": 1212
+    },
+    {
+      "version": "DEV.34",
+      "file": "Bonni-Core-0.1.20h-DEV.34-Container-Test-Fix.zip",
+      "sha256": "ae8678d8e22fcabb2d7bdc829ca25d854645975a373e48ad093131f2fb9752f1",
+      "files": 1215
+    }
+  ],
+  "comparison": [
+    {
+      "to": "DEV.32",
+      "missingFiles": [],
+      "addedFiles": [
+        "SYSTEM/backend/ops/github/publish-core-updates.yml",
+        "SYSTEM/backend/ops/update-runner/Dockerfile.prebuilt",
+        "SYSTEM/backend/scripts/deployment/ci-cleanup.mjs",
+        "SYSTEM/backend/scripts/deployment/controller.mjs",
+        "SYSTEM/backend/scripts/deployment/create-runtime-template.mjs",
+        "SYSTEM/backend/scripts/deployment/entrypoint.sh",
+        "SYSTEM/backend/scripts/deployment/proxy.mjs",
+        "SYSTEM/backend/scripts/deployment/smoke.mjs",
+        "SYSTEM/backend/scripts/runtime/container-runtime.sh",
+        "SYSTEM/backend/scripts/runtime/prepare-public-runtime.mjs",
+        "SYSTEM/backend/scripts/update-release/prepare-public-release.mjs",
+        "SYSTEM/backend/scripts/update-release/upload-public-release.mjs",
+        "SYSTEM/backend/src/system/routes/control-api/update-center/update-schedule.ts",
+        "SYSTEM/backend/tests/container-deployment.test.mjs",
+        "SYSTEM/backend/tests/public-core-update.test.mjs",
+        "SYSTEM/backend/tests/update-schedule.test.mjs"
+      ],
+      "changedFiles": [
+        "INHALT-SHA256.json",
+        "SYSTEM/backend/Dockerfile",
+        "SYSTEM/backend/docker-compose.runtime.yml",
+        "SYSTEM/backend/package-lock.json",
+        "SYSTEM/backend/package.json",
+        "SYSTEM/backend/scripts/runtime/runtime-mode-exclusion.mjs",
+        "SYSTEM/backend/scripts/runtime/start-runtime.sh",
+        "SYSTEM/backend/scripts/update-release/create-release.mjs",
+        "SYSTEM/backend/src/platform/module-manager/project-root.ts",
+        "SYSTEM/backend/src/system/routes/control-api/update-center/github-release-source.ts",
+        "SYSTEM/backend/src/system/routes/control-api/update-center/update-center.controller.ts",
+        "SYSTEM/backend/src/system/routes/control-api/update-center/update-center.service.ts",
+        "SYSTEM/backend/src/system/update-release/release-manifest.schema.ts",
+        "SYSTEM/backend/src/system/update-runner/archive-tags.mjs",
+        "SYSTEM/backend/src/system/update-runner/contract.mjs",
+        "SYSTEM/backend/src/system/update-runner/docker-cli.mjs",
+        "SYSTEM/backend/src/system/update-runner/update-runner.mjs",
+        "SYSTEM/backend/tests/create-release-offline.test.mjs",
+        "SYSTEM/backend/tests/github-release-source.test.mjs",
+        "SYSTEM/backend/tests/update-runner.test.mjs",
+        "SYSTEM/frontend/package-lock.json",
+        "SYSTEM/frontend/package.json",
+        "SYSTEM/frontend/platform/control-center/update/UpdateSettingsPage.css",
+        "SYSTEM/frontend/platform/control-center/update/UpdateSettingsPage.jsx"
+      ]
+    },
+    {
+      "to": "DEV.33",
+      "missingFiles": [],
+      "addedFiles": [
+        "SYSTEM/ANLEITUNG-DEV.33-App-Updatepruefung.txt",
+        "SYSTEM/backend/scripts/apps/app-update-check.mjs",
+        "SYSTEM/backend/tests/app-update-check.test.mjs"
+      ],
+      "changedFiles": [
+        "INHALT-SHA256.json",
+        "SYSTEM/backend/Dockerfile",
+        "SYSTEM/backend/package-lock.json",
+        "SYSTEM/backend/package.json",
+        "SYSTEM/backend/scripts/apps/app-installer.mjs",
+        "SYSTEM/backend/scripts/apps/github-download.mjs",
+        "SYSTEM/backend/src/platform/module-manager/distribution/app-distribution.routes.ts",
+        "SYSTEM/backend/src/system/server/run-server.ts",
+        "SYSTEM/frontend/package-lock.json",
+        "SYSTEM/frontend/package.json",
+        "SYSTEM/frontend/platform/control-center/store/AppInstallPanel.jsx",
+        "SYSTEM/frontend/platform/control-center/store/StorePage.css",
+        "SYSTEM/frontend/platform/control-center/store/StorePage.jsx"
+      ]
+    },
+    {
+      "to": "DEV.34",
+      "missingFiles": [],
+      "addedFiles": [
+        "SYSTEM/ANLEITUNG-DEV.34-Container-Test-Fix.txt",
+        "SYSTEM/backend/scripts/deployment/smoke-cleanup.mjs",
+        "SYSTEM/backend/tests/deployment-ci-cleanup.test.mjs"
+      ],
+      "changedFiles": [
+        "INHALT-SHA256.json",
+        "SYSTEM/backend/Dockerfile",
+        "SYSTEM/backend/package-lock.json",
+        "SYSTEM/backend/package.json",
+        "SYSTEM/backend/scripts/deployment/ci-cleanup.mjs",
+        "SYSTEM/backend/scripts/deployment/smoke.mjs",
+        "SYSTEM/frontend/package-lock.json",
+        "SYSTEM/frontend/package.json"
+      ]
+    }
+  ],
+  "checks": {
+    "coreTestsPassed": 32,
+    "coreTestsSkipped": 1,
+    "skipReason": "Source package contains no prebuilt frontend.",
+    "registryTestsPassed": 9,
+    "publicationTestsPassed": 14,
+    "liveGitHubBuild": false,
+    "windowsRuntimeTest": false
+  },
+  "dev35ChangesFromDev34": [
+    "SYSTEM/backend/Dockerfile",
+    "SYSTEM/backend/package-lock.json",
+    "SYSTEM/backend/package.json",
+    "SYSTEM/backend/scripts/runtime/start-runtime.sh",
+    "SYSTEM/backend/scripts/setup/prebuilt-frontend.mjs",
+    "SYSTEM/backend/src/platform/module-manager/registry/defaults.ts",
+    "SYSTEM/backend/src/system/routes/control-api/system.manifest.ts",
+    "SYSTEM/backend/tests/current-release-version.test.mjs",
+    "SYSTEM/backend/tests/setup-prebuilt-frontend.test.mjs",
+    "SYSTEM/frontend/package-lock.json",
+    "SYSTEM/frontend/package.json"
+  ],
+  "missingFilesFromDev34": []
+}

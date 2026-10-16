@@ -1,3 +1,4 @@
+import {loadUpdateSettings, parseUpdateSettings, scheduledOccurrence, automaticInstallAuthorized, type UpdateSettings} from "./update-schedule.js";
 import crypto from "node:crypto";
 import dns from "node:dns/promises";
 import { createReadStream, existsSync, statfsSync } from "node:fs";
@@ -26,7 +27,7 @@ import {
   getSystemBackupOverview,
   validateSystemBackup,
 } from "../backup/index.js";
-import { getOfficialCoreReleaseSource } from "./github-release-source.js";
+import { getOfficialCoreReleaseSource, getCoreReleaseAllowedOrigins } from "./github-release-source.js";
 import {
   getLocalSourceUpdateStatus,
   queueLocalSourceUpdate,
@@ -67,18 +68,12 @@ type UpdateWorkflow = {
   artifactPath?: string;
   backupId?: string;
   runnerRequestId?: string;
+  automaticRevision?: number;
   message?: string;
   error?: string;
   steps: UpdateStep[];
 };
 
-type UpdateSettings = {
-  automaticChecks: boolean;
-  automaticDownload: boolean;
-  backupBeforeInstall: true;
-  maintenanceWindow: "manual";
-  channel: "stable";
-};
 
 type SelectedRelease = {
   manifest: ReleaseManifest;
@@ -131,16 +126,9 @@ export type DeploymentLifecycleStatus = {
   updatedAt: string;
 };
 
-const UPDATE_RUNNER_PROTOCOL_VERSION = "0.3.0";
+const UPDATE_RUNNER_PROTOCOL_VERSION = "0.5.0";
 const MAXIMUM_MANIFEST_BYTES = 256 * 1024;
 const RUNNER_HEARTBEAT_MAX_AGE_MS = 20_000;
-const DEFAULT_SETTINGS: UpdateSettings = {
-  automaticChecks: true,
-  automaticDownload: false,
-  backupBeforeInstall: true,
-  maintenanceWindow: "manual",
-  channel: "stable",
-};
 
 const STEP_DEFINITIONS = [
   ["preflight", "Voraussetzungen prüfen"],
@@ -151,8 +139,8 @@ const STEP_DEFINITIONS = [
   ["backup-configuration", "Einstellungen sichern"],
   ["backup-storage", "Dateien sichern"],
   ["backup-verify", "Sicherungen prüfen"],
-  ["candidate", "Isoliertes Candidate-System starten"],
-  ["health", "Candidate und neues Active prüfen"],
+  ["candidate", "Separates Installationsbackend starten"],
+  ["health", "Installation und neue Core-Version prüfen"],
   ["switch", "Dauerhaft auf neue Version umschalten"],
 ] as const;
 
@@ -300,10 +288,7 @@ async function readDeploymentLifecycleStatus(): Promise<DeploymentLifecycleStatu
 }
 
 function configuredAllowedOrigins() {
-  return String(process.env.BONNI_UPDATE_ALLOWED_ORIGINS || "")
-    .split(",")
-    .map((value) => value.trim())
-    .filter(Boolean);
+  return getCoreReleaseAllowedOrigins();
 }
 
 async function resolvedAddresses(url: URL) {
@@ -388,6 +373,12 @@ async function verifyManifest(value: unknown) {
     nodeEnv: process.env.NODE_ENV,
     allowUnsignedDevelopment: String(process.env.BONNI_ALLOW_UNSIGNED_UPDATES || "").toLowerCase() === "true",
   });
+  const platform = verification.manifest.artifact.imageIdentity.platform;
+  const architecture = process.arch === "x64" ? "amd64" : process.arch;
+  if (process.platform !== platform.os || architecture !== platform.architecture
+    || (architecture === "arm" && platform.variant !== "v7")) {
+    throw new Error("UPDATE_PLATFORM_MISMATCH");
+  }
   return verification.manifest;
 }
 
@@ -437,24 +428,19 @@ async function fetchRemoteManifest(): Promise<SelectedRelease | null> {
 }
 
 async function loadSettings(): Promise<UpdateSettings> {
-  const stored = await readJson<Partial<UpdateSettings>>(settingsPath());
-  return { ...DEFAULT_SETTINGS, ...(stored || {}), backupBeforeInstall: true, channel: "stable" };
+  return loadUpdateSettings(await readJson<Partial<UpdateSettings>>(settingsPath()));
 }
-
-export async function updateCoreUpdateSettings(input: Partial<UpdateSettings>) {
-  const current = await loadSettings();
-  const automaticChecks = typeof input.automaticChecks === "boolean" ? input.automaticChecks : current.automaticChecks;
-  const settings: UpdateSettings = {
-    ...current,
-    automaticChecks,
-    automaticDownload: automaticChecks
-      && (typeof input.automaticDownload === "boolean" ? input.automaticDownload : current.automaticDownload),
-    maintenanceWindow: "manual",
-    backupBeforeInstall: true,
-    channel: "stable",
-  };
-  await writeJson(settingsPath(), settings);
-  return { ok: true, settings };
+let settingsWrite: Promise<unknown> = Promise.resolve();
+export function updateCoreUpdateSettings(input: Partial<UpdateSettings>) {
+  const result = settingsWrite.then(async () => {
+    const current = await loadSettings();
+    const settings = parseUpdateSettings(input, current);
+    settings.revision = current.revision + 1;
+    await writeJson(settingsPath(), settings);
+    return { ok: true, settings };
+  });
+  settingsWrite = result.catch(() => undefined);
+  return result;
 }
 
 function createWorkflow(currentVersion: string, manifest: ReleaseManifest): UpdateWorkflow {
@@ -523,7 +509,7 @@ async function copyStreamToFile(chunks: AsyncIterable<Uint8Array | Buffer>, targ
       const buffer = Buffer.from(chunk);
       downloaded += buffer.length;
       if (downloaded > totalBytes || downloaded > maximumBytes) throw new Error("Updatepaket ist größer als im signierten Manifest angegeben.");
-      await handle.write(buffer);
+      await handle.writeFile(buffer);
       await updateDownloadProgress(workflow, downloaded, totalBytes);
     }
     if (downloaded !== totalBytes) throw new Error("Updatepaket ist unvollständig.");
@@ -597,8 +583,8 @@ function installationPolicy(manifest: ReleaseManifest | null, runner: Awaited<Re
     (!manifest.migration.required && manifest.migration.strategy === "none")
     || (manifest.migration.required && manifest.migration.strategy === "expand-contract")
   );
-  if (!migrationAllowed) {
-    return { allowed: false, reason: "Automatische Updates erlauben nur migration:none oder ausdrücklich rückwärtskompatible expand-contract-Migrationen; offline/contract bleibt gesperrt." };
+  if (!(migrationAllowed || (manifest.migration.required && manifest.migration.strategy === "offline" && compareStrictSemVer(manifest.minimumRunnerVersion, "0.4.0") >= 0))) {
+    return { allowed: false, reason: "Diese Migrationsart benötigt einen geeigneten Update-Dienst. Wartungsinstallationen benötigen mindestens Version 0.4.0." };
   }
   if (runner.deploymentLifecycle.blocksUpdates) {
     return { allowed: false, reason: `Der vorherige Stand wird bis ${runner.deploymentLifecycle.holdUntil || "zum sicheren Abschluss"} geschützt. Zuerst Hold abschließen.` };
@@ -608,6 +594,12 @@ function installationPolicy(manifest: ReleaseManifest | null, runner: Awaited<Re
 }
 
 async function queueRunnerInstall(workflow: UpdateWorkflow, manifest: ReleaseManifest) {
+  if (!automaticInstallAuthorized(await loadSettings(), workflow.automaticRevision)) {
+    workflow.status = "ready";
+    workflow.message = "Automatik wurde geändert. Das geprüfte Paket bleibt für eine manuelle Installation bereit.";
+    await saveWorkflow(workflow);
+    return;
+  }
   if (!workflow.artifactPath || !workflow.backupId) throw new Error("Updatepaket oder Rückkehrpunkt fehlt.");
   const relative = path.relative(updateCenterRoot(), workflow.artifactPath).replaceAll("\\", "/");
   if (!/^downloads\/bonni-core-[A-Za-z0-9.+-]+\.bonni$/.test(relative)) throw new Error("Updatepaket liegt nicht im freigegebenen Downloadbereich.");
@@ -1122,7 +1114,7 @@ export async function startLocalSourceUpdateInstallation(
   return queued.ok ? { ...queued, backupId: backup.backup.id } : queued;
 }
 
-async function beginPreparation(queueInstall: boolean, targetVersion?: string) {
+async function beginPreparationInternal(queueInstall: boolean, targetVersion?: string, automaticRevision?: number) {
   if (activePreparation) return { ok: false, error: "UPDATE_ALREADY_RUNNING" };
   const selected = await loadLocalOrCachedManifest();
   if (!selected) return { ok: false, error: "NO_UPDATE_AVAILABLE" };
@@ -1144,6 +1136,7 @@ async function beginPreparation(queueInstall: boolean, targetVersion?: string) {
       const policy = installationPolicy(selected.manifest, runner);
       if (!policy.allowed) return { ok: false, error: "RUNNER_NOT_READY", message: policy.reason };
       await verifyArtifact(selected.manifest, existing.artifactPath);
+      existing.automaticRevision = automaticRevision;
       activePreparation = runPreparedInstallation(existing, selected.manifest).finally(() => { activePreparation = null; });
       return { ok: true, accepted: true, workflow: existing };
     }
@@ -1156,9 +1149,18 @@ async function beginPreparation(queueInstall: boolean, targetVersion?: string) {
     if (!policy.allowed) return { ok: false, error: "RUNNER_NOT_READY", message: policy.reason };
   }
   const workflow = createWorkflow(currentVersion, selected.manifest);
+  workflow.automaticRevision = automaticRevision;
   await saveWorkflow(workflow);
   activePreparation = runPreparation(workflow, selected, queueInstall).finally(() => { activePreparation = null; });
   return { ok: true, accepted: true, workflow };
+}
+
+let preparationStarting = false;
+async function beginPreparation(queueInstall: boolean, targetVersion?: string, automaticRevision?: number) {
+  if (preparationStarting || activePreparation) return {ok:false,error:"UPDATE_ALREADY_RUNNING"};
+  preparationStarting = true;
+  try { return await beginPreparationInternal(queueInstall, targetVersion, automaticRevision); }
+  finally { preparationStarting = false; }
 }
 
 export function startCoreUpdatePreparation() {
@@ -1266,6 +1268,7 @@ export async function getCoreUpdateCenterStatus() {
     compatibility,
     installation: localSourceAvailable ? localSourcePolicy : releasePolicy,
     settings,
+    serverTimeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
     workflow,
     backup: { status: backup.status, latest: backup.latest, restoreRequest: backup.restoreRequest },
     runner: localSourceAvailable ? localSourceUpdate.runner : runner,
@@ -1279,25 +1282,39 @@ export async function getCoreUpdateCenterStatus() {
   };
 }
 
+type SchedulerState = { lastCheckAt?: string; lastAttemptKey?: string; lastResult?: unknown };
 async function runAutomaticUpdateCycle() {
-  if (automaticCycleRunning) return;
+  if (automaticCycleRunning || activePreparation || preparationStarting) return;
+  const runtime = getSystemRuntimeConfig();
+  if (runtime.slotRole !== "active" || runtime.updateProbeMode) return;
   automaticCycleRunning = true;
   try {
-    await finalizeExpiredLocalSourceDeploymentLifecycle();
     const settings = await loadSettings();
-    if (!settings.automaticChecks) return;
+    if (settings.mode === "off") return;
+    await finalizeExpiredLocalSourceDeploymentLifecycle();
+    const file = path.join(updateCenterRoot(), "scheduler-state.json");
+    const state = await readJson<SchedulerState>(file) || {};
+    const now = new Date();
+    const occurrence = scheduledOccurrence(settings, now, state.lastAttemptKey);
+    const interval = Number(process.env.BONNI_UPDATE_CHECK_INTERVAL_MS || 21600000);
+    const checkDue = !Number.isFinite(Date.parse(state.lastCheckAt || ""))
+      || now.getTime() - Date.parse(state.lastCheckAt!) >= Math.max(900000, Number.isFinite(interval) ? interval : 21600000);
+    if (!occurrence && !checkDue) return;
+    // Persist the claim before work so a process restart cannot start a second
+    // installation in the same local time slot.
+    if (occurrence) state.lastAttemptKey = occurrence;
+    state.lastCheckAt = now.toISOString();
+    await writeJson(file, state);
     await checkForCoreUpdate();
-    if (!settings.automaticDownload) return;
-    await beginPreparation(false);
+    if (occurrence && automaticInstallAuthorized(await loadSettings(), settings.revision)) {
+      state.lastResult = await beginPreparation(true, undefined, settings.revision);
+      await writeJson(file, state);
+    }
   } catch (error) {
     await writeJson(path.join(updateCenterRoot(), "scheduler-status.json"), {
-      ok: false,
-      checkedAt: new Date().toISOString(),
-      error: error instanceof Error ? error.message : String(error),
+      ok:false, checkedAt:new Date().toISOString(),error:error instanceof Error ? error.message : String(error),
     }).catch(() => undefined);
-  } finally {
-    automaticCycleRunning = false;
-  }
+  } finally { automaticCycleRunning = false; }
 }
 
 export function startCoreUpdateScheduler() {
@@ -1306,10 +1323,7 @@ export function startCoreUpdateScheduler() {
     return { started: false, reason: "NOT_ACTIVE_RUNTIME" };
   }
   if (automaticCycleTimer) return { started: false, reason: "ALREADY_STARTED" };
-  const configured = Number(process.env.BONNI_UPDATE_CHECK_INTERVAL_MS || 0);
-  const intervalMs = Number.isFinite(configured) && configured >= 15 * 60_000
-    ? configured
-    : 6 * 60 * 60_000;
+  const intervalMs = 30_000;
   const configuredInitialDelay = Number(process.env.BONNI_UPDATE_INITIAL_CHECK_DELAY_MS || 0);
   const initialDelay = Number.isFinite(configuredInitialDelay) && configuredInitialDelay >= 1_000
     ? configuredInitialDelay

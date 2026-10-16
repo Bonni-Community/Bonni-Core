@@ -6,6 +6,7 @@
 # Candidate resources are deliberately separate and disposable.
 
 x-backend-environment: &backend_environment
+  TZ: ${TZ:-UTC}
   NODE_ENV: production
   PORT: 4000
   LOCAL_AUTH_BIND: 0.0.0.0
@@ -21,10 +22,14 @@ x-backend-environment: &backend_environment
   BONNI_UPDATE_RUNNER_STATE_ROOT: /run/bonni-update/ipc
   BONNI_NETWORK_TRANSPORT_GATE_FILE: /run/bonni-update/ipc/network-transport-gate.json
   BONNI_UPDATE_REQUEST_SECRET_FILE: /run/secrets/bonni-update/request.key
-  BONNI_UPDATE_TRUSTED_KEYS_DIR: /run/secrets/bonni-update/trusted-keys
-  BONNI_UPDATE_MANIFEST_URL: ${BONNI_UPDATE_MANIFEST_URL:-https://github.com/Bonni-Community/bonni-core/releases/latest/download/manifest.json}
-  BONNI_UPDATE_ALLOWED_ORIGINS: ${BONNI_UPDATE_ALLOWED_ORIGINS:-https://github.com,https://release-assets.githubusercontent.com}
+  # Separate mount: do not create a child mount inside the read-only request-secret volume.
+  BONNI_UPDATE_TRUSTED_KEYS_DIR: /run/secrets/bonni-update-trusted-keys
+  BONNI_UPDATE_MANIFEST_URL: ${BONNI_UPDATE_MANIFEST_URL:-}
+  BONNI_UPDATE_ALLOWED_ORIGINS: ${BONNI_UPDATE_ALLOWED_ORIGINS:-}
   BONNI_UPDATE_MAX_BYTES: ${BONNI_UPDATE_MAX_BYTES:-2147483648}
+  BONNI_UPDATE_LOCAL_ROOT: /app/UPDATE/core/offline
+  BONNI_UPDATE_STATE_ROOT: /app/UPDATE/core
+  BONNI_MODULE_PACKAGE_ROOT: /app/run_system/extensions
   BONNI_PROJECT_ROOT: /app
   BONNI_STORAGE_ROOT: /app/storage
   RUN_SYSTEM_ROOT: /app/run_system
@@ -49,6 +54,9 @@ x-backend-environment: &backend_environment
   LOCAL_DATABASE_URL: ${LOCAL_DATABASE_URL:-}
   MASTER_KEY: ${MASTER_KEY:?MASTER_KEY muss gesetzt sein}
   JWT_SECRET: ${JWT_SECRET:?JWT_SECRET muss gesetzt sein}
+  # Initialized once in the persistent host .env before any container starts.
+  # Every backend slot must use the same key, including read-only Emergency.
+  MODULE_PRIVATE_DATA_SECRET: ${MODULE_PRIVATE_DATA_SECRET:?MODULE_PRIVATE_DATA_SECRET muss gesetzt sein}
   JWT_EXPIRES_IN: ${JWT_EXPIRES_IN:-7d}
   AUTH_MODE: ${AUTH_MODE:-LOCAL}
   SANDBOX_USER_TYPE: ${SANDBOX_USER_TYPE:-member}
@@ -62,13 +70,15 @@ x-backend-environment: &backend_environment
 x-production-volumes: &production_volumes
   - ${BONNI_HOST_RUNTIME_ROOT:-../../runtime}/storage:/app/storage
   - ${BONNI_HOST_RUNTIME_ROOT:-../../runtime}/archive/logs:/app/backend/archives/logs
+  - ${BONNI_HOST_PROJECT_ROOT}/UPDATE:/app/UPDATE
   - ${BONNI_HOST_RUN_SYSTEM_ROOT:-../../run_system}:/app/run_system
 
 services:
   # Generates the local request-authentication key once. The secret volume is
   # deliberately separate from production storage, backups and runner IPC.
   update-secret-init:
-    image: alpine:3.20@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc
+    image: "${SYSTEM_IMAGE:-${BONNI_ACTIVE_IMAGE_TAG:?BONNI_ACTIVE_IMAGE_TAG muss gesetzt sein}}"
+    entrypoint: []
     restart: "no"
     command:
       - /bin/sh
@@ -158,6 +168,7 @@ services:
       SYSTEM_SLOT_NAME: database-bootstrap
       SYSTEM_SLOT_ROLE: installer
       BONNI_BOOTSTRAP_ADMIN_PASSWORD: ${BONNI_BOOTSTRAP_ADMIN_PASSWORD:-}
+      BONNI_BOOTSTRAP_FIRST_INSTALL_ONLY: "true"
     volumes: *production_volumes
     networks:
       - runtime_database
@@ -190,11 +201,12 @@ services:
       - ${BONNI_HOST_RUNTIME_ROOT:-../../runtime}/storage:/app/storage
       - ${BONNI_HOST_RUNTIME_ROOT:-../../runtime}/archive/logs:/app/backend/archives/logs
       - ${BONNI_HOST_RUN_SYSTEM_ROOT:-../../run_system}:/app/run_system
+      - ${BONNI_HOST_PROJECT_ROOT}/UPDATE:/app/UPDATE
       # Runner outbox is read-only; only the nested request inbox is writable.
       - update_runner_outbox:/run/bonni-update/ipc:ro
       - update_runner_inbox:/run/bonni-update/ipc/requests
       - update_request_secret:/run/secrets/bonni-update:ro
-      - ${BONNI_UPDATE_TRUSTED_KEYS_HOST_DIR:?start-runtime.sh muss BONNI_UPDATE_TRUSTED_KEYS_HOST_DIR absolut setzen}:/run/secrets/bonni-update/trusted-keys:ro
+      - ${BONNI_UPDATE_TRUSTED_KEYS_HOST_DIR:?start-runtime.sh muss BONNI_UPDATE_TRUSTED_KEYS_HOST_DIR absolut setzen}:/run/secrets/bonni-update-trusted-keys:ro
     networks:
       - runtime_frontend
       - runtime_database
@@ -250,7 +262,7 @@ services:
       - ${BONNI_HOST_RUN_SYSTEM_ROOT:-../../run_system}/storage/licenses:/app/emergency-licenses:ro
       - ${BONNI_HOST_RUN_SYSTEM_ROOT:-../../run_system}/system/emergency:/app/emergency-run-system/system/emergency:ro
       - update_runner_outbox:/run/bonni-update/ipc:ro
-      - ${BONNI_UPDATE_TRUSTED_KEYS_HOST_DIR:?start-runtime.sh muss BONNI_UPDATE_TRUSTED_KEYS_HOST_DIR absolut setzen}:/run/secrets/bonni-update/trusted-keys:ro
+      - ${BONNI_UPDATE_TRUSTED_KEYS_HOST_DIR:?start-runtime.sh muss BONNI_UPDATE_TRUSTED_KEYS_HOST_DIR absolut setzen}:/run/secrets/bonni-update-trusted-keys:ro
     networks:
       - runtime_frontend
       - runtime_database
@@ -266,6 +278,7 @@ services:
     tmpfs:
       - /tmp:size=32m,mode=0700
       - /app/backend/archives/logs:size=32m,mode=0700
+      - /app/emergency-run-system/LOGS:size=32m,mode=0700
     security_opt:
       - no-new-privileges:true
     labels:
@@ -381,6 +394,8 @@ services:
       - "4000"
     environment:
       <<: *backend_environment
+      BONNI_UPDATE_STATE_ROOT: /app/storage/system/update-center
+      BONNI_UPDATE_MANIFEST_URL: ""
       SYSTEM_SLOT_NAME: backend-candidate
       SYSTEM_SLOT_ROLE: candidate
       SYSTEM_VERSION: ${CANDIDATE_SYSTEM_VERSION:-0.1.21}
@@ -451,7 +466,7 @@ services:
   # Proxy, Active and Emergency are stopped. Production mounts are read-only;
   # the target release image is never allowed to create its own rollback data.
   update-snapshot-create:
-    image: "${BONNI_UPDATE_RUNNER_IMAGE:-${COMPOSE_PROJECT_NAME:?COMPOSE_PROJECT_NAME muss gesetzt sein}-update-runner:runtime-v0.3.0}"
+    image: "${BONNI_UPDATE_RUNNER_IMAGE:-${COMPOSE_PROJECT_NAME:?COMPOSE_PROJECT_NAME muss gesetzt sein}-update-runner:runtime-v0.4.0}"
     pull_policy: never
     profiles: ["update"]
     restart: "no"
@@ -490,7 +505,7 @@ services:
   # is written to a separate volume, while only the two production file roots
   # are writable. Database replacement happens over the internal DB network.
   update-snapshot-restore:
-    image: "${BONNI_UPDATE_RUNNER_IMAGE:-${COMPOSE_PROJECT_NAME:?COMPOSE_PROJECT_NAME muss gesetzt sein}-update-runner:runtime-v0.3.0}"
+    image: "${BONNI_UPDATE_RUNNER_IMAGE:-${COMPOSE_PROJECT_NAME:?COMPOSE_PROJECT_NAME muss gesetzt sein}-update-runner:runtime-v0.4.0}"
     pull_policy: never
     profiles: ["update"]
     restart: "no"
@@ -531,7 +546,7 @@ services:
   # Deletes only the exact request-owned rollback snapshot/result after the
   # 14-day hold (or an explicit early finalize) has safely advanced Emergency.
   update-snapshot-cleanup:
-    image: "${BONNI_UPDATE_RUNNER_IMAGE:-${COMPOSE_PROJECT_NAME:?COMPOSE_PROJECT_NAME muss gesetzt sein}-update-runner:runtime-v0.3.0}"
+    image: "${BONNI_UPDATE_RUNNER_IMAGE:-${COMPOSE_PROJECT_NAME:?COMPOSE_PROJECT_NAME muss gesetzt sein}-update-runner:runtime-v0.4.0}"
     pull_policy: never
     profiles: ["update"]
     restart: "no"
@@ -590,7 +605,7 @@ services:
   # The runner is a separate trust boundary. Bonni Core itself never receives
   # the Docker socket. Its implementation owns validation/state reconciliation.
   update-runner:
-    image: "${BONNI_UPDATE_RUNNER_IMAGE:-${COMPOSE_PROJECT_NAME:?COMPOSE_PROJECT_NAME muss gesetzt sein}-update-runner:runtime-v0.3.0}"
+    image: "${BONNI_UPDATE_RUNNER_IMAGE:-${COMPOSE_PROJECT_NAME:?COMPOSE_PROJECT_NAME muss gesetzt sein}-update-runner:runtime-v0.4.0}"
     build:
       context: ../..
       dockerfile: SYSTEM/backend/ops/update-runner/Dockerfile
@@ -606,7 +621,7 @@ services:
       BONNI_HOST_RUN_SYSTEM_ROOT: ${BONNI_HOST_RUN_SYSTEM_ROOT:?start-runtime.sh muss BONNI_HOST_RUN_SYSTEM_ROOT absolut setzen}
       BONNI_COMPOSE_FILE: ${BONNI_HOST_PROJECT_ROOT:?start-runtime.sh muss BONNI_HOST_PROJECT_ROOT absolut setzen}/SYSTEM/backend/docker-compose.runtime.yml
       BONNI_STORAGE_ROOT: /var/lib/bonni-core/storage
-      BONNI_UPDATE_STORAGE_ROOT: /var/lib/bonni-core/storage/system/update-center
+      BONNI_UPDATE_STORAGE_ROOT: /var/lib/bonni-core/UPDATE/core
       BONNI_UPDATE_RUNNER_STATE_ROOT: /run/bonni-update/ipc
       BONNI_NETWORK_TRANSPORT_GATE_FILE: /run/bonni-update/ipc/network-transport-gate.json
       BONNI_UPDATE_RUNNER_PRIVATE_STATE_ROOT: /var/lib/bonni-update-runner
@@ -617,7 +632,7 @@ services:
       SYSTEM_EMERGENCY_HOLD_DAYS: "14"
       COMPOSE_PROJECT_NAME: ${COMPOSE_PROJECT_NAME:?COMPOSE_PROJECT_NAME muss gesetzt sein}
       BONNI_RUNTIME_ENV_FILE: ${BONNI_RUNTIME_ENV_FILE:?start-runtime.sh muss BONNI_RUNTIME_ENV_FILE absolut setzen}
-      BONNI_UPDATE_TRUSTED_KEYS_DIR: /run/secrets/bonni-update/trusted-keys
+      BONNI_UPDATE_TRUSTED_KEYS_DIR: /run/secrets/bonni-update-trusted-keys
       BONNI_ACTIVE_RELEASE_ENV_FILE: /var/lib/bonni-active-release/active-release.env
       BONNI_UPDATE_TRANSACTION_FENCE_FILE: /var/lib/bonni-active-release/update-transaction-fence.json
       BONNI_UPDATE_ROLLBACK_SNAPSHOT_ROOT: /var/lib/bonni-rollback-snapshots
@@ -629,6 +644,7 @@ services:
       - ${BONNI_HOST_PROJECT_ROOT:?start-runtime.sh muss BONNI_HOST_PROJECT_ROOT absolut setzen}:${BONNI_HOST_PROJECT_ROOT:?start-runtime.sh muss BONNI_HOST_PROJECT_ROOT absolut setzen}:ro
       - ${BONNI_RUNTIME_ENV_FILE:?start-runtime.sh muss BONNI_RUNTIME_ENV_FILE absolut setzen}:${BONNI_RUNTIME_ENV_FILE:?start-runtime.sh muss BONNI_RUNTIME_ENV_FILE absolut setzen}:ro
       - ${BONNI_HOST_RUNTIME_ROOT:?start-runtime.sh muss BONNI_HOST_RUNTIME_ROOT absolut setzen}/storage:/var/lib/bonni-core/storage:ro
+      - ${BONNI_HOST_PROJECT_ROOT}/UPDATE:/var/lib/bonni-core/UPDATE:ro
       - update_runner_outbox:/run/bonni-update/ipc
       - update_runner_inbox:/run/bonni-update/ipc/requests
       - update_runner_private:/var/lib/bonni-update-runner
@@ -636,7 +652,7 @@ services:
       - update_rollback_snapshots:/var/lib/bonni-rollback-snapshots:ro
       - update_rollback_results:/var/lib/bonni-rollback-results:ro
       - update_request_secret:/run/secrets/bonni-update:ro
-      - ${BONNI_UPDATE_TRUSTED_KEYS_HOST_DIR:?start-runtime.sh muss BONNI_UPDATE_TRUSTED_KEYS_HOST_DIR absolut setzen}:/run/secrets/bonni-update/trusted-keys:ro
+      - ${BONNI_UPDATE_TRUSTED_KEYS_HOST_DIR:?start-runtime.sh muss BONNI_UPDATE_TRUSTED_KEYS_HOST_DIR absolut setzen}:/run/secrets/bonni-update-trusted-keys:ro
     networks:
       - runtime_update
       - runtime_candidate
@@ -646,7 +662,7 @@ services:
         - CMD
         - node
         - -e
-        - "const fs=require('fs');const p='/run/bonni-update/ipc/heartbeat.json';const v=JSON.parse(fs.readFileSync(p,'utf8'));const age=Date.now()-Date.parse(v.updatedAt);process.exit(v.schemaVersion===1&&v.runnerVersion==='0.3.0'&&Number.isFinite(age)&&age>=-300000&&age<=15000?0:1)"
+        - "const fs=require('fs');const p='/run/bonni-update/ipc/heartbeat.json';const v=JSON.parse(fs.readFileSync(p,'utf8'));const age=Date.now()-Date.parse(v.updatedAt);process.exit(v.schemaVersion===1&&v.runnerVersion==='0.5.0'&&Number.isFinite(age)&&age>=-300000&&age<=15000?0:1)"
       interval: 5s
       timeout: 3s
       retries: 6

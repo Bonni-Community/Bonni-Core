@@ -1,3 +1,4 @@
+import {verifyBuildAuthorization} from "../../../src/system/update-runner/build-authorization.mjs";
 import crypto, { type KeyObject } from "node:crypto";
 
 import { releaseSignatureBytes } from "./canonical-release.js";
@@ -119,7 +120,12 @@ export function verifyReleaseManifest(
     return { manifest, verified: false, unsignedDevelopment: true, keyId: null };
   }
 
-  const keyInput = trustedKey(options.trustedKeys, manifest.signature.keyId);
+  const keyInput = manifest.buildAuthorization
+    ? verifyBuildAuthorization(manifest.buildAuthorization, {trustedKeys: options.trustedKeys,
+      version: manifest.version, product: manifest.product, channel: manifest.channel,
+      keyId: manifest.signature.keyId, now: options.now || new Date(),
+      issuedAt: manifest.issuedAt, expiresAt: manifest.expiresAt})
+    : trustedKey(options.trustedKeys, manifest.signature.keyId);
   if (!keyInput) throw new Error("UNTRUSTED_RELEASE_KEY");
   const publicKey = asEd25519PublicKey(keyInput);
   const signature = decodeCanonicalEd25519Signature(manifest.signature.value);

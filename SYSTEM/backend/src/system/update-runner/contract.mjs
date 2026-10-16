@@ -1,3 +1,4 @@
+import {parseBuildAuthorization} from "./build-authorization.mjs";
 import path from "node:path";
 
 const IDENTIFIER = /^[a-zA-Z0-9][a-zA-Z0-9._-]{7,127}$/;
@@ -144,7 +145,7 @@ export function validateReleaseManifest(input) {
   const release = record(input, "release");
   exactKeys(release, [
     "schemaVersion", "product", "channel", "version", "artifact", "migration", "issuedAt", "expiresAt",
-    "minimumRunnerVersion", "releaseNotes", "signature",
+    "minimumRunnerVersion", "releaseNotes", "signature", "buildAuthorization",
   ], "release");
   if (release.schemaVersion !== 2 || release.product !== "bonni-core") throw new Error("Ungültige Release-Identität.");
   if (!["stable", "beta", "nightly"].includes(release.channel)) throw new Error("release.channel ist ungültig.");
@@ -175,7 +176,8 @@ export function validateReleaseManifest(input) {
   const imageDigest = requiredString(identity.digest, "release.artifact.imageIdentity.digest", /^sha256:[a-f0-9]{64}$/, 71);
   const platform = record(identity.platform, "release.artifact.imageIdentity.platform");
   exactKeys(platform, ["os", "architecture", "variant"], "release.artifact.imageIdentity.platform");
-  if (platform.os !== "linux" || !["amd64", "arm64"].includes(platform.architecture)) throw new Error("Release-Plattform ist ungültig.");
+  if (platform.os !== "linux" || !["amd64", "arm64", "arm"].includes(platform.architecture)) throw new Error("Release-Plattform ist ungültig.");
+  if (platform.architecture === "arm" && platform.variant !== "v7") throw new Error("Nur ARMv7 wird unterstützt.");
   if (platform.variant !== undefined) requiredString(platform.variant, "release platform.variant", /^[A-Za-z0-9._-]{1,32}$/, 32);
 
   const migration = record(release.migration, "release.migration");
@@ -248,6 +250,7 @@ export function validateReleaseManifest(input) {
     issuedAt: issuedAt.text,
     expiresAt: expiresAt.text,
     minimumRunnerVersion,
+    ...(release.buildAuthorization !== undefined ? {buildAuthorization: parseBuildAuthorization(release.buildAuthorization)} : {}),
     ...(releaseNotes ? { releaseNotes } : {}),
     ...(signature ? { signature } : {}),
   };
@@ -286,8 +289,8 @@ export function validateUpdateRunnerRequest(input, options = {}) {
     (!release.migration.required && release.migration.strategy === "none")
     || (release.migration.required && release.migration.strategy === "expand-contract")
   );
-  if (options.enforceInstallPolicy !== false && !onlineMigrationAllowed) {
-    throw new Error("Automatische Updates erlauben nur migration:none oder ausdrücklich rückwärtskompatible expand-contract-Migrationen; offline/contract bleibt fail-closed gesperrt.");
+  if (options.enforceInstallPolicy !== false && !(onlineMigrationAllowed || (release.migration.required && release.migration.strategy === "offline" && compareStrictSemVer(release.minimumRunnerVersion, "0.4.0") >= 0))) {
+    throw new Error("Automatische Updates erlauben nur migration:none oder ausdrücklich rückwärtskompatible expand-contract-Migrationen; Wartungsinstallationen benötigen mindestens Runner 0.4.0.");
   }
 
   let auth;

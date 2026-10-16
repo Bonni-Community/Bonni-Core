@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
+import { validateDockerSaveOciLayout } from "./archive-layout.mjs";
 
 const MAX_LIST_BYTES = 2 * 1024 * 1024;
 const MAX_MANIFEST_BYTES = 256 * 1024;
@@ -27,6 +28,7 @@ const CORE_FORBIDDEN_ROOTS = Object.freeze([
   "app/bridge",
 ]);
 const CORE_ALLOWED_APP_ROOTS = new Set([
+  "app-install-trust.json",
   "addons",
   "app",
   "apps",
@@ -141,19 +143,21 @@ export function parseDockerArchiveManifestEntry(input) {
     return tag;
   });
   const configPath = String(entry.Config || "").replace(/^\.\//u, "");
-  const configMatch = /^([a-f0-9]{64})\.json$/u.exec(configPath);
+  const configMatch = /^(?:([a-f0-9]{64})\.json|blobs\/sha256\/([a-f0-9]{64}))$/u.exec(configPath);
   if (!configMatch) throw new Error("RELEASE_ARCHIVE_CONFIG_PATH_INVALID");
   if (!Array.isArray(entry.Layers) || entry.Layers.length < 1 || entry.Layers.length > 256) {
     throw new Error("RELEASE_ARCHIVE_LAYERS_INVALID");
   }
   const layers = entry.Layers.map((layer) => normalizeSafeTarPath(layer, "RELEASE_ARCHIVE_LAYER_PATH_INVALID"));
-  if (new Set(layers).size !== layers.length || layers.some((layer) => !/(?:^|\/)layer\.tar$/u.test(layer))) {
+  const blobLayout = Boolean(configMatch[2]);
+  if (new Set(layers).size !== layers.length || layers.some((layer) => blobLayout
+    ? !/^blobs\/sha256\/[a-f0-9]{64}$/u.test(layer) : !/(?:^|\/)layer\.tar$/u.test(layer))) {
     throw new Error("RELEASE_ARCHIVE_LAYERS_INVALID");
   }
   return {
     tags: validatedTags,
     configPath,
-    configDigest: `sha256:${configMatch[1]}`,
+    configDigest: `sha256:${configMatch[1] || configMatch[2]}`,
     layers,
   };
 }
@@ -210,18 +214,24 @@ function normalizeArchiveEntry(entry) {
   return String(entry || "").replace(/\r$/u, "").replace(/^\.\//u, "");
 }
 
-function normalizeSafeTarPath(value, errorCode = "RELEASE_ARCHIVE_ENTRY_PATH_INVALID") {
-  const normalized = normalizeArchiveEntry(value).replace(/\/$/u, "");
+function normalizeSafeTarPath(value, errorCode = "RELEASE_ARCHIVE_ENTRY_PATH_INVALID", options = {}) {
+  // Linux layer member names are parsed in memory, never extracted to the host.
+  // Debian multiarch metadata legitimately contains colons (libc6:amd64.list).
+  // Keep outer archive references strict and reject drive paths in either mode.
+  const raw = String(value ?? "");
+  if (options.rootDirectory && (raw === "." || raw === "./")) return ".";
+  const normalized = raw.replace(/^\.\//u, "").replace(/\/$/u, "");
   if (
     !normalized
     || normalized.startsWith("/")
     || normalized.includes("\\")
-    || normalized.includes(":")
+    || (!options.linuxLayer && normalized.includes(":"))
+    || /^[A-Za-z]:/u.test(normalized)
     || /[\u0000-\u001f\u007f]/u.test(normalized)
     || normalized.split("/").some((segment) => !segment || segment === "." || segment === "..")
     || Buffer.byteLength(normalized, "utf8") > 65_535
   ) {
-    throw new Error(errorCode);
+    throw new Error(`${errorCode}: ${JSON.stringify(raw.slice(0, 180))}`);
   }
   return normalized;
 }
@@ -313,7 +323,7 @@ async function assertZeroTail(handle, start, end) {
   }
 }
 
-async function walkTarRegion(handle, { start = 0, size, onEntry }) {
+async function walkTarRegion(handle, { start = 0, size, onEntry, linuxLayer = false, context = "outer" }) {
   const end = start + size;
   if (!Number.isSafeInteger(start) || !Number.isSafeInteger(size) || size < TAR_BLOCK_BYTES || end < start) {
     throw new Error("RELEASE_ARCHIVE_TAR_INVALID");
@@ -379,12 +389,21 @@ async function walkTarRegion(handle, { start = 0, size, onEntry }) {
       cursor = dataOffset + paddedSize;
       continue;
     }
-    const name = normalizeSafeTarPath(pendingPax.path || pendingLongName || headerName);
     if (pendingPax.size !== undefined && !/^(?:0|[1-9]\d*)$/u.test(pendingPax.size)) {
       throw new Error("RELEASE_ARCHIVE_TAR_PAX_INVALID");
     }
     const entrySize = pendingPax.size === undefined ? rawSize : Number(pendingPax.size);
     if (!Number.isSafeInteger(entrySize) || entrySize !== rawSize) throw new Error("RELEASE_ARCHIVE_TAR_PAX_INVALID");
+    const memberPath = pendingPax.path ?? pendingLongName ?? headerName;
+    let name;
+    try {
+      name = normalizeSafeTarPath(memberPath, "RELEASE_ARCHIVE_ENTRY_PATH_INVALID", {
+        linuxLayer,
+        rootDirectory: linuxLayer && type === "5" && entrySize === 0,
+      });
+    } catch (error) {
+      throw new Error(`${error.message}; ${context}; offset=${cursor - start}`, { cause: error });
+    }
     await onEntry({
       name,
       type,
@@ -410,10 +429,12 @@ function parseImageConfig(input) {
   if (!config || typeof config !== "object" || Array.isArray(config)) {
     throw new Error("RELEASE_ARCHIVE_CONFIG_INVALID");
   }
+  assertNoPrivateKeyJson(config, "image-config");
   const architecture = String(config.architecture || "");
   const osName = String(config.os || "");
   const variant = config.variant === undefined ? undefined : String(config.variant);
-  if (osName !== "linux" || !["amd64", "arm64"].includes(architecture)) {
+  if (osName !== "linux" || !["amd64", "arm64", "arm"].includes(architecture)
+    || (architecture === "arm" && variant !== "v7")) {
     throw new Error("RELEASE_ARCHIVE_PLATFORM_INVALID");
   }
   if (variant !== undefined && !/^[A-Za-z0-9._-]{1,64}$/u.test(variant)) {
@@ -475,6 +496,20 @@ async function assertNoPrivateKeyContents(handle, entry) {
 function assertNoPrivateKeyBuffer(buffer, pathName) {
   if (PRIVATE_KEY_MARKER_PATTERN.test(buffer.toString("utf8"))) {
     throw new Error(`CORE_RELEASE_PRIVATE_KEY_MATERIAL_FOUND: ${pathName}`);
+  }
+}
+
+function assertNoPrivateKeyJson(value, pathName) {
+  // JSON escapes line breaks. Inspect decoded strings as well as raw bytes.
+  const pending = [value];
+  while (pending.length) {
+    const current = pending.pop();
+    if (typeof current === "string" && PRIVATE_KEY_MARKER_PATTERN.test(current)) {
+      throw new Error(`CORE_RELEASE_PRIVATE_KEY_MATERIAL_FOUND: ${pathName}`);
+    }
+    if (current && typeof current === "object") {
+      for (const child of Object.values(current)) pending.push(child);
+    }
   }
 }
 
@@ -720,6 +755,7 @@ async function validateCoreLicenseVersionTree(handle, finalEntries, options) {
 function expectedOuterRegularEntries(parsed) {
   const allowed = new Set(["manifest.json", "repositories", parsed.configPath, ...parsed.layers]);
   for (const layer of parsed.layers) {
+    if (layer.startsWith("blobs/sha256/")) continue;
     const parent = layer.split("/").slice(0, -1).join("/");
     if (parent) {
       allowed.add(`${parent}/VERSION`);
@@ -773,21 +809,6 @@ export async function inspectCoreDockerArchivePayload(archivePath, options = {})
       "RELEASE_ARCHIVE_MANIFEST_INVALID",
     );
     const parsed = parseDockerArchiveManifestEntry(manifestContents.toString("utf8"));
-    const allowedOuter = expectedOuterRegularEntries(parsed);
-    for (const entry of outerEntries.values()) {
-      if (["0", "\0"].includes(entry.type) && !allowedOuter.has(entry.name)) {
-        throw new Error(`RELEASE_ARCHIVE_UNEXPECTED_ENTRY: ${entry.name}`);
-      }
-      if (
-        ["0", "\0"].includes(entry.type)
-        && !parsed.layers.includes(entry.name)
-      ) {
-        if (PRIVATE_KEY_FILE_PATTERN.test(entry.name.split("/").at(-1) || "")) {
-          throw new Error(`CORE_RELEASE_PRIVATE_KEY_FILE_FOUND: ${entry.name}`);
-        }
-        await assertNoPrivateKeyContents(handle, entry);
-      }
-    }
     const configEntry = outerEntries.get(parsed.configPath);
     if (!configEntry || !["0", "\0"].includes(configEntry.type)) {
       throw new Error("RELEASE_ARCHIVE_CONFIG_MISSING_OR_DUPLICATE");
@@ -804,6 +825,34 @@ export async function inspectCoreDockerArchivePayload(archivePath, options = {})
     if (actualConfigDigest !== parsed.configDigest) throw new Error("RELEASE_ARCHIVE_CONFIG_DIGEST_MISMATCH");
     const imageConfig = parseImageConfig(configBytes);
     if (imageConfig.diffIds.length !== parsed.layers.length) throw new Error("RELEASE_ARCHIVE_LAYER_COUNT_MISMATCH");
+    const allowedOuter = expectedOuterRegularEntries(parsed);
+    if (parsed.configPath.startsWith("blobs/sha256/")) {
+      const metadata = await validateDockerSaveOciLayout({
+        parsed, imageConfig, outerEntries,
+        readJson: async (name) => {
+          const entry = outerEntries.get(name);
+          if (!entry || !["0", "\0"].includes(entry.type)) throw new Error("RELEASE_ARCHIVE_OCI_METADATA_MISSING");
+          const bytes = await readRegion(handle, entry.dataOffset, entry.size, MAX_CONFIG_BYTES, "RELEASE_ARCHIVE_OCI_METADATA_TOO_LARGE");
+          let value;
+          try { value = JSON.parse(bytes.toString("utf8")); }
+          catch { throw new Error("RELEASE_ARCHIVE_OCI_METADATA_INVALID"); }
+          assertNoPrivateKeyJson(value, name);
+          return { bytes, value };
+        },
+      });
+      for (const name of metadata) allowedOuter.add(name);
+    }
+    for (const entry of outerEntries.values()) {
+      if (["0", "\0"].includes(entry.type) && !allowedOuter.has(entry.name)) {
+        throw new Error(`RELEASE_ARCHIVE_UNEXPECTED_ENTRY: ${entry.name}`);
+      }
+      if (["0", "\0"].includes(entry.type) && !parsed.layers.includes(entry.name)) {
+        if (PRIVATE_KEY_FILE_PATTERN.test(entry.name.split("/").at(-1) || "")) {
+          throw new Error(`CORE_RELEASE_PRIVATE_KEY_FILE_FOUND: ${entry.name}`);
+        }
+        await assertNoPrivateKeyContents(handle, entry);
+      }
+    }
     for (const [label, expected] of [
       ["org.bonni.product", "bonni-core"],
       ["org.opencontainers.image.version", version],
@@ -822,7 +871,9 @@ export async function inspectCoreDockerArchivePayload(archivePath, options = {})
       if (!layer || !["0", "\0"].includes(layer.type) || layer.size < TAR_BLOCK_BYTES) {
         throw new Error(`RELEASE_ARCHIVE_LAYER_MISSING: ${layerName}`);
       }
-      if (await sha256Region(handle, layer.dataOffset, layer.size) !== imageConfig.diffIds[index]) {
+      const layerDigest = await sha256Region(handle, layer.dataOffset, layer.size);
+      if (layerDigest !== imageConfig.diffIds[index]
+        || (layerName.startsWith("blobs/sha256/") && layerDigest !== `sha256:${layerName.slice("blobs/sha256/".length)}`)) {
         throw new Error(`RELEASE_ARCHIVE_LAYER_DIGEST_MISMATCH: ${layerName}`);
       }
       const entries = [];
@@ -830,6 +881,8 @@ export async function inspectCoreDockerArchivePayload(archivePath, options = {})
       await walkTarRegion(handle, {
         start: layer.dataOffset,
         size: layer.size,
+        linuxLayer: true,
+        context: `layer=${index + 1}`,
         onEntry: async (entry) => {
           if (layerPaths.size >= 200_000 || totalLayerEntries >= 500_000 || layerPaths.has(entry.name)) {
             throw new Error("RELEASE_ARCHIVE_LAYER_ENTRY_INVALID");

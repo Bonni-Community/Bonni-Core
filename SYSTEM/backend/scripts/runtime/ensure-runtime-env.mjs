@@ -118,6 +118,10 @@ if (!hasDefinition("BONNI_TENANT_ID")) {
 const specifications = [
   { key: "MASTER_KEY", minimum: 32, bytes: 48 },
   { key: "JWT_SECRET", minimum: 32, bytes: 48 },
+  // Unlike a new transport secret, this key may already protect module data.
+  // Generate only for a proven fresh installation. Existing installations
+  // must retain/recover their original key; never silently replace it.
+  { key: "MODULE_PRIVATE_DATA_SECRET", minimum: 43, bytes: 48 },
   { key: "POSTGRES_PASSWORD", minimum: 24, bytes: 36 },
   { key: "SANDBOX_PASSWORD", minimum: 16, bytes: 24 },
   { key: "BONNI_GATEWAY_INTERNAL_SECRET", minimum: 32, bytes: 48, initializeWhenMissing: true },

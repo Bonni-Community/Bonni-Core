@@ -10,6 +10,8 @@ RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-ins
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /build
 RUN curl --fail --show-error --location --proto '=https' --tlsv1.2 \
+    --retry 5 --retry-all-errors --retry-delay 5 --retry-max-time 900 \
+    --connect-timeout 30 --max-time 300 \
       https://ftp.postgresql.org/pub/source/v16.14/postgresql-16.14.tar.bz2 -o postgres.tar.bz2 \
     && echo 'f6d077142737920858ce958ccdb75c6ee137a63b5b0853c70693d401ac7e3471  postgres.tar.bz2' | sha256sum -c - \
     && tar -xjf postgres.tar.bz2 --strip-components=1 \

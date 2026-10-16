@@ -96,5 +96,9 @@ export async function startCoreUpdateInstallationController(req: Request, res: R
 }
 
 export async function updateCoreUpdateSettingsController(req: Request, res: Response) {
-  res.json(await updateCoreUpdateSettings(req.body || {}));
+  try { res.json(await updateCoreUpdateSettings(req.body || {})); }
+  catch (error) {
+    if ((error as {statusCode?:number}).statusCode !== 400) throw error;
+    res.status(400).json({ok:false,error:error instanceof Error ? error.message : "Ungültige Update-Einstellungen."});
+  }
 }

@@ -1387,3 +1387,12 @@
     width: min(260px, 100%);
   }
 }
+
+/* Available app updates remain part of the usual app card and detail page. */
+.store-package-card__icon.has-app-update { position: relative; margin-top: 12px; }
+.store-app-update-arrow { position: absolute; right: -4px; bottom: -5px; display: grid; place-items: center; width: 23px; height: 23px; border-radius: 50%; background: #2583d8; color: #fff; font-size: 20px; box-shadow: 0 0 0 2px #111827; }
+.store-app-update-version { position: absolute; right: -12px; top: -15px; max-width: 74px; overflow-wrap: anywhere; padding: 2px 5px; border-radius: 5px; background: #174d7c; color: #fff; font-size: 10px; line-height: 1.25; text-align: right; }
+.store-app-update-accessible { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+.store-app-version-change { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; }
+.store-app-version-change strong { display: block; }
+.store-app-release-notes { white-space: pre-wrap; overflow-wrap: anywhere; }

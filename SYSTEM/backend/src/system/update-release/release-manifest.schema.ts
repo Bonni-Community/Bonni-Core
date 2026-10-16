@@ -1,3 +1,4 @@
+import {parseBuildAuthorization} from "../../../src/system/update-runner/build-authorization.mjs";
 import { z } from "zod";
 
 import { isStrictSemVer, parseStrictSemVer } from "./semver.js";
@@ -75,9 +76,9 @@ export const releaseImageIdentitySchema = z.object({
   digest: z.string().regex(/^sha256:[a-f0-9]{64}$/, "Ungültiger OCI-Image-Digest."),
   platform: z.object({
     os: z.literal("linux"),
-    architecture: z.enum(["amd64", "arm64"]),
+    architecture: z.enum(["amd64", "arm64", "arm"]),
     variant: z.string().regex(/^[A-Za-z0-9._-]{1,32}$/).optional(),
-  }).strict(),
+  }).strict().refine(p => p.architecture !== "arm" || p.variant === "v7", "Nur ARMv7 wird unterstützt."),
 }).strict();
 
 export const releaseMigrationSchema = z.object({
@@ -114,6 +115,7 @@ export const releaseManifestPayloadSchema = z.object({
   issuedAt: utcTimestampSchema,
   expiresAt: utcTimestampSchema,
   minimumRunnerVersion: strictSemVerSchema,
+  buildAuthorization: z.unknown().optional().transform(value => value === undefined ? undefined : parseBuildAuthorization(value)),
   releaseNotes: z.object({
     title: z.string().min(1).max(160),
     descriptions: z.record(z.string().regex(/^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8})*$/), z.string().min(1).max(20_000)).optional(),

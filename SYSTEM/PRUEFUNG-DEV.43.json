@@ -1,0 +1,77 @@
+{
+  "schema": "bonni.linux-archive-path-validation/v1",
+  "date": "2026-10-16",
+  "coreSourceVersion": "0.1.20+h-DEV.43",
+  "completeSource": true,
+  "includes": "DEV.42 and predecessors",
+  "observedFailure": "RELEASE_ARCHIVE_ENTRY_PATH_INVALID in layer walkTarRegion",
+  "actualFailingArchiveAvailable": false,
+  "actualFailingMemberPathKnown": false,
+  "reproduction": [
+    {
+      "name": "multiarch-colon",
+      "bytes": 2048,
+      "before": "RELEASE_ARCHIVE_ENTRY_PATH_INVALID",
+      "after": "passed"
+    },
+    {
+      "name": "relative-root-directory",
+      "bytes": 1536,
+      "before": "RELEASE_ARCHIVE_ENTRY_PATH_INVALID",
+      "after": "passed"
+    },
+    {
+      "name": "2084-local-Ubuntu-dpkg-metadata-files",
+      "bytes": 12851200,
+      "before": "RELEASE_ARCHIVE_ENTRY_PATH_INVALID",
+      "after": "passed"
+    }
+  ],
+  "tests": {
+    "tests": 86,
+    "pass": 84,
+    "fail": 0,
+    "skipped": 2
+  },
+  "testLogSha256": "3b8c2afb43a409428973ea5f6046e741b7c10f78be833932626b4f2caa7dd1f1",
+  "changed": [
+    "Linux layer-only colon support",
+    "Empty . and ./ directory support in layers",
+    "Keep outer/member-reference paths strict",
+    "Reject empty PAX/GNU path overrides and trailing control characters",
+    "Bounded escaped member path, layer number and offset in path diagnostics",
+    "Source markers advanced to DEV.43"
+  ],
+  "verified": [
+    "Old and modern Docker-save layouts",
+    "AMD64, ARM64 and ARMv7 identities",
+    "USTAR prefix, PAX and GNU long name paths",
+    "Traversal/absolute/drive/control/duplicate paths rejected",
+    "Invalid paths prevent release output",
+    "Core-only and private-material checks retained",
+    "preparePublicRelease/create-release with ephemeral test build certificate and Ed25519 verification",
+    "Signed archive bytes unchanged",
+    "2084 real local Ubuntu dpkg metadata files in test layer"
+  ],
+  "compileCommand": "node node_modules/typescript/bin/tsc --ignoreConfig --types node --target ES2022 --module NodeNext --moduleResolution NodeNext --strict --esModuleInterop --skipLibCheck --allowJs --rootDir src --outDir dist --ignoreDeprecations 6.0 src/system/update-release/index.ts",
+  "unchanged": [
+    "Runtime recovery and persistence gates",
+    "Production signing authority",
+    "Original archive bytes"
+  ],
+  "skipped": [
+    "Real controller process test: executor PID namespace differs from mounted /proc",
+    "Prebuilt frontend: source-only package"
+  ],
+  "notExecuted": [
+    "Actual pinned base layer verification: image blob download cancelled by execution environment",
+    "Docker/QEMU runtime",
+    "GitHub Actions build",
+    "Native Windows installation"
+  ],
+  "localMetadataTarSha256": "c1f045623c6d85be61c082492287937e7ee15ffda37ad2fde5fcd3aa838743aa",
+  "references": [
+    "https://github.com/opencontainers/image-spec/blob/main/layer.md",
+    "https://manpages.debian.org/bookworm/dpkg/dpkg-query.1.en.html"
+  ]
+}

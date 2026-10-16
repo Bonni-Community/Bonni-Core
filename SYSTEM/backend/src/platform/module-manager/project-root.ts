@@ -45,6 +45,10 @@ function containsModulePackages(candidate: string) {
  */
 export function resolveBonniProjectRoot() {
   const modulePackageRoot = process.env.BONNI_MODULE_PACKAGE_ROOT?.trim();
+  if (modulePackageRoot) {
+    if (!path.isAbsolute(modulePackageRoot)) throw new Error("BONNI_MODULE_PACKAGE_ROOT_ABSOLUTE_REQUIRED");
+    return path.resolve(modulePackageRoot);
+  }
   const configuredRoot = process.env.BONNI_PROJECT_ROOT?.trim();
   const cwd = process.cwd();
   const candidates = [

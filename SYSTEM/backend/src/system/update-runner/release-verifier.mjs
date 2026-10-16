@@ -1,3 +1,4 @@
+import {verifyBuildAuthorization} from "./build-authorization.mjs";
 import crypto from "node:crypto";
 import { createReadStream } from "node:fs";
 import fs from "node:fs/promises";
@@ -41,7 +42,9 @@ export async function verifySignedRelease({ release, artifactPath, trustedKeys, 
   if (timestamp - 5 * 60_000 > Date.parse(release.expiresAt)) throw new Error("RELEASE_EXPIRED");
   if (Date.parse(release.expiresAt) - Date.parse(release.issuedAt) > 90 * 24 * 60 * 60_000) throw new Error("RELEASE_VALIDITY_WINDOW_TOO_LONG");
   if (!release.signature) throw new Error("UNSIGNED_RELEASE_FORBIDDEN_IN_PRODUCTION");
-  const publicKeyInput = trustedKeys instanceof Map ? trustedKeys.get(release.signature.keyId) : trustedKeys?.[release.signature.keyId];
+  const publicKeyInput = release.buildAuthorization
+    ? verifyBuildAuthorization(release.buildAuthorization, {trustedKeys,version:release.version,product:release.product,channel:release.channel,keyId:release.signature.keyId,now,issuedAt:release.issuedAt,expiresAt:release.expiresAt})
+    : trustedKeys instanceof Map ? trustedKeys.get(release.signature.keyId) : trustedKeys?.[release.signature.keyId];
   if (!publicKeyInput) throw new Error("UNTRUSTED_RELEASE_KEY");
   const publicKey = parseEd25519SpkiPublicKey(publicKeyInput);
   const valid = crypto.verify(null, canonicalReleasePayload(release), publicKey, Buffer.from(release.signature.value, "base64"));

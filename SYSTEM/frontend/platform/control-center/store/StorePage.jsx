@@ -1,5 +1,5 @@
 import AppInstallPanel from "./AppInstallPanel.jsx";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import {
   activateControlCenterRuntimeModule,
@@ -398,7 +398,11 @@ function StorePackageCard({ module, language, selected, onSelect, onInstall, onA
   return (
     <article className={`store-package-card ${statusClass(module)} ${selected ? "is-selected" : ""}`}>
       <button type="button" className="store-package-card__main" onClick={() => onSelect(module)}>
-        <span className="store-package-card__icon" aria-hidden="true">{packageIcon(module)}</span>
+        <span className={`store-package-card__icon${module.appUpdate ? " has-app-update" : ""}`} aria-hidden="true">
+          {packageIcon(module)}
+          {module.appUpdate ? <><span className="store-app-update-arrow">↑</span><small className="store-app-update-version">{module.appUpdate.version}</small></> : null}
+        </span>
+        {module.appUpdate ? <span className="store-app-update-accessible">Neue Version {module.appUpdate.version} verfügbar.</span> : null}
         <span className="store-package-card__body">
           <span className="store-package-card__topline">
             <strong>{titleOf(module, language)}</strong>
@@ -863,7 +867,7 @@ function StorePluginFeedback({ module, language, support }) {
   );
 }
 
-function StoreDetail({ open, module, language, details, plan, result, busy, token, onClose, onLoadPlan, onInstall, onActivate, onDeactivate, onHealthcheck, onRollback }) {
+function StoreDetail({ open, module, language, details, plan, result, busy, token, onClose, onLoadPlan, onInstall, onActivate, onDeactivate, onHealthcheck, onRollback, onAppUpdate, appOperation }) {
   const moduleKey = module ? keyOf(module) : "";
   const [activeTab, setActiveTab] = useState("description");
   const [guideLanguage, setGuideLanguage] = useState("auto");
@@ -903,6 +907,19 @@ function StoreDetail({ open, module, language, details, plan, result, busy, toke
           </div>
           <button type="button" className="store-detail__close" onClick={onClose} aria-label="Details schließen">×</button>
         </header>
+
+        {appOperation?.message ? <p role="status">{appOperation.message}</p> : null}
+        {appOperation?.error ? <p role="alert">{appOperation.error}</p> : null}
+        {module.appUpdate ? <section className="store-detail-block store-app-update-detail" aria-label="Verfügbare Aktualisierung">
+          <h3>Aktualisierung verfügbar</h3>
+          <p className="store-app-version-change"><span>Aktuell <strong>{module.appUpdate.installedVersion}</strong></span><span aria-hidden="true">→</span><span>Neueste Version <strong>{module.appUpdate.version}</strong></span></p>
+          {module.appUpdate.channel==='dev' ? <p>DEV – Entwicklungsversion, noch nicht abschließend geprüft.</p> : null}
+          <h4>Das hat sich geändert</h4>
+          <p className="store-app-release-notes">{module.appUpdate.releaseNotes?.trim() || "Für diese Version wurde keine Änderungsbeschreibung veröffentlicht."}</p>
+          <small>{module.appUpdate.source==='offline' ? "Paket im UPDATE-Ordner" : "Veröffentlichung auf GitHub"}</small>
+          {module.appUpdate.error==='APP_CORE_TOO_OLD' ? <p>Benötigt Bonni Core {module.appUpdate.minimumCoreVersion} oder neuer.</p> : null}
+          <div className="store-detail-actions"><button type="button" className="is-primary" disabled={Boolean(busy)||appOperation?.busy||!!module.appUpdate.error} onClick={()=>onAppUpdate(module.appUpdate)}>{appOperation?.busy ? "Bitte warten …" : "Update installieren"}</button></div>
+        </section> : null}
 
         {isTwoFactorPlugin ? (
           <nav className="store-detail-tabs" role="tablist" aria-label="2FA-Plugin">
@@ -1010,6 +1027,13 @@ function StoreDetail({ open, module, language, details, plan, result, busy, toke
 export default function StorePage({ token }) {
   const [payload, setPayload] = useState(null);
   const [packages, setPackages] = useState([]);
+  const [appCheck,setAppCheck]=useState({availableUpdates:[]});
+  const [appOperation,setAppOperation]=useState({busy:false,message:'',error:''});
+  const appInstallerRef=useRef(null);
+  const storePackages=useMemo(()=>packages.map(module=>{
+    const appUpdate=(appCheck.availableUpdates||[]).find(item=>keyOf(module)==='app.'+item.appId.toLowerCase());
+    return appUpdate?{...module,appUpdate,updateAvailable:true}:module;
+  }),[packages,appCheck]);
   const [selectedKey, setSelectedKey] = useState("");
   const [detailOpen, setDetailOpen] = useState(false);
   const [details, setDetails] = useState(null);
@@ -1031,12 +1055,12 @@ export default function StorePage({ token }) {
     [languageMode],
   );
 
-  const counts = useMemo(() => buildCounts(packages), [packages]);
+  const counts = useMemo(() => buildCounts(storePackages), [storePackages]);
   const visiblePackages = useMemo(() => {
-    const filtered = packages.filter((module) => matchesFilter(module, filter, storeLanguage) && matchesSearch(module, search, storeLanguage));
+    const filtered = storePackages.filter((module) => matchesFilter(module, filter, storeLanguage) && matchesSearch(module, search, storeLanguage));
     return sortPackages(filtered, sortMode, storeLanguage);
-  }, [packages, filter, search, sortMode, storeLanguage]);
-  const selectedPackage = packages.find((module) => keyOf(module) === selectedKey) || null;
+  }, [storePackages, filter, search, sortMode, storeLanguage]);
+  const selectedPackage = storePackages.find((module) => keyOf(module) === selectedKey) || null;
 
   async function loadPackages({ preserveSelection = true } = {}) {
     setLoading(true);
@@ -1138,14 +1162,12 @@ export default function StorePage({ token }) {
         <div>
           <p className="store-eyebrow">Control Center</p>
           <h1>Store</h1>
-          <p>Pakete aus Manifest, Registry und Package Manager. Die UI bereitet nur auf, was das Manifest liefert.</p>
+          <p>Apps verwalten und verfügbare Aktualisierungen prüfen.</p>
         </div>
-        <button type="button" onClick={() => loadPackages({ preserveSelection: true })} disabled={loading || Boolean(busy)}>
-          {loading ? "Lade..." : "Store aktualisieren"}
-        </button>
+
       </header>
 
-      <AppInstallPanel token={token} onInstalled={() => loadPackages({preserveSelection:true})} />
+      <AppInstallPanel ref={appInstallerRef} token={token} onChecked={setAppCheck} onOperation={setAppOperation} onRefresh={() => loadPackages({preserveSelection:true})} onInstalled={() => loadPackages({preserveSelection:true})} />
       <SummaryBar counts={counts} />
 
       {error ? <div className="store-alert store-alert--error">{error}</div> : null}
@@ -1201,6 +1223,8 @@ export default function StorePage({ token }) {
             </section>
           )}
           <StoreDetail
+            appOperation={appOperation}
+            onAppUpdate={item=>appInstallerRef.current?.install(item,item.source)}
             open={detailOpen}
             module={selectedPackage}
             language={storeLanguage}

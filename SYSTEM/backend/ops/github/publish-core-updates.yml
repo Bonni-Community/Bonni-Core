@@ -1,0 +1,97 @@
+# Publisher workflow template: install in .github/workflows/ on the default
+# branch. Public downloads on installed servers need no token.
+# Publisher environment bonni-core-release supplies BONNI_CORE_RELEASE_KEY_ID
+# and BONNI_CORE_RELEASE_PRIVATE_KEY (the enrolled Ed25519 RELEASE key).
+# Run only after the container build and tests passed and the release exists.
+name: Publish signed Bonni Core updates
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Published Core version (without v)
+        required: true
+        type: string
+      image_digest:
+        description: Verified multi-platform GHCR sha256 digest
+        required: true
+        type: string
+      architectures:
+        description: Update platforms
+        required: true
+        type: choice
+        default: All
+        options: [All, AMD64, ARM64, ARMv7]
+permissions:
+  contents: read
+concurrency:
+  group: bonni-core-signed-update-${{ inputs.version }}
+  cancel-in-progress: false
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    environment: bonni-core-release
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        architecture: ${{ inputs.architectures == 'All' && fromJSON('["AMD64","ARM64","ARMv7"]') || fromJSON(format('["{0}"]', inputs.architectures)) }}
+    env:
+      VERSION: ${{ inputs.version }}
+      DIGEST: ${{ inputs.image_digest }}
+      ARCH: ${{ matrix.architecture }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+      - name: Compile the Core release verifier
+        working-directory: SYSTEM/backend
+        run: |
+          npm ci
+          npm run build
+      - name: Export one verified platform image
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(\+[a-z])?$ ]]
+          [[ "$DIGEST" =~ ^sha256:[a-f0-9]{64}$ ]]
+          case "$ARCH" in
+            AMD64) platform=linux/amd64; repo=bonni-update/amd64;;
+            ARM64) platform=linux/arm64; repo=bonni-update/arm64;;
+            ARMv7) platform=linux/arm/v7; repo=bonni-update/armv7;;
+            *) exit 2;;
+          esac
+          image="ghcr.io/bonni-community/bonni-core@$DIGEST"
+          docker pull --platform "$platform" "$image"
+          id="$(docker image inspect --format '{{.Id}}' "$image")"
+          label="$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.version"}}' "$id")"
+          [ "$label" = "$VERSION" ]
+          container="$(docker create --entrypoint /bin/true "$id")"
+          trap 'docker rm "$container" >/dev/null 2>&1 || true' EXIT
+          docker cp "$container:/app/APP-INSTALL-TRUST.json" "$RUNNER_TEMP/public-trust.json"
+          docker tag "$id" "$repo:${VERSION//+/-}"
+          docker image save --output "$RUNNER_TEMP/core.tar" "$repo:${VERSION//+/-}"
+      - name: Sign the architecture update
+        env:
+          SIGNING_KEY: ${{ secrets.BONNI_CORE_RELEASE_PRIVATE_KEY }}
+          KEY_ID: ${{ vars.BONNI_CORE_RELEASE_KEY_ID }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          test -n "$SIGNING_KEY"
+          test -n "$KEY_ID"
+          key="$RUNNER_TEMP/bonni-release-key.pem"
+          trap 'rm -f "$key"' EXIT
+          printf '%s\n' "$SIGNING_KEY" > "$key"
+          unset SIGNING_KEY
+          node SYSTEM/backend/scripts/update-release/prepare-public-release.mjs \
+            --archive "$RUNNER_TEMP/core.tar" --version "$VERSION" \
+            --private-key "$key" --key-id "$KEY_ID" \
+            --trust "$RUNNER_TEMP/public-trust.json" --output-dir "$RUNNER_TEMP/update"
+      - name: Upload only missing or changed update assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node SYSTEM/backend/scripts/update-release/upload-public-release.mjs "$RUNNER_TEMP/update" "v$VERSION"

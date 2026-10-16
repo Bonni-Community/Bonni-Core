@@ -1,0 +1,59 @@
+{
+  "schema": "bonni.archive-layout-validation/v1",
+  "date": "2026-10-15",
+  "coreSourceVersion": "0.1.20+h-DEV.42",
+  "completeSource": true,
+  "includes": "DEV.41 and predecessors",
+  "observedFailure": "RELEASE_ARCHIVE_CONFIG_PATH_INVALID during Prepare signed Core updates from the tested images",
+  "actualFailingArchiveAvailable": false,
+  "reproduction": {
+    "previous": "RELEASE_ARCHIVE_CONFIG_PATH_INVALID",
+    "current": "verified",
+    "configPath": "blobs/sha256/de3a2f8c84afdb1d1c8e8e2fd99f93cd4683b688f78c078a05239d0ed0e28fda",
+    "syntheticTar": true
+  },
+  "tests": {
+    "tests": 77,
+    "pass": 75,
+    "fail": 0,
+    "skipped": 2
+  },
+  "testLogSha256": "8395e2d0dfadbe37f84286e3dcae4f9b70232e9056ca827da13e14a94f74974e",
+  "changed": [
+    "Accept legacy and blob paths for Docker-save config and layers",
+    "Bind OCI metadata to exactly one image with identical config, ordered layers and tags",
+    "Validate metadata digests, descriptor sizes, V1 metadata schema/chain, repositories and optional platform",
+    "Reject private key markers in decoded JSON strings",
+    "Source markers advanced to DEV.42"
+  ],
+  "verified": [
+    "Legacy and modern TAR fixtures with real file parsing",
+    "AMD64, ARM64, ARMv7 identities and multilayer fixtures",
+    "Config/layer/metadata tampering, path restrictions, duplicates, symlinks, conflicting tags, foreign payload",
+    "preparePublicRelease and create-release with scoped ephemeral build certificate, Ed25519 signature verification and byte-identical archive"
+  ],
+  "compileCommand": "node node_modules/typescript/bin/tsc --ignoreConfig --types node --target ES2022 --module NodeNext --moduleResolution NodeNext --strict --esModuleInterop --skipLibCheck --allowJs --rootDir src --outDir dist --ignoreDeprecations 6.0 src/system/update-release/index.ts",
+  "unchanged": [
+    "Runtime recovery and persistence gates",
+    "Production signing authority and release approval gates",
+    "Original archive bytes"
+  ],
+  "limitations": [
+    "Uncompressed Docker-save layers only",
+    "One image per archive; no arbitrary multi-image or attestation import"
+  ],
+  "skipped": [
+    "Real controller process test: executor PID namespace differs from mounted /proc",
+    "Prebuilt frontend identity: source-only package"
+  ],
+  "notExecuted": [
+    "Docker/QEMU runtime",
+    "GitHub Actions build",
+    "Native Windows installation"
+  ],
+  "primarySourceFiles": {
+    "moby-classic-save.go": "c0647f2f2678b8e17d287ad6c2f0af0317c4299903debab4d40f49d326aa4abd",
+    "moby-image.go": "937db2805c103aa87cf820e742f25850c2c35dc328eaa202ebcbe9a23bb3da27",
+    "containerd-exporter.go": "ee1517495fd965c45477b0e6a35e511e35b58854625925fc5924f17bfc025474"
+  }
+}

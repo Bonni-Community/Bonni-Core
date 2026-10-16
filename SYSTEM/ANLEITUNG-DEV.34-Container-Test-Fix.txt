@@ -1,0 +1,49 @@
+Bonni Core 0.1.20+h-DEV.34 – Container-Test: EBUSY beim Aufräumen beheben
+Stand: 13.10.2026. Kumulativ auf Basis von DEV.33, einschließlich App-Updateprüfung.
+
+URSACHE
+Der GitHub-Start-/Neustarttest startet einen Aufräumcontainer mit dem temporären
+Projektordner als Bind-Mount. Das bisherige ci-cleanup.mjs entfernte nach den
+inneren Containern und Testdaten auch den eingebundenen Ordner selbst.
+Dieser letzte Schritt scheitert unter Linux mit EBUSY (rmdir).
+Der sichtbare Fehler betrifft den Ordner /tmp/bonni-deployment-ci-...-amd64.
+Er ist kein Hinweis auf ein erneut fehlendes GitHub-Paketrecht.
+
+ÄNDERUNG
+- Der GitHub-Runner legt seinen eindeutigen, zunächst leeren Testordner selbst
+  an. Damit besitzt er den Ordner und kann ihn später ohne sudo entfernen.
+- Der Aufräumcontainer entfernt ausschließlich dessen Inhalt. Den eigenen
+  eingebundenen Ordner selbst löscht er nicht mehr.
+- Nach Beenden des Aufräumcontainers und Compose down entfernt der Runner den
+  leeren Ordner mit rmdir. Verbliebene Daten führen weiter zu einem Fehler;
+  es gibt kein rekursives Löschen des Host-Ordners.
+- Die bestehende Prüfung auf CI-Umgebung, eindeutigen temporären Pfad und
+  zufällige Projektidentität bleibt bestehen. Produktivdaten sind nicht Ziel.
+- Ein Fehler beim inneren Aufräumen verhindert nicht mehr das äußere Compose
+  down. Ein eventuell früher aufgetretener Testfehler bleibt als Hauptfehler
+  erhalten; zusätzliche Aufräumfehler werden ebenfalls ausgegeben.
+- Nach erfolgreichem Aufräumen ist derselbe Pfad für den späteren Offline-
+  Starttest wieder frei. Es wird kein Fehler pauschal ignoriert.
+
+ANWENDEN
+1. Dieses vollständige DEV.34-Paket als neue Core-Quelle verwenden.
+2. Bonni Windows v173 kann weiterverwendet werden; kein weiteres Windows-
+   Update ist für diese Korrektur nötig.
+3. Den Container-Release in Bonni mit der neuen DEV.34-Quelle neu erstellen
+   und die Veröffentlichung erneut starten. Ein bloßer GitHub-Re-run des
+   bisherigen Laufs verwendet weiterhin dessen alten signierten Quellstand.
+4. Wie bisher ist das DEV-ZIP eine Labor-/Bauquelle. Für Produktivbetrieb
+   muss daraus ein signierter Core-/Container-Release erstellt werden.
+
+PRÜFUNG
+8 gezielte Regressionstests erfolgreich: eingebundener Stammordner bleibt
+im Container erhalten; nur dessen Inhalt wird entfernt; Host-Löschung erst
+nach Compose down; Pfad wiederverwendbar; falscher Pfad/Identität abgelehnt;
+Fehler beim inneren Abbau oder beim Löschen behalten Daten/Identität;
+fehlgeschlagenes Stoppen verhindert innere Löschung; vorhandene Restdaten
+verhindern Host-rmdir; ursprünglicher Testfehler bleibt erkennbar.
+JavaScript-Syntax geprüft. Docker-Aufrufe sind in den Tests simuliert; echte
+Dateisystemoperationen erfolgen in eigens angelegten Testverzeichnissen.
+Ein vollständiger GitHub-Bau mit Docker/AMD64/ARM64/ARMv7 wurde hier nicht
+wiederholt. Der Screenshot zeigt nur das Ende des Logs; ob vor dem Aufräumen
+bereits ein anderer Testfehler auftrat, lässt sich daraus nicht feststellen.

@@ -162,7 +162,7 @@ export class DockerCli {
 
   async proxyHealth(fromService, role = "active") {
     const endpoint = role === "candidate" ? "update-probe" : "ready";
-    return this.health(fromService, `http://runtime-proxy/api/health/${endpoint}`);
+    return this.health(fromService, `http://runtime-proxy:8080/api/health/${endpoint}`);
   }
 
   async connectNetwork(network, container, alias) {

@@ -5,6 +5,7 @@ import "./UpdateSettingsPage.css";
 
 export default function UpdateSettingsPage({ token, onBack }) {
   const [settings, setSettings] = useState(null);
+  const [serverTimeZone, setServerTimeZone] = useState("");
   const [releaseSource, setReleaseSource] = useState(null);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
@@ -15,6 +16,7 @@ export default function UpdateSettingsPage({ token, onBack }) {
     fetchCoreUpdateStatus(token)
       .then((payload) => {
         setSettings(payload.settings);
+        setServerTimeZone(payload.serverTimeZone || "");
         setReleaseSource(payload.releaseSource || null);
       })
       .catch((loadError) => setError(loadError?.message || "Einstellungen konnten nicht geladen werden."));
@@ -47,7 +49,7 @@ export default function UpdateSettingsPage({ token, onBack }) {
         <div>
           <span>Feste Updatequelle</span>
           <strong>Bonni-Community/bonni-core</strong>
-          <small>Geprüfte Releasepakete werden später serverseitig von GitHub geladen und nach der Prüfung an UPDATE übergeben.</small>
+          <small>Bonni Core lädt öffentliche, signierte Releases direkt von GitHub nach UPDATE. Ein separater Dienst führt die Installation aus.</small>
         </div>
         <a
           href={releaseSource?.repositoryUrl || "https://github.com/Bonni-Community/bonni-core"}
@@ -57,10 +59,16 @@ export default function UpdateSettingsPage({ token, onBack }) {
       </section>
       {settings ? (
         <div className="cc-update-settings-card">
-          <label><div><strong>Automatisch nach Updates suchen</strong><small>Bonni Core prüft regelmäßig, ob eine neue stabile Version vorhanden ist.</small></div><input type="checkbox" checked={settings.automaticChecks} onChange={(event) => setSettings({ ...settings, automaticChecks: event.target.checked })} /></label>
-          <label><div><strong>Updatepaket automatisch herunterladen</strong><small>Download und Prüfung laufen automatisch; die Installation wird weiterhin bestätigt.</small></div><input type="checkbox" checked={settings.automaticDownload} disabled={!settings.automaticChecks} onChange={(event) => setSettings({ ...settings, automaticDownload: event.target.checked })} /></label>
-          <label><div><strong>Backup vor jeder Installation</strong><small>Diese Sicherheitsprüfung kann nicht abgeschaltet werden.</small></div><input type="checkbox" checked readOnly disabled /></label>
-          <label className="cc-update-settings-select"><div><strong>Installation</strong><small>Das Umschalten erfolgt ausschließlich nach einer Bestätigung durch einen System-Administrator.</small></div><select value="manual" disabled><option value="manual">Nur manuell</option></select></label>
+          <label className="cc-update-settings-select"><div><strong>Update-Automatik</strong><small>Die manuelle Suche und Installation bleiben in jeder Betriebsart verfügbar.</small></div><select aria-label="Update-Automatik" value={settings.mode || (settings.automaticChecks ? "check" : "off")} onChange={event => setSettings({...settings, mode:event.target.value})}>
+            <option value="check">Nur nach Updates suchen</option>
+            <option value="scheduled">Automatisch zur Uhrzeit installieren</option>
+            <option value="off">Automatik ausgeschaltet</option>
+          </select></label>
+          {settings.mode === "scheduled" ? <>
+            <label><div><strong>Tägliche Installationszeit</strong><small>Während der Umschaltung ist Bonni Core kurz nicht verfügbar.</small></div><input aria-label="Tägliche Installationszeit" type="time" required value={settings.scheduleTime || "03:00"} onChange={event => setSettings({...settings, scheduleTime:event.target.value})} /></label>
+            <p>Es gilt die Serverzeit{serverTimeZone ? ` (${serverTimeZone})` : ""}. Sommer- und Winterzeit richten sich nach dem Server. Verpasste Termine werden nicht tagsüber nachgeholt.</p>
+          </> : null}
+          <label><div><strong>Sicherung und Installationsprüfung</strong><small>Vor jedem Wechsel: Rückkehrpunkt erstellen und die neue Version im separaten Backend prüfen.</small></div><input type="checkbox" checked readOnly disabled /></label>
           <footer><span>Updatekanal: Stabil</span><button type="button" onClick={save} disabled={busy}>{busy ? "Speichere …" : "Speichern"}</button></footer>
         </div>
       ) : <p>Lade Einstellungen …</p>}

@@ -19,7 +19,7 @@ import {
 } from "./lifecycle-contract.mjs";
 import { readDockerRuntimeDeactivationIntent } from "../../../scripts/runtime/runtime-mode-exclusion.mjs";
 
-export const UPDATE_RUNNER_VERSION = "0.3.0";
+export const UPDATE_RUNNER_VERSION = "0.5.0";
 const SERVICES = Object.freeze({
   databaseCandidate: "db-candidate",
   candidateBootstrap: "candidate-bootstrap",
@@ -1832,9 +1832,7 @@ export class UpdateRunner {
       const signedReference = imageReference(request.release);
       const loaded = await this.docker.imageIdentity(imageVersionTag(request.release));
       const expected = request.release.artifact.imageIdentity;
-      if ((loaded.repoDigests.length > 0
-        ? !loaded.repoDigests.includes(signedReference)
-        : loaded.id !== expected.digest)
+      if ((loaded.id !== expected.digest && !loaded.repoDigests.includes(signedReference))
         || loaded.os !== expected.platform.os
         || loaded.architecture !== expected.platform.architecture
         || (loaded.variant || null) !== (expected.platform.variant || null)) {
@@ -1873,7 +1871,7 @@ export class UpdateRunner {
       progress.flags.candidateHealthy = true;
       await this.stepStatus(progress, "health", "completed", "Rolle, Zielversion und Datenbank dreimal bestätigt.");
 
-      if (request.release.migration.required) {
+      if (request.release.migration.required && request.release.migration.strategy !== "offline") {
         if (request.release.migration.strategy !== "expand-contract"
           || request.release.migration.backwardCompatible !== true) {
           throw new Error("PRODUCTION_MIGRATION_NOT_ONLINE_EXPAND_CONTRACT");
@@ -1893,6 +1891,12 @@ export class UpdateRunner {
       progress.flags.activePromoteStarted = true;
       await this.saveProgress(progress, "production-mutation-intent", "Produktionsmutation wurde vor Migration und Containerstart dauerhaft im Journal markiert.");
       await this.writeTransactionFence(request, "promoting");
+      if (request.release.migration.required && request.release.migration.strategy === "offline") {
+        await this.saveProgress(progress, "production-offline-migration", "Datenbank wird nach Sicherung im Wartungsfenster aktualisiert.");
+        await this.docker.compose(["--profile", "update", "run", "--rm", "--no-deps", SERVICES.productionMigrator], { env: candidateEnv, timeoutMs: 30 * 60_000 });
+        progress.flags.productionMigrationComplete = true;
+        await this.saveProgress(progress, "production-offline-migrated", "Migration abgeschlossen; neue Version wird gestartet.");
+      }
       await this.saveProgress(progress, "promote-active", "Signiertes Image wird auf den kanonischen Active-Tag übernommen.");
       await this.docker.tagImage(progress.newImageId, this.config.canonicalActiveImage);
       if (await this.docker.imageId(this.config.canonicalActiveImage) !== progress.newImageId) {

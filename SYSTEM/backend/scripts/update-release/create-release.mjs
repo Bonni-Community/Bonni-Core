@@ -17,7 +17,7 @@ import { inspectCoreDockerArchivePayload } from "../../src/system/update-runner/
 const ALLOWED_ARGUMENTS = new Set([
   "--archive", "--image", "--version", "--private-key", "--key-id", "--output-dir",
   "--title", "--description-de", "--description-en", "--migration", "--schema-from",
-  "--schema-to", "--expires-days", "--artifact-url",
+  "--schema-to", "--expires-days", "--artifact-url", "--build-authorization", "--trusted-keys",
 ]);
 
 function argumentsMap() {
@@ -121,6 +121,13 @@ async function replaceFileAtomically(source, destination) {
 }
 
 const args = argumentsMap();
+const buildAuthorization = args.has('--build-authorization') ? JSON.parse(await fs.readFile(required(args,'--build-authorization'),'utf8')) : undefined;
+let delegatedTrustedKeys;
+if(buildAuthorization){
+  const trust=JSON.parse(await fs.readFile(required(args,'--trusted-keys'),'utf8'));
+  if(trust.schema!=='bonni.app-install-trust/v1'||!Array.isArray(trust.keys))throw Error('PUBLIC_RELEASE_TRUST_INVALID');
+  delegatedTrustedKeys=Object.fromEntries(trust.keys.filter(k=>k.scopes?.includes('RELEASE')).map(k=>[k.keyId,k.publicKey]));
+}
 const archive = path.resolve(required(args, "--archive"));
 const image = required(args, "--image");
 const imageMatch = /^([a-z0-9][a-z0-9._:/-]+)@(sha256:[a-f0-9]{64})$/.exec(image);
@@ -133,10 +140,10 @@ const keyId = args.get("--key-id") || "bonni-core-release";
 const outputDirectory = path.resolve(args.get("--output-dir") || path.join("releases", version));
 const packagedOpsMigrations = await loadOpsMigrations();
 const migrationStrategy = args.get("--migration")
-  || (packagedOpsMigrations.length > 0 ? "expand-contract" : "none");
+  || (packagedOpsMigrations.length > 0 ? "offline" : "none");
 if (!["none", "expand-contract", "offline"].includes(migrationStrategy)) throw new Error("--migration ist ungültig.");
-if (packagedOpsMigrations.length > 0 && migrationStrategy !== "expand-contract") {
-  throw new Error("RELEASE_OPS_MIGRATIONS_REQUIRE_EXPAND_CONTRACT");
+if (packagedOpsMigrations.length > 0 && !["expand-contract", "offline"].includes(migrationStrategy)) {
+  throw new Error("RELEASE_OPS_MIGRATIONS_REQUIRE_DECLARED_MIGRATION");
 }
 const migrationRequired = migrationStrategy !== "none";
 const schemaFrom = args.get("--schema-from") || version;
@@ -199,7 +206,7 @@ try {
   outputStat = await assertRegularUnlinkedFile(temporaryArchive, "RELEASE_STAGED_ARCHIVE_INVALID");
   archiveSha256 = await sha256(temporaryArchive);
   const issuedAt = new Date();
-  const expiresAt = new Date(issuedAt.getTime() + expiryDays * 24 * 60 * 60_000);
+  const expiresAt = new Date(Math.min(issuedAt.getTime() + expiryDays * 24 * 60 * 60_000, buildAuthorization ? Date.parse(buildAuthorization.buildCertificate.expiresAt) : Infinity));
   const privateKey = await fs.readFile(privateKeyFile, "utf8");
 
   const payload = {
@@ -229,7 +236,8 @@ try {
     },
     issuedAt: canonicalUtc(issuedAt),
     expiresAt: canonicalUtc(expiresAt),
-    minimumRunnerVersion: "0.3.0",
+    minimumRunnerVersion: buildAuthorization ? "0.5.0" : "0.4.0",
+    ...(buildAuthorization ? {buildAuthorization} : {}),
     releaseNotes: {
       title: args.get("--title") || `Bonni Core ${visibleBonniVersion(version)}`,
       descriptions: {
@@ -242,10 +250,10 @@ try {
   const signed = signReleaseManifest(payload, keyId, privateKey);
   const publicKey = crypto.createPublicKey(privateKey);
   verifyReleaseManifest(signed, {
-    trustedKeys: { [keyId]: publicKey },
+    trustedKeys: delegatedTrustedKeys || { [keyId]: publicKey },
     expectedProduct: "bonni-core",
     expectedChannel: "stable",
-    runnerVersion: "0.3.0",
+    runnerVersion: "0.5.0",
     nodeEnv: "production",
   });
 

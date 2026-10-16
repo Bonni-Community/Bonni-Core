@@ -1370,12 +1370,14 @@ async function assertNoDeactivationIntent(productRoot) {
 export async function acquireDockerRuntimeActivation({
   productRoot,
   ownerPid,
+  managedToken,
   now = () => new Date(),
   isPidAlive = defaultPidAlive,
   probePort = defaultProbePort,
   environment = process.env,
 } = {}) {
   if (!validPid(ownerPid)) throw exclusionError("DOCKER_RUNTIME_ACTIVATION_PID_INVALID");
+  if (managedToken !== undefined && !TOKEN.test(managedToken)) throw exclusionError("DOCKER_RUNTIME_MANAGED_TOKEN_INVALID");
   const controlRoot = await runtimeControlRoot(productRoot, { create: true });
   const file = path.join(controlRoot, ACTIVATION_FILE);
   for (let attempt = 0; attempt < 4; attempt += 1) {
@@ -1383,7 +1385,7 @@ export async function acquireDockerRuntimeActivation({
     const receipt = Object.freeze({
       schemaVersion: DOCKER_RUNTIME_ACTIVATION_SCHEMA,
       pid: ownerPid,
-      token: crypto.randomBytes(32).toString("base64url"),
+      token: managedToken || crypto.randomBytes(32).toString("base64url"),
       startedAt: now().toISOString(),
     });
     let handle;
@@ -1414,6 +1416,28 @@ export async function acquireDockerRuntimeActivation({
       if (!existing) continue;
       if (await Promise.resolve(isPidAlive(existing.value.pid))) {
         throw exclusionError("DOCKER_RUNTIME_ACTIVATION_ALREADY_RUNNING", String(existing.value.pid));
+      }
+      // The packaged controller holds the kernel flock across its entire
+      // lifetime. Only its persisted secret may resume its own dead-owner
+      // latch. Replace atomically: local source startup never sees a gap.
+      if (managedToken && existing.value.token === managedToken) {
+        await assertNoLiveLocalSourceRuntime({productRoot, isPidAlive, probePort, environment});
+        await assertNoDeactivationIntent(productRoot);
+        const temporary = file + "." + crypto.randomBytes(8).toString("hex") + ".tmp";
+        try {
+          const writer = await fs.open(temporary, "wx", 0o600);
+          try { await writer.writeFile(JSON.stringify(receipt) + "\n"); await writer.sync(); }
+          finally { await writer.close(); }
+          const confirmed = await readReceipt(file, validateActivationReceipt);
+          if (!confirmed || confirmed.dev !== existing.dev || confirmed.ino !== existing.ino
+            || confirmed.value.token !== managedToken || confirmed.value.pid !== existing.value.pid) {
+            throw exclusionError("DOCKER_RUNTIME_ACTIVATION_RACE");
+          }
+          await fs.rename(temporary, file);
+          await assertNoLiveLocalSourceRuntime({productRoot, isPidAlive, probePort, environment});
+          await assertNoDeactivationIntent(productRoot);
+          return receipt;
+        } finally { await fs.unlink(temporary).catch(() => undefined); }
       }
       // A successful runtime deliberately leaves a dead-owner marker. Never
       // create an unmarked takeover gap here; an operator must use the fully
@@ -1561,8 +1585,9 @@ export async function deactivateDockerRuntimeMode({
 async function main() {
   const [action, productRoot, pidText, token] = process.argv.slice(2);
   const ownerPid = Number(pidText);
-  if (action === "acquire") {
-    const receipt = await acquireDockerRuntimeActivation({ productRoot, ownerPid });
+  if (action === "acquire" || action === "acquire-managed") {
+    if (action === "acquire-managed" && process.env.BONNI_DEPLOYMENT_LOCK_HELD !== "true") throw exclusionError("DOCKER_RUNTIME_MANAGED_LOCK_REQUIRED");
+    const receipt = await acquireDockerRuntimeActivation({ productRoot, ownerPid, managedToken: action === "acquire-managed" ? process.env.BONNI_MANAGED_ACTIVATION_TOKEN : undefined });
     process.stdout.write(`${receipt.token}\n`);
     return;
   }

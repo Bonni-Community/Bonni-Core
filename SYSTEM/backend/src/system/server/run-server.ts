@@ -1,3 +1,4 @@
+import {startAppUpdateChecker,stopAppUpdateChecker} from "../../platform/module-manager/distribution/app-distribution.routes.js";
 import type { Server } from "node:http";
 
 import { createLocalSystemApp, createPlatformApp } from "../routes/create-system-app.js";
@@ -79,6 +80,7 @@ async function shutdown(signal: ShutdownTrigger, requestId?: string) {
   }
 
   shuttingDown = true;
+  await stopAppUpdateChecker();
   await stopWebBridgeWorker();
 
   const metadata = {
@@ -292,6 +294,7 @@ try {
 
     if (runtime.slotRole === "active") {
       startWebBridgeWorker();
+      void startAppUpdateChecker().catch(error=>logger.warn("App-Updateprüfung konnte nicht gestartet werden", {module:"app-update",error:errorDetails(error)}));
       const updateScheduler = startCoreUpdateScheduler();
       logger.info("Bonni-Core-Updateprüfung geplant", {
         module: "core-update",

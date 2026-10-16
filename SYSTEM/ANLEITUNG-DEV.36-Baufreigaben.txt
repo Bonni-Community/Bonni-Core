@@ -1,0 +1,43 @@
+Bonni Core 0.1.20h-DEV.36 – kumulativer Core-Quellstand
+
+Enthält den gesamten Stand DEV.35 einschließlich DEV.30, .32, .33 und .34.
+Die bisherigen App-Updates, Offline-Suche, Container- und Testkorrekturen bleiben
+erhalten. DEV.36 ist die vollständige neue Bauquelle; ältere DEV-ZIPs müssen
+nicht zusätzlich ausgewählt werden.
+
+Neu: Core und unabhängiger Update-Dienst prüfen signierte, versionsgebundene
+Baufreigaben. Öffentliche Core-Freigabeketten funktionieren auch im Offline-Paket.
+Der GitHub-Bau wird durch Bonni Windows v176 mit einem eigenen kurzlebigen
+Bauschlüssel gestartet; der dauerhafte Core-Signaturschlüssel bleibt in Windows.
+Version, Produkt, Kanal, Signatur, Gültigkeit, Paketgröße und Paket-Prüfsumme
+werden geprüft. Ein Paketschlüssel wird niemals ungeprüft zum Vertrauensanker.
+
+Die neue Update-Dienst-Version ist 0.5.0. Das neue Manifest verlangt sie
+explizit. Ältere Dienste benötigen einen einmaligen vertrauenswürdigen Übergang;
+Versionssprünge sind danach möglich, sofern Migrationen und Mindestversionen
+passen. Normale Updates auf gleiche oder ältere Versionen werden abgewiesen.
+Die Fehlerwiederherstellung bleibt erhalten.
+
+VERWENDUNG
+1. Bonni Windows v176 einspielen (SYSTEM und WINDOWS zusammenführen/ersetzen).
+2. Dieses DEV.36-ZIP im Labor als vollständige Core-Bauquelle einlesen.
+3. Die gewünschte produktive Zielversion setzen und die Veröffentlichung aus
+   Bonni Windows neu starten. Kein Re-run des alten GitHub-Auftrags.
+4. Nach erfolgreichem Import und Prüfung werden die alten DEV-Quell-ZIPs für
+   diesen Bau nicht mehr gebraucht. Den laufenden SYSTEM-Ordner nicht löschen.
+
+DEV.36 ist Entwicklungsquellcode, kein signiertes Produktivupdate. Die zuvor
+veröffentlichten Container verändern sich durch Herunterladen dieses ZIP nicht.
+StüberlApp selbst bleibt ein separates App-Paket. Die neue Bauschlüssel-Delegation
+betrifft Core; die vorhandene App-Signatur- und Updateprüfung bleibt bestehen.
+
+Die vollständigen Installationsschritte, der A/B-Schlüsselaustausch, notwendige
+GitHub-Rechte und Sicherheitsgrenzen stehen in ANLEITUNG-v176.txt im Windows-ZIP.
+Historische Anleitungen und PRUEFUNG-DEV.35.json dokumentieren die Vorgeschichte;
+für den aktuellen Stand gilt diese DEV.36-Anleitung.
+
+Tests: kryptografische Prüfungen in Core und Runner, direkter Versionssprung,
+Ablehnung von Downgrades, bestehende Installations-/Rollback-Prüfungen sowie
+Windows-Paket-/Transporttests. GitHub und Docker sind in diesen Tests simuliert.
+Ein Live-Bau und eine produktive Windows-/Container-Installation stehen noch aus.
+INHALT-SHA256.json enthält Prüfsummen aller ausgelieferten Inhaltsdateien.

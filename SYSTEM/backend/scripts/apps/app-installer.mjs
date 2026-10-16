@@ -6,7 +6,7 @@ import {verifyApp,loadAppTrust,readFile,plainDirectory,sha256,fail,compareVersio
 import {repository,listGitHubApps,downloadApp} from './github-download.mjs';
 
 // No shell command or package-manager download belongs to target installation.
-export function createAppInstaller({productRoot,systemRoot,backendRoot,stateRoot,trustRoot=systemRoot,preflight,beforeReplace,install,rollback,fetchImpl=fetch}) {
+export function createAppInstaller({productRoot,systemRoot,backendRoot,stateRoot,trustRoot=systemRoot,preflight,beforeReplace,install,rollback,getInstalled=async()=>[],fetchImpl=fetch}) {
   const inbox=path.join(productRoot,'UPDATE');
   const home=path.join(stateRoot,'app-install');
   async function init() {
@@ -15,14 +15,16 @@ export function createAppInstaller({productRoot,systemRoot,backendRoot,stateRoot
   }
   async function settings() {
     await init();
-    try {const s=JSON.parse(await readFile(path.join(home,'source.json')));return {repository:s.repository===''?'':repository(s.repository),inbox};}
-    catch(e){if(e.code==='ENOENT')return {repository:'',inbox};throw e;}
+    try {const s=JSON.parse(await readFile(path.join(home,'source.json')));return {repository:s.repository===''?'':repository(s.repository),checkAutomatically:s.checkAutomatically!==false,inbox};}
+    catch(e){if(e.code==='ENOENT')return {repository:'',checkAutomatically:true,inbox};throw e;}
   }
-  async function saveSource(value) {
+  async function saveSource(value,checkAutomatically) {
+    const current=await settings();
+    if(checkAutomatically!==undefined&&typeof checkAutomatically!=='boolean')fail('APP_SETTINGS_INVALID');
     const repo=value===''?'':repository(value);await init();
     const file=path.join(home,randomUUID()+'.tmp');
-    await fs.writeFile(file,JSON.stringify({repository:repo})+'\n',{flag:'wx',mode:0o600});await fs.rename(file,path.join(home,'source.json'));
-    return {repository:repo,inbox};
+    await fs.writeFile(file,JSON.stringify({repository:repo,checkAutomatically:checkAutomatically??current.checkAutomatically})+'\n',{flag:'wx',mode:0o600});await fs.rename(file,path.join(home,'source.json'));
+    return {repository:repo,checkAutomatically:checkAutomatically??current.checkAutomatically,inbox};
   }
   async function corePolicy() {
     const pkg=JSON.parse(await readFile(path.join(backendRoot,'package.json')));
@@ -32,10 +34,11 @@ export function createAppInstaller({productRoot,systemRoot,backendRoot,stateRoot
     try {return JSON.parse(await readFile(path.join(home,directory+'.json')));}
     catch(e){if(e.code==='ENOENT')return null;throw e;}
   }
-  async function inspect(bytes,work,expected={}) {
+  async function inspect(bytes,work,expected={},forListing=false) {
     const zip=path.join(work,'package.zip');await fs.writeFile(zip,bytes,{flag:'wx',mode:0o600});
     const root=path.join(work,'PACKAGE');await extractUpdateZip(zip,root);
-    const checked=await verifyApp({root,...await corePolicy()});
+    const policy=await corePolicy();
+    const checked=await verifyApp({root,...policy,coreVersion:forListing?undefined:policy.coreVersion});
     const m=checked.manifest;
     if(expected.appId&&m.appId!==expected.appId||expected.version&&m.version!==expected.version)fail('APP_SELECTION_CHANGED');
     const previous=await receipt(m.directory);
@@ -51,21 +54,57 @@ export function createAppInstaller({productRoot,systemRoot,backendRoot,stateRoot
     return checked;
   }
   async function list({online=false}={}) {
-    await init();const local=[];
-    const files=(await fs.readdir(inbox,{withFileTypes:true})).filter(e=>e.isFile()&&/^[A-Za-z0-9._+-]+-App-v[A-Za-z0-9._+-]+\.zip$/.test(e.name));
-    if(files.length>40)fail('APP_INBOX_TOO_MANY_PACKAGES');
-    for(const entry of files) {
-      const work=await fs.mkdtemp(path.join(home,'scan-'));
-      try {
-        const bytes=await readFile(path.join(inbox,entry.name),512*1024*1024);
-        const info=await inspect(bytes,work);
-        local.push({source:'offline',filename:entry.name,sha256:sha256(bytes),...info.manifest,files:undefined,alreadyInstalled:info.alreadyInstalled===true});
-      } catch(e) {local.push({source:'offline',filename:entry.name,error:e.code||'APP_PACKAGE_INVALID'});}
-      finally {await fs.rm(work,{recursive:true,force:true});}
-    }
+    await init();const local=[];let localError=null;
+    // Scan the inbox first. A failed network request must never hide local packages.
+    try {
+      const files=(await fs.readdir(inbox,{withFileTypes:true})).filter(e=>e.isFile()&&/^[A-Za-z0-9._+-]+-App-v[A-Za-z0-9._+-]+\.zip$/.test(e.name));
+      if(files.length>40)fail('APP_INBOX_TOO_MANY_PACKAGES');
+      for(const entry of files) {
+        const work=await fs.mkdtemp(path.join(home,'scan-'));
+        try {
+          const bytes=await readFile(path.join(inbox,entry.name),512*1024*1024);
+          const info=await inspect(bytes,work,{},true);
+          local.push({source:'offline',filename:entry.name,sha256:sha256(bytes),...info.manifest,files:undefined,alreadyInstalled:info.alreadyInstalled===true,signatureVerified:true});
+        } catch(e) {local.push({source:'offline',filename:entry.name,error:e.code||'APP_PACKAGE_INVALID'});}
+        finally {await fs.rm(work,{recursive:true,force:true});}
+      }
+    } catch(e) {localError=e.code||'APP_INBOX_UNAVAILABLE';}
     const source=await settings();let remote=[],onlineError=null;
-    if(online&&source.repository)try {remote=await listGitHubApps(source.repository,{fetchImpl});}catch(e){onlineError=e.code||'APP_ONLINE_UNAVAILABLE';}
-    return {ok:true,...source,local,remote,onlineError};
+    let onlineState=online?(source.repository?'checking':'not_configured'):'not_checked';
+    if(online&&source.repository)try {
+      // The actual GitHub request also tests reachability; no unrelated Internet probe.
+      remote=await listGitHubApps(source.repository,{fetchImpl,signal:AbortSignal.timeout(15000),timeoutMs:15000});
+      onlineState='reachable';
+    } catch(e) {onlineError=e.code||'APP_ONLINE_UNAVAILABLE';onlineState='unavailable';}
+    let installed=[],installedError=null,coreVersion;
+    try {installed=await getInstalled();coreVersion=JSON.parse(await readFile(path.join(backendRoot,'package.json'))).version;}
+    catch(e) {installedError='APP_INSTALLED_VERSIONS_UNAVAILABLE';}
+    function describe(item) {
+      if(item.error)return item;
+      const current=installed.find(row=>row.key==='app.'+item.appId.toLowerCase());
+      let versionStatus=item.alreadyInstalled?'installed':'new',error=item.error;
+      if(installedError)versionStatus='unknown';
+      try {
+        if(current?.version) {
+          const order=compareVersions(item.version,current.version);
+          versionStatus=order>0?'update':order===0?'installed':'older';
+        }
+        if(coreVersion&&compareVersions(coreVersion,item.minimumCoreVersion)<0)error='APP_CORE_TOO_OLD';
+      } catch {versionStatus='unknown';}
+      return {...item,installedVersion:current?.version||null,versionStatus,alreadyInstalled:versionStatus==='installed',
+        updateAvailable:versionStatus==='update',error};
+    }
+    const localItems=local.map(describe),remoteItems=remote.map(item=>describe({...item,source:'online',signatureVerified:false}));
+    const updates=[...localItems,...remoteItems].filter(item=>item.updateAvailable&&(!item.error||item.error==='APP_CORE_TOO_OLD'));
+    const latest=new Map();
+    for(const item of updates) {
+      const previous=latest.get(item.appId);
+      const order=previous?compareVersions(item.version,previous.version):1;
+      if(!previous||order>0||(order===0&&item.releaseSequence>previous.releaseSequence))latest.set(item.appId,item);
+      // On equal version/sequence keep the local signed package encountered first.
+    }
+    return {ok:true,...source,local:localItems,remote:remoteItems,localError,onlineError,onlineState,installedError,
+      checkedAt:new Date().toISOString(),updateCount:latest.size,availableUpdates:[...latest.values()]};
   }
   async function apply(request) {
     if(!request||!['offline','online'].includes(request.source)||!/^[a-f0-9]{64}$/.test(request.sha256||'')

@@ -3,7 +3,7 @@ export const systemManifest = {
   legacyKeys: ["system"],
   label: "Bonni Core",
   kind: "system",
-  version: "0.1.20+h-DEV.11",
+  version: "0.1.20+h-DEV.43",
   provides: [
     "system",
     "system.overview",

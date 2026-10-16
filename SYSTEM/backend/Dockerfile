@@ -14,6 +14,8 @@ RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-ins
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /build
 RUN curl --fail --show-error --location --proto '=https' --tlsv1.2 \
+    --retry 5 --retry-all-errors --retry-delay 5 --retry-max-time 900 \
+    --connect-timeout 30 --max-time 300 \
       https://ftp.postgresql.org/pub/source/v16.14/postgresql-16.14.tar.bz2 -o postgres.tar.bz2 \
     && echo 'f6d077142737920858ce958ccdb75c6ee137a63b5b0853c70693d401ac7e3471  postgres.tar.bz2' | sha256sum -c - \
     && tar -xjf postgres.tar.bz2 --strip-components=1 \
@@ -38,6 +40,27 @@ WORKDIR /work
 COPY SYSTEM/backend/package-lock.json ./package-lock.json
 COPY SYSTEM/backend/scripts/runtime/build-armv7-engines.sh ./build-armv7-engines.sh
 RUN sh ./build-armv7-engines.sh
+
+FROM docker:29.6.2-cli@sha256:be132a9f282288de4afaf63379dff75711fda0147c6b72a9df44e51841402144 AS dockercli
+
+# Matching PostgreSQL 16 tools are required for Candidate and rollback copies.
+FROM ubuntu:22.04@sha256:5ec03bb3441e8b0bf3b4f9cd4629a1ae763010dc3035bb8da3ae6cf026486401 AS core-pg-client-build
+RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+    ca-certificates curl bzip2 build-essential libssl-dev zlib1g-dev bison flex \
+    && rm -rf /var/lib/apt/lists/*
+WORKDIR /build
+RUN curl --fail --show-error --location --proto '=https' --tlsv1.2 \
+    --retry 5 --retry-all-errors --retry-delay 5 --retry-max-time 900 \
+    --connect-timeout 30 --max-time 300 \
+    https://ftp.postgresql.org/pub/source/v16.14/postgresql-16.14.tar.bz2 -o postgres.tar.bz2 \
+    && echo 'f6d077142737920858ce958ccdb75c6ee137a63b5b0853c70693d401ac7e3471  postgres.tar.bz2' | sha256sum -c - \
+    && tar -xjf postgres.tar.bz2 --strip-components=1 \
+    && ./configure --prefix=/opt/bonni-pg16 --with-openssl --without-icu --without-readline \
+       LDFLAGS='-Wl,-z,max-page-size=65536 -Wl,-z,common-page-size=65536 -Wl,-rpath,/opt/bonni-pg16/lib' \
+    && make -j2 -C src/interfaces/libpq && make -C src/interfaces/libpq install \
+    && make -j2 -C src/bin/pg_dump && make -C src/bin/pg_dump install \
+    && make -j2 -C src/bin/psql && make -C src/bin/psql install \
+    && cp COPYRIGHT /opt/bonni-pg16/COPYRIGHT
 
 FROM bonni-node-host AS frontend-build
 
@@ -85,6 +108,9 @@ COPY SYSTEM/backend/config ./config
 COPY SYSTEM/backend/scripts/modules ./scripts/modules
 COPY SYSTEM/backend/scripts/licenses ./scripts/licenses
 COPY SYSTEM/backend/scripts/runtime ./scripts/runtime
+COPY SYSTEM/backend/scripts/deployment ./scripts/deployment
+COPY SYSTEM/backend/docker-compose.runtime.yml ./docker-compose.runtime.yml
+RUN node scripts/deployment/create-runtime-template.mjs
 COPY SYSTEM/backend/scripts/storage ./scripts/storage
 COPY SYSTEM/backend/scripts/setup ./scripts/setup
 COPY SYSTEM/backend/legal ./legal
@@ -120,12 +146,13 @@ LABEL org.opencontainers.image.title="Bonni Core" \
       org.opencontainers.image.version="${BONNI_CORE_VERSION}" \
       org.opencontainers.image.revision="${BONNI_CORE_REVISION}" \
       org.bonni.product="bonni-core" \
-      org.bonni.runtime.contract="1"
+      org.bonni.runtime.contract="1" \
+      org.bonni.deployment.contract="1"
 
 WORKDIR /app/backend
 
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends openssl ca-certificates $(if [ "$(dpkg --print-architecture)" != armhf ]; then echo postgresql-client; fi) \
+  && apt-get install -y --no-install-recommends openssl ca-certificates $(if [ "$(dpkg --print-architecture)" != armhf ]; then echo postgresql-client; fi) util-linux tzdata \
   && rm -rf /var/lib/apt/lists/*
 
 ENV NODE_ENV=production
@@ -143,11 +170,29 @@ ENV BONNI_LICENSE_ROOT=/app/run_system/storage/licenses
 COPY SYSTEM/backend/package*.json ./
 RUN . /opt/bonni-engines/environment.sh && npm ci --omit=dev
 
+COPY --from=core-pg-client-build /opt/bonni-pg16 /opt/bonni-pg16
+ENV PATH=/opt/bonni-pg16/bin:$PATH
+RUN pg_dump --version | grep ' 16.' && pg_restore --version | grep ' 16.'
+
+# The same immutable image supplies isolated controller, runner and proxy
+# services. Application containers never receive the Docker socket.
+COPY --from=dockercli /usr/local/bin/docker /usr/local/bin/docker
+COPY --from=dockercli /usr/local/libexec/docker/cli-plugins /usr/local/libexec/docker/cli-plugins
+COPY SYSTEM/backend/scripts/deployment ./scripts/deployment
+COPY SYSTEM/backend/src/system/update-runner /runner/SYSTEM/backend/src/system/update-runner
+COPY SYSTEM/backend/ops/update-runner /runner/SYSTEM/backend/ops/update-runner
+COPY SYSTEM/backend/scripts/backup /runner/SYSTEM/backend/scripts/backup
+COPY SYSTEM/backend/scripts/runtime/runtime-mode-exclusion.mjs /runner/SYSTEM/backend/scripts/runtime/runtime-mode-exclusion.mjs
+COPY SYSTEM/backend/scripts/runtime /opt/bonni-deployment/backend/scripts/runtime
+COPY --from=backend-build /app/backend/docker-compose.deployment.yml /opt/bonni-deployment/backend/docker-compose.runtime.yml
 COPY SYSTEM/APP-INSTALL-TRUST.json /app/APP-INSTALL-TRUST.json
 COPY SYSTEM/backend/scripts/apps ./scripts/apps
 
 # SYSTEM backend runtime.
 COPY --from=backend-build /app/backend/dist ./dist
+# Shared verifier imported by the compiled backend; runner has its own copy above.
+COPY SYSTEM/backend/src/system/update-runner/build-authorization.mjs ./src/system/update-runner/build-authorization.mjs
+COPY SYSTEM/backend/src/system/update-runner/trusted-keys.mjs ./src/system/update-runner/trusted-keys.mjs
 COPY --from=backend-build /app/backend/prisma ./prisma
 COPY --from=backend-build /app/backend/prisma.config.ts ./prisma.config.ts
 COPY --from=backend-build /app/backend/config ./config

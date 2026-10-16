@@ -20,3 +20,5 @@
 .cc-update-settings-source a { flex: 0 0 auto; border: 1px solid rgba(25,34,45,.14); border-radius: 9px; padding: 9px 12px; color: #9f431b; background: #fff; font-size: .8rem; font-weight: 850; text-decoration: none; }
 .cc-update-settings-source a:hover, .cc-update-settings-source a:focus-visible { border-color: #d6602d; text-decoration: underline; }
 @media (max-width: 650px) { .cc-update-settings-card > label { align-items: flex-start; } .cc-update-settings-select { flex-direction: column; } .cc-update-settings-source { align-items: flex-start; flex-direction: column; } }
+
+.cc-update-settings-card input[type="time"] { border: 1px solid rgba(25,34,45,.16); border-radius: 9px; padding: 9px 11px; background: #fff; font: inherit; }

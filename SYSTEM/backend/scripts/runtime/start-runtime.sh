@@ -15,7 +15,9 @@ case "$EARLY_PROJECT_ROOT" in
   /*) ;;
   *) echo "BONNI_HOST_PROJECT_ROOT muss ein absoluter Hostpfad sein." >&2; exit 2 ;;
 esac
-runtime_activation_token="$(node "$SCRIPT_DIR/runtime-mode-exclusion.mjs" acquire "$EARLY_PROJECT_ROOT" "$$")"
+activation_action=acquire
+if [ -n "${BONNI_MANAGED_ACTIVATION_TOKEN:-}" ]; then activation_action=acquire-managed; fi
+runtime_activation_token="$(node "$SCRIPT_DIR/runtime-mode-exclusion.mjs" "$activation_action" "$EARLY_PROJECT_ROOT" "$$")"
 runtime_activation_owned=true
 runtime_shared_mutation_started=false
 release_runtime_activation() {
@@ -52,7 +54,10 @@ node "$SCRIPT_DIR/runtime-mode-exclusion.mjs" check "$BONNI_HOST_PROJECT_ROOT"
 # Emergency receives only its immutable JSON runtime subtree. Keeping the
 # production database-routing file outside this mount prevents a delayed old
 # image from replacing the Compose-enforced read-only connection string.
-mkdir -p "$BONNI_HOST_RUN_SYSTEM_ROOT/system/emergency"
+mkdir -p "$BONNI_HOST_RUN_SYSTEM_ROOT/system/emergency" "$BONNI_HOST_PROJECT_ROOT/UPDATE/core/downloads"
+for extension in app addons plugins bridges backend; do
+  mkdir -p "$BONNI_HOST_RUN_SYSTEM_ROOT/extensions/$extension"
+done
 
 if ! command -v docker >/dev/null 2>&1; then
   echo "Docker mit Compose-Unterstützung ist für den Runtime-Start erforderlich." >&2
@@ -226,13 +231,18 @@ fi
 # old source tree over a release promoted by the update runner. Only a genuinely
 # new installation receives this one-time local bootstrap image.
 if ! docker image inspect "$SYSTEM_IMAGE" >/dev/null 2>&1; then
+  if [ -n "${BONNI_INITIAL_IMAGE:-}" ]; then
+    docker image inspect "$BONNI_INITIAL_IMAGE" >/dev/null
+    docker image tag "$BONNI_INITIAL_IMAGE" "$SYSTEM_IMAGE"
+  else
   echo "Initiales Bonni-Core-Image $SYSTEM_IMAGE wird gebaut."
   docker build \
     --file "$BONNI_HOST_PROJECT_ROOT/SYSTEM/backend/Dockerfile" \
     --tag "$SYSTEM_IMAGE" \
-    --build-arg "BONNI_CORE_VERSION=${SYSTEM_VERSION:-0.1.20+h-DEV.11}" \
+    --build-arg "BONNI_CORE_VERSION=${SYSTEM_VERSION:-0.1.20+h-DEV.43}" \
     --build-arg "BONNI_CORE_REVISION=${BONNI_CORE_REVISION:-unknown}" \
     "$BONNI_HOST_PROJECT_ROOT"
+  fi
 fi
 
 # Emergency is deliberately pinned independently. Once present, normal starts
@@ -288,11 +298,26 @@ fi
 # The canonical overlay and transaction fence are now reconciled. Start and
 # validate only confirmed application slots, then open the public Proxy, then
 # enter normal runner daemon mode.
-"${compose[@]}" up -d --wait --wait-timeout "$runtime_wait_seconds" backend-active
-"${compose[@]}" up -d --wait --wait-timeout "$runtime_wait_seconds" backend-emergency
-"${compose[@]}" up -d --wait --wait-timeout "$runtime_wait_seconds" runtime-proxy
+start_runtime_service() {
+  local service="$1"
+  local status
+  if "${compose[@]}" up -d --wait --wait-timeout "$runtime_wait_seconds" "$service"; then
+    return 0
+  else
+    status=$?
+  fi
+  # The outer deployment controller otherwise shows only Compose's exit code.
+  # Keep the original failure and emit bounded service logs before CI cleanup.
+  # Never print compose config or inspect output containing environment secrets.
+  echo "Runtime-Dienst $service konnte nicht gestartet werden. Letzte Protokollzeilen:" >&2
+  timeout 15s "${compose[@]}" logs --no-color --tail 80 "$service" >&2 || true
+  return "$status"
+}
+start_runtime_service backend-active
+start_runtime_service backend-emergency
+start_runtime_service runtime-proxy
 "${compose[@]}" run --rm --no-deps update-runner --network-transport-gate=open
-"${compose[@]}" up -d --wait --wait-timeout "$runtime_wait_seconds" update-runner
+start_runtime_service update-runner
 
 echo "Runtime started after recovery gate: proxy -> confirmed backend-active, emergency fallback available."
 echo "Health: http://localhost:${BACKEND_PORT:-4000}/api/health/ready"
