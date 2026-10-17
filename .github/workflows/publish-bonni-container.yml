@@ -102,11 +102,19 @@ jobs:
             return bundles;
           }
           function containerDownloadNames(version, platforms) {
+            const bundles = containerBundles(version, platforms);
             const files = canonicalContainerPlatforms(platforms).flatMap(platform => {
               const base = `Bonni-Core-v${version}-${containerArchitecture(platform)}`;
-              return [".yml", ".yml.sha256", "-Offline.yml", "-Offline.yml.sha256", ".tar", ".tar.sha256", "-Datenbank.tar", "-Datenbank.tar.sha256"].map(suffix => base + suffix);
+              return [".yml", ".yml.sha256"].map(suffix => base + suffix);
             });
-            return files.concat(containerBundles(version, platforms).flatMap(b => [b.filename, b.filename + ".sha256"]));
+            return files.concat(bundles.flatMap(b => [b.filename, b.filename + ".sha256"]));
+          }
+          function containerSupersededDownloadNames(version, platforms) {
+            containerBundles(version, platforms); // validate version and platform selection
+            return canonicalContainerPlatforms(platforms).flatMap(platform => {
+              const base = `Bonni-Core-v${version}-${containerArchitecture(platform)}`;
+              return ["-Offline.yml", "-Offline.yml.sha256", ".tar", ".tar.sha256", "-Datenbank.tar", "-Datenbank.tar.sha256"].map(suffix => base + suffix);
+            });
           }
           async function readContainerUpdateAssets({env = process.env, verifyManifest} = {}) {
             const fs = await import("node:fs/promises"), path = await import("node:path");
@@ -267,22 +275,52 @@ jobs:
             }
             if (phase !== "finalize") throw Error("BONNI_RELEASE_PHASE_INVALID");
             if (!/^[a-f0-9]{40}$/.test(env.SOURCE_COMMIT || "") || !/^sha256:[a-f0-9]{64}$/.test(env.DIGEST || "")) throw Error("BONNI_RELEASE_RESULT_INVALID");
-            if (!local.every(file => identical(current.find(asset => asset.name === file.name), file))) throw Error("BONNI_RELEASE_DOWNLOADS_INCOMPLETE");
+            const downloadsComplete = inventory => local.every(file => {
+              const matches = inventory.filter(asset => asset.name === file.name);
+              return matches.length === 1 && identical(matches[0], file);
+            });
+            if (!downloadsComplete(current)) throw Error("BONNI_RELEASE_DOWNLOADS_INCOMPLETE");
             const result = {sourceFingerprint: plan.sourceFingerprint, sourceSha256: sha, sourceCommit: env.SOURCE_COMMIT,
-              imageDigest: env.DIGEST, signedCoreUpdates: true, assets: local.map(({name, size, digest}) => ({name, size, digest}))};
+              imageDigest: env.DIGEST, signedCoreUpdates: true, downloadLayout: "offline-zip-online-yml/v1",
+              assets: local.map(({name, size, digest}) => ({name, size, digest}))};
             const latest = await validate();
+            const superseded = new Set(containerSupersededDownloadNames(coreVersion, platforms));
+            const obsolete = current.filter(asset => superseded.has(asset.name));
+            if (new Set(obsolete.map(asset => asset.name)).size !== obsolete.length) throw Error("BONNI_RELEASE_DUPLICATE_ASSET");
+            if (obsolete.length) {
+              // Refuse cleanup if either the replacement set or any candidate changed
+              // since verification. All replacements, including signed updates, must be
+              // fully available before the first old standalone download is deleted.
+              const fresh = await assets();
+              if (!downloadsComplete(fresh)) throw Error("BONNI_RELEASE_DOWNLOADS_INCOMPLETE");
+              const freshObsolete = fresh.filter(asset => superseded.has(asset.name));
+              if (freshObsolete.length !== obsolete.length || !obsolete.every(old => {
+                const matches = freshObsolete.filter(asset => asset.name === old.name);
+                const now = matches[0];
+                return matches.length === 1 && now.id === old.id && now.updated_at === old.updated_at
+                  && now.digest === old.digest && now.size === old.size && now.state === old.state;
+              })) throw Error("BONNI_RELEASE_ASSET_CHANGED");
+              for (const asset of obsolete) {
+                await api(prefix + "/releases/assets/" + asset.id, {method: "DELETE"});
+                log("Im geprüften Offline-ZIP enthalten; Einzeldatei entfernt: " + asset.name);
+              }
+            }
             const start = "<!-- bonni-container-summary:start -->", end = "<!-- bonni-container-summary:end -->";
             const cleaned = String(latest.release.body || "").replace(/<!-- bonni-container-summary:start -->[\s\S]*?<!-- bonni-container-summary:end -->/g, "")
+              .replace(/^Downloads: je Architektur Online\/Offline-Compose-YML, Core-TAR, Datenbank-TAR, Prüfsummen und signierte Core-Updates mit Update-Manifest\.\r?$/gm,
+                "Downloads: je Architektur Offline-ZIP und Online-YML, jeweils mit Prüfsumme; signierte Core-Updates bleiben separat verfügbar.")
               .replace(/Die YML verwendet den Einzelbetrieb \(Core \+ PostgreSQL\)\.(?: Anleitung beachten\.)?/g, "Die YML richtet Core, PostgreSQL und den unabhängigen Update-Dienst automatisch ein.")
               .split("\n").filter(line => !line.startsWith(resultPrefix) && !line.startsWith("<!-- bonni-container-built:")).join("\n").trim();
             const code = "https://github.com/" + repository + "/tree/" + env.SOURCE_COMMIT + "/SYSTEM";
+            const link = name => "[" + name + "](https://github.com/" + repository + "/releases/download/" + encodeURIComponent("v" + coreVersion) + "/" + encodeURIComponent(name) + ")";
             const downloads = containerBundles(coreVersion, platforms).map(bundle =>
-              "- [" + bundle.filename + "](https://github.com/" + repository + "/releases/download/" + encodeURIComponent("v" + coreVersion) + "/" + encodeURIComponent(bundle.filename) + ")").join("\n");
+              "- Offline-ZIP: " + link(bundle.filename)).concat(platforms.map(platform =>
+                "- Online-YML: " + link("Bonni-Core-v" + coreVersion + "-" + containerArchitecture(platform) + ".yml"))).join("\n");
             const qualification = platforms.includes("linux/arm/v7")
               ? "\n\nARMv7: Start/Neustart unter Emulation und ELF-32K-Vorprüfung bestanden. Hardwaretest noch erforderlich." : "";
             const body = cleaned + "\n\n" + start + "\nGeprüfter Container: `" + env.IMAGE + "@" + env.DIGEST
-              + "`.\n\nDownload-Pakete (je ein Ordner; eigene Anleitung, sofern hinterlegt):\n" + downloads + qualification
-              + "\n\nSignierte Core-Updatepakete und Update-Manifeste für " + platforms.map(containerArchitecture).join(", ") + " sind vollständig geprüft und veröffentlicht."
+              + "`.\n\nInstallation mit Internet: Online-YML verwenden. Ohne Internet: Offline-ZIP entpacken, beide TAR-Images laden und die enthaltene Offline-YML verwenden. Prüfsummen liegen jeweils bei; eine eigene Anleitung wird beigelegt, sofern hinterlegt.\n\n" + downloads + qualification
+              + "\n\nAutomatische Updates: Signierte Core-Updatepakete und Update-Manifeste für " + platforms.map(containerArchitecture).join(", ") + " sind separat verfügbar, vollständig geprüft und veröffentlicht. Bonni Core ruft diese Dateien über seinen Update-Dienst ab."
               + "\n\nPassender Quellcode: [SYSTEM](" + code + ").\n" + end
               + "\n\n<!-- bonni-container-built:" + env.DIGEST + " -->\n" + resultPrefix + JSON.stringify(result) + " -->\n";
             await api(releasePath, {method: "PATCH", json: {name: "Bonni Core v" + coreVersion, body, draft: false}});
@@ -295,6 +333,7 @@ jobs:
           node bonni-release-reconcile.mjs
 
       - name: Validate selected architectures
+        id: bonni_platforms
         env:
           PLATFORMS: ${{ inputs.platforms }}
         run: |
@@ -303,6 +342,7 @@ jobs:
             linux/amd64|linux/arm64|linux/amd64,linux/arm64|linux/arm/v7|linux/amd64,linux/arm/v7|linux/arm64,linux/arm/v7|linux/amd64,linux/arm64,linux/arm/v7) ;;
             *) echo "Unsupported container architectures" >&2; exit 1 ;;
           esac
+          printf 'core_cache_scope=bonni-core-v1-%s\n' "$(printf '%s' "$PLATFORMS" | tr '/,' '-_')" >> "$GITHUB_OUTPUT"
 
       - name: Check package authentication and read access before building
         env:
@@ -439,11 +479,19 @@ jobs:
             return bundles;
           }
           function containerDownloadNames(version, platforms) {
+            const bundles = containerBundles(version, platforms);
             const files = canonicalContainerPlatforms(platforms).flatMap(platform => {
               const base = `Bonni-Core-v${version}-${containerArchitecture(platform)}`;
-              return [".yml", ".yml.sha256", "-Offline.yml", "-Offline.yml.sha256", ".tar", ".tar.sha256", "-Datenbank.tar", "-Datenbank.tar.sha256"].map(suffix => base + suffix);
+              return [".yml", ".yml.sha256"].map(suffix => base + suffix);
             });
-            return files.concat(containerBundles(version, platforms).flatMap(b => [b.filename, b.filename + ".sha256"]));
+            return files.concat(bundles.flatMap(b => [b.filename, b.filename + ".sha256"]));
+          }
+          function containerSupersededDownloadNames(version, platforms) {
+            containerBundles(version, platforms); // validate version and platform selection
+            return canonicalContainerPlatforms(platforms).flatMap(platform => {
+              const base = `Bonni-Core-v${version}-${containerArchitecture(platform)}`;
+              return ["-Offline.yml", "-Offline.yml.sha256", ".tar", ".tar.sha256", "-Datenbank.tar", "-Datenbank.tar.sha256"].map(suffix => base + suffix);
+            });
           }
           import fs from "node:fs/promises";
           import path from "node:path";
@@ -529,6 +577,87 @@ jobs:
         run: |
           node -e 'const fs=require("node:fs"); fs.appendFileSync(process.env.GITHUB_OUTPUT, "core_version=" + process.env.VERSION.replace(/-([a-z])$/, "+$1") + "\n")'
 
+      - name: Check known container rules before image builds
+        timeout-minutes: 2
+        run: |
+          set -euo pipefail
+          cat > bonni-rule-preflight.mjs <<'BONNI_RULE_PREFLIGHT'
+          import fs from 'node:fs/promises';
+          import path from 'node:path';
+          import {pathToFileURL} from 'node:url';
+          async function checkContainerSourceRules({systemRoot,platforms}) {
+            const supported=['linux/amd64','linux/arm64','linux/arm/v7'];
+            const fail=(rule,detail)=>{throw Error('CONTAINER_RULE_'+rule+': '+detail);};
+            if(!Array.isArray(platforms)||!platforms.length||new Set(platforms).size!==platforms.length
+              ||platforms.some(p=>!supported.includes(p)))fail('PLATFORM','Ungültige Architektur-Auswahl.');
+            const root=path.resolve(systemRoot);
+            for(const component of ['backend','frontend']) {
+              let pkg,lock;
+              try {
+                pkg=JSON.parse(await fs.readFile(path.join(root,component,'package.json'),'utf8'));
+                lock=JSON.parse(await fs.readFile(path.join(root,component,'package-lock.json'),'utf8'));
+              } catch {fail('CR011',component+': Paketdatei oder Lockdatei fehlt bzw. ist ungültig. Vollständige Bauquelle auswählen.');}
+              const locked=lock.packages?.[''];
+              const sorted=value=>JSON.stringify(Object.entries(value||{}).sort(([a],[b])=>a.localeCompare(b)));
+              if(!locked||!pkg.version||pkg.version!==lock.version||pkg.version!==locked.version
+                ||['dependencies','devDependencies','optionalDependencies'].some(k=>sorted(pkg[k])!==sorted(locked[k])))
+                fail('CR011',component+': package.json und package-lock.json passen nicht zusammen. Lockdatei zur Bauquelle aktualisieren.');
+            }
+            async function scanScripts(directory) {
+              for(const entry of await fs.readdir(directory,{withFileTypes:true})) {
+                const file=path.join(directory,entry.name);
+                if(entry.isSymbolicLink())fail('CR010','Verknüpfung im Skriptordner. Reguläre Quelldateien verwenden.');
+                if(entry.isDirectory())await scanScripts(file);
+                else if(entry.isFile()&&entry.name.endsWith('.sh')&&(await fs.readFile(file)).includes(13))
+                  fail('CR010',path.relative(root,file).split(path.sep).join('/')+': Linux-Shellskript enthält CR-Zeilenumbrüche. Als LF speichern.');
+              }
+            }
+            await scanScripts(path.join(root,'backend','scripts'));
+            let inspect;
+            try {inspect=(await import(pathToFileURL(path.join(root,'backend/scripts/deployment/smoke-recovery.mjs')).href)).inspectCrashTarget;}
+            catch {fail('CR027','Prozessprüfung nicht ladbar. Vollständige korrigierte Core-Bauquelle auswählen.');}
+            if(typeof inspect!=='function')fail('CR027','Prüfbarer Controller-Matcher fehlt. Korrigierte Core-Bauquelle auswählen.');
+            const controller='/app/backend/scripts/deployment/controller.mjs';
+            const forms=[['node',controller],['/usr/local/bin/node',controller]];
+            for(const [platform,qemu] of [['linux/arm64','qemu-aarch64'],['linux/arm/v7','qemu-arm']]) {
+              if(platforms.includes(platform))forms.push([qemu,'/usr/local/bin/node',controller],
+                [qemu,'/usr/local/bin/node','node',controller]);
+            }
+            function probe(argv,{foreignNamespace=false,foreignCgroup=false,statTicks='12345',pid=9876}={}) {
+              const fields=Array(50).fill('0');fields[0]='S';fields[19]=statTicks;
+              const fsImpl={readFileSync:file=>{
+                if(file==='/proc/9876/cmdline')return argv.join('\0')+'\0';
+                if(file==='/proc/9876/stat')return '9876 (node) '+fields.join(' ');
+                if(file==='/proc/9876/cgroup')return foreignCgroup?'other':'same';
+                if(file==='/proc/self/cgroup')return 'same';
+                throw Error('Unexpected synthetic read');
+              },readlinkSync:file=>file==='/proc/9876/ns/mnt'&&foreignNamespace?'other':'same'};
+              return inspect({pid,fsImpl,pathImpl:path.posix});
+            }
+            for(const argv of forms) {
+              let result;
+              try {result=probe(argv);}catch {fail('CR027','Bekannte Controller-Prozessform für '+argv[0]+' wird abgelehnt. Core DEV.48 oder eine neuere korrigierte Bauquelle auswählen.');}
+              if(result?.pid!==9876||result?.startTicks!=='12345')fail('CR005','Controller-Identität nicht korrekt geprüft. Core-Bauquelle korrigieren.');
+              for(const options of [{foreignNamespace:true},{foreignCgroup:true},{statTicks:'invalid'},{pid:1}]) {
+                let rejected=false;try {probe(argv,options);}catch {rejected=true;}
+                if(!rejected)fail('CR005','Container-/PID-Schutzprüfung fehlt. Schutzprüfung wiederherstellen.');
+              }
+              for(const invalid of [[...argv,'--health'],[...argv.slice(0,-1),'/tmp/controller.mjs']]) {
+                let rejected=false;try {probe(invalid);}catch {rejected=true;}
+                if(!rejected)fail('CR005','Fremdes Prozessziel wird zugelassen. Exakten Controller-Pfad und Argumente prüfen.');
+              }
+            }
+            return {schema:'bonni.container-rule-preflight/v1',status:'passed',
+              rules:['CR-005','CR-010','CR-011',...(platforms.includes('linux/arm64')?['CR-006']:[]),
+                ...(platforms.includes('linux/arm/v7')?['CR-027']:[])],platforms,
+              scope:'Quelldateien und synthetische Prozessformen; kein Laufzeit- oder Hardwaretest'};
+          }
+          try {const [systemRoot,selection]=process.argv.slice(-2);console.log(JSON.stringify(await checkContainerSourceRules({systemRoot,platforms:selection.split(',')})));}
+          catch(error) {console.error(String(error.message).startsWith('CONTAINER_RULE_')?error.message:'CONTAINER_RULE_CHECK_FAILED: Vorprüfung nicht ausführbar. Vollständige Bauquelle prüfen.');process.exitCode=1;}
+          
+          BONNI_RULE_PREFLIGHT
+          node bonni-rule-preflight.mjs release/PAYLOAD/SYSTEM "$PLATFORMS"
+
       - name: Enable emulation
         uses: docker/setup-qemu-action@v4.2.0
 
@@ -552,6 +681,9 @@ jobs:
           context: release/PAYLOAD
           file: release/PAYLOAD/SYSTEM/backend/Dockerfile.armv7-db
           platforms: linux/arm/v7
+          # Export intermediate PostgreSQL stages before disk-space cleanup.
+          cache-from: type=gha,version=2,scope=bonni-database-armv7-v1,timeout=2m
+          cache-to: type=gha,version=2,scope=bonni-database-armv7-v1,mode=max,timeout=5m,ignore-error=true
           push: true
           provenance: mode=max
           sbom: true
@@ -562,7 +694,7 @@ jobs:
           tags: |
             ${{ inputs.image }}-database:build-${{ github.run_id }}-${{ github.run_attempt }}
 
-      - name: Release ARMv7 database build cache
+      - name: Release local ARMv7 database cache after remote export attempt
         if: contains(inputs.platforms, 'linux/arm/v7')
         env:
           BUILDER_NAME: ${{ steps.bonni_builder.outputs.name }}
@@ -581,6 +713,12 @@ jobs:
           context: release/PAYLOAD
           file: release/PAYLOAD/SYSTEM/backend/Dockerfile
           platforms: ${{ inputs.platforms }}
+          # Import the database stages as well as this architecture selection's
+          # previous Core build. A cache miss still runs the regular build.
+          cache-from: |
+            type=gha,version=2,scope=${{ steps.bonni_platforms.outputs.core_cache_scope }},timeout=2m
+            ${{ contains(inputs.platforms, 'linux/arm/v7') && 'type=gha,version=2,scope=bonni-database-armv7-v1,timeout=2m' || '' }}
+          cache-to: type=gha,version=2,scope=${{ steps.bonni_platforms.outputs.core_cache_scope }},mode=max,timeout=5m,ignore-error=true
           push: true
           provenance: mode=max
           sbom: true
@@ -658,11 +796,19 @@ jobs:
             return bundles;
           }
           function containerDownloadNames(version, platforms) {
+            const bundles = containerBundles(version, platforms);
             const files = canonicalContainerPlatforms(platforms).flatMap(platform => {
               const base = `Bonni-Core-v${version}-${containerArchitecture(platform)}`;
-              return [".yml", ".yml.sha256", "-Offline.yml", "-Offline.yml.sha256", ".tar", ".tar.sha256", "-Datenbank.tar", "-Datenbank.tar.sha256"].map(suffix => base + suffix);
+              return [".yml", ".yml.sha256"].map(suffix => base + suffix);
             });
-            return files.concat(containerBundles(version, platforms).flatMap(b => [b.filename, b.filename + ".sha256"]));
+            return files.concat(bundles.flatMap(b => [b.filename, b.filename + ".sha256"]));
+          }
+          function containerSupersededDownloadNames(version, platforms) {
+            containerBundles(version, platforms); // validate version and platform selection
+            return canonicalContainerPlatforms(platforms).flatMap(platform => {
+              const base = `Bonni-Core-v${version}-${containerArchitecture(platform)}`;
+              return ["-Offline.yml", "-Offline.yml.sha256", ".tar", ".tar.sha256", "-Datenbank.tar", "-Datenbank.tar.sha256"].map(suffix => base + suffix);
+            });
           }
           function buildContainerCompose({ version, platform, image, databaseImage }) {
             // Verified children of the existing, unchanged PostgreSQL 16 image index.
@@ -1171,11 +1317,19 @@ jobs:
             return bundles;
           }
           function containerDownloadNames(version, platforms) {
+            const bundles = containerBundles(version, platforms);
             const files = canonicalContainerPlatforms(platforms).flatMap(platform => {
               const base = `Bonni-Core-v${version}-${containerArchitecture(platform)}`;
-              return [".yml", ".yml.sha256", "-Offline.yml", "-Offline.yml.sha256", ".tar", ".tar.sha256", "-Datenbank.tar", "-Datenbank.tar.sha256"].map(suffix => base + suffix);
+              return [".yml", ".yml.sha256"].map(suffix => base + suffix);
             });
-            return files.concat(containerBundles(version, platforms).flatMap(b => [b.filename, b.filename + ".sha256"]));
+            return files.concat(bundles.flatMap(b => [b.filename, b.filename + ".sha256"]));
+          }
+          function containerSupersededDownloadNames(version, platforms) {
+            containerBundles(version, platforms); // validate version and platform selection
+            return canonicalContainerPlatforms(platforms).flatMap(platform => {
+              const base = `Bonni-Core-v${version}-${containerArchitecture(platform)}`;
+              return ["-Offline.yml", "-Offline.yml.sha256", ".tar", ".tar.sha256", "-Datenbank.tar", "-Datenbank.tar.sha256"].map(suffix => base + suffix);
+            });
           }
           function localContainerImageTag(reference, version, platform, database = false) {
             if (!/^[a-z0-9][a-z0-9._:/-]*@sha256:[a-f0-9]{64}$/.test(reference)
