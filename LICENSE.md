@@ -165,9 +165,9 @@ Solche Vereinbarungen gehen dieser Lizenz vor.
 Diese Lizenz gewährt keine Rechte an Namen, Logos, Projektbezeichnungen,
 Kennzeichen, Designs oder sonstigen Herkunftshinweisen der Software.
 
-Der Name „Bonni Core“ / „BONNI < CORE “ sowie zugehörige Logos, Designs oder
-Projektbezeichnungen dürfen nur verwendet werden, um auf die ursprüngliche
-Software oder das ursprüngliche Projekt hinzuweisen.
+Der Name „StüberlApp“ sowie zugehörige Logos, Designs oder Projektbezeichnungen 
+dürfen nur verwendet werden, um auf die ursprüngliche Software oder das 
+ursprüngliche Projekt hinzuweisen.
 
 Sie dürfen nicht so verwendet werden, dass der Eindruck entsteht, eine
 abgeleitete Version, ein Fork, ein Anbieter, ein Dienst oder eine sonstige
