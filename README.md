@@ -1,6 +1,6 @@
 # 🧩 Bonni Core
 
-[![License](https://shields.io)](https://github.com/Bonni-Community/bonni-core/blob/main/LICENSE.md)
+[![License](https://img.shields.io/badge/License-BCL%20v1.0-grün)](https://github.com/Bonni-Community/bonni-core/blob/main/LICENSE.md)
 [![Version](https://img.shields.io/github/v/release/Bonni-Community/bonni-core)](https://github.com/Bonni-Community/bonni-core/releases)
 [![Website](https://img.shields.io/badge/Webseite-bonni--core.org-0366d6)](https://bonni-core.org)
 
