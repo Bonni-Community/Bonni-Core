@@ -1,4 +1,4 @@
-# Source-Available-Community-Lizenz für BONNI < CORE
+# Source-Available-Community-Lizenz für StüberlApp
 ## Version 1.0 – Stand: 2026
 ###### Copyright (c) 2026 Mario Scheller
 
