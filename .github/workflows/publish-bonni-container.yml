@@ -12,7 +12,11 @@ on:
         required: true
         type: string
       asset_id:
-        description: Signed Bonni container asset identifier
+        description: Temporary signed input (not a product download)
+        required: true
+        type: string
+      transfer_id:
+        description: Dedicated unpublished transfer draft identifier
         required: true
         type: string
       asset_sha256:
@@ -53,16 +57,58 @@ jobs:
   publish:
     name: Build selected container architectures
     runs-on: ubuntu-24.04
-    timeout-minutes: 240
+    timeout-minutes: 300
     environment: bonni-core-release
     env:
       GH_TOKEN: ${{ github.token }}
       RELEASE_ID: ${{ inputs.release_id }}
+      TRANSFER_ID: ${{ inputs.transfer_id }}
+      ASSET_ID: ${{ inputs.asset_id }}
       ASSET_SHA256: ${{ inputs.asset_sha256 }}
       VERSION: ${{ inputs.version }}
       PLATFORMS: ${{ inputs.platforms }}
       IMAGE: ${{ inputs.image }}
     steps:
+      - name: Receive verified build input and remove its transfer copy
+        run: |
+          set -euo pipefail
+          cat > bonni-receive.mjs <<'BONNI_RECEIVE'
+          const transitTag="bonni-intern-bauuebergabe",transitBody="<!-- bonni-source-transit/v1 -->\nTemporäre Bauübergabe für Bonni Windows. Nicht veröffentlichen.";
+          function validateTransit(draft, productId) {
+            if(!draft || !Number.isSafeInteger(draft.id) || draft.id<=0 || draft.id===Number(productId) ||
+              draft.tag_name!==transitTag || draft.body!==transitBody || draft.draft!==true ||
+              draft.immutable===true) throw Error('BONNI_SOURCE_TRANSIT_UNSAFE');
+            return draft;
+          }
+          async function confirmTransit({api,base,productId,transferId,assetId,sha,size,remove=false}) {
+            if(!/^[\w.-]+\/[\w.-]+$/.test(base.slice(7)) || !base.startsWith('/repos/') ||
+              ![productId,transferId,assetId].every(x=>/^[1-9]\d*$/.test(String(x))&&Number.isSafeInteger(Number(x))) ||
+              Number(productId)===Number(transferId) || !/^[a-f0-9]{64}$/.test(sha)) throw Error('BONNI_SOURCE_TRANSIT_INPUT');
+            const draft=validateTransit(await api(base+'/releases/'+transferId),productId);
+            if(draft.id!==Number(transferId)) throw Error('BONNI_SOURCE_TRANSIT_UNSAFE');
+            const matchName=new RegExp('^bonni-transfer-[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}-'+sha+'\\.zip$');
+            let found;
+            for(let page=1;page<=50;page++) {
+              const entries=await api(base+'/releases/'+transferId+'/assets?per_page=100&page='+page);
+              if(!Array.isArray(entries)) throw Error('BONNI_SOURCE_TRANSIT_UNSAFE');
+              found=entries.find(a=>a.id===Number(assetId));
+              if(found || entries.length<100)break;
+            }
+            if(!found || !matchName.test(found.name) || found.state!=='uploaded' || found.digest!=='sha256:'+sha ||
+              !Number.isSafeInteger(found.size) || found.size<1 || (size!==undefined && size!==found.size)) throw Error('BONNI_SOURCE_TRANSIT_MISMATCH');
+            if(remove) await api(base+'/releases/assets/'+assetId,{method:'DELETE',expected:[204]});
+          }
+          const env=process.env;
+          const api=async(p,o={})=>{const r=await fetch('https://api.github.com'+p,{method:o.method||'GET',redirect:'error',headers:{Authorization:'Bearer '+env.GH_TOKEN,Accept:'application/vnd.github+json'}});if(!(o.expected||[200]).includes(r.status))throw Error('BONNI_SOURCE_TRANSIT_API_'+r.status);return r.status===204?null:r.json();};
+          const remove=process.argv[2]==='ack';
+          const size=remove?(await import('node:fs/promises')).stat('bonni-container.zip'):undefined;
+          await confirmTransit({api,base:'/repos/'+env.GITHUB_REPOSITORY,productId:env.RELEASE_ID,transferId:env.TRANSFER_ID,assetId:env.ASSET_ID,sha:env.ASSET_SHA256,size:size?(await size).size:undefined,remove});
+          BONNI_RECEIVE
+          node bonni-receive.mjs check
+          gh api --method GET -H "Accept: application/octet-stream" "/repos/${GITHUB_REPOSITORY}/releases/assets/${ASSET_ID}" > bonni-container.zip
+          printf '%s  %s\n' "${ASSET_SHA256}" bonni-container.zip | sha256sum --check --strict
+          node bonni-receive.mjs ack
+
       - name: Validate the existing release and publication plan
         run: |
           set -euo pipefail
@@ -387,7 +433,7 @@ jobs:
           path: repository
           fetch-depth: 1
 
-      - name: Download signed Bonni package
+      - name: Unpack signed Bonni package already held by this runner
         env:
           GH_TOKEN: ${{ github.token }}
           ASSET_ID: ${{ inputs.asset_id }}
@@ -395,7 +441,6 @@ jobs:
           PLATFORMS: ${{ inputs.platforms }}
         run: |
           set -euo pipefail
-          gh api --method GET             -H "Accept: application/octet-stream"             "/repos/${GITHUB_REPOSITORY}/releases/assets/${ASSET_ID}" > bonni-container.zip
           printf '%s  %s\n' "${ASSET_SHA256}" bonni-container.zip | sha256sum --check --strict
           mkdir release
           unzip -q bonni-container.zip -d release
@@ -740,6 +785,214 @@ jobs:
           
           BONNI_RULE_PREFLIGHT
           node bonni-rule-preflight.mjs release/PAYLOAD/SYSTEM "$PLATFORMS"
+
+      - name: Check ARMv7 update archive compatibility before building
+        if: contains(inputs.platforms, 'linux/arm/v7')
+        timeout-minutes: 2
+        run: |
+          set -euo pipefail
+          cat > bonni-armv7-update-archive.py <<'BONNI_ARMV7_UPDATE_ARCHIVE'
+          """Narrow compatibility writer for Bonni ARMv7 updates created by docker image save.
+          
+          A blob may be referenced twice; two outer TAR entries with one name are never OK.
+          Never extract an archive path. Only the runner's scratch update TAR is replaced.
+          """
+          import base64
+          import hashlib
+          import io
+          import json
+          import os
+          from pathlib import Path
+          import re
+          import shutil
+          import subprocess
+          import sys
+          import tarfile
+          import tempfile
+          
+          BLOB = re.compile(r'blobs/sha256/([0-9a-f]{64})\Z')
+          DIGEST = re.compile(r'sha256:[0-9a-f]{64}\Z')
+          MIB = 1 << 20
+          
+          
+          def require(ok, message):
+              if not ok:
+                  raise ValueError('BONNI_ARMV7_UPDATE_ARCHIVE: ' + message)
+          
+          
+          def hexhash(data):
+              return hashlib.sha256(data).hexdigest()
+          
+          
+          def trim(name):
+              return name[2:] if name.startswith('./') else name
+          
+          
+          def add(out, name, size, stream):
+              h = tarfile.TarInfo(name)
+              h.size = size
+              h.mode = 0o644
+              out.addfile(h, stream)
+          
+          
+          # Use the verifier shipped with this Core for the source's OCI index, descriptors,
+          # metadata and image identity before converting anything to another representation.
+          CHECK = """
+          import fs from 'node:fs';
+          import {pathToFileURL} from 'node:url';
+          import path from 'node:path';
+          const {validateDockerSaveOciLayout}=await import(pathToFileURL(path.resolve(process.argv[1])));
+          const {parsed,imageConfig,entries,metadata}=JSON.parse(fs.readFileSync(0,'utf8'));
+          const outerEntries=new Map(entries.map(([name,type,size])=>[name,{name,type,size}]));
+          const readJson=async name=>{
+            if (!Object.hasOwn(metadata,name)) throw Error('BONNI_ARMV7_UPDATE_METADATA_MISSING');
+            const bytes=Buffer.from(metadata[name],'base64');return {bytes,value:JSON.parse(bytes)};
+          };
+          const allowed=await validateDockerSaveOciLayout({parsed,imageConfig,outerEntries,readJson});
+          for(const name of Object.keys(metadata)) {
+            if(name!=='repositories' && !allowed.has(name)) throw Error('BONNI_ARMV7_UPDATE_UNKNOWN_METADATA');
+          }
+          """
+          
+          
+          def prepare(file, expected, tag, verifier):
+              require(DIGEST.fullmatch(expected) and re.fullmatch(r'bonni-update/armv7:\d+\.\d+\.\d+(?:-[a-z])?', tag), 'unexpected update identity')
+              with tarfile.open(file, 'r:') as source:
+                  all_entries = {}
+                  for m in source:
+                      name = trim(m.name)
+                      require(len(all_entries) < 20000 and name not in all_entries, 'duplicate TAR entry or entry limit')
+                      require(m.isdir() or m.type in (tarfile.REGTYPE, tarfile.AREGTYPE), 'unsupported outer entry')
+                      require((m.isdir() and name in ('.', '')) or (len(name) <= 1024 and re.fullmatch(r'[a-zA-Z0-9._/-]+', name) and not any(x in ('', '.', '..') for x in name.split('/'))), 'unexpected outer path')
+                      all_entries[name] = m
+          
+                  def get(name):
+                      m = all_entries.get(name)
+                      require(m is not None and m.isreg(), 'required regular entry missing')
+                      return m
+          
+                  def small(name, limit):
+                      m = get(name)
+                      require(m.size <= limit, 'metadata too large')
+                      return source.extractfile(m).read()
+          
+                  manifest = json.loads(small('manifest.json', 256 * 1024))
+                  require(isinstance(manifest, list) and len(manifest) == 1 and isinstance(manifest[0], dict), 'expected a single Core image')
+                  row = manifest[0]
+                  require(row.get('RepoTags') == [tag], 'unexpected update tag')
+                  cfg = trim(row['Config'])
+                  blob = BLOB.fullmatch(cfg)
+                  require(cfg in (expected[7:] + '.json', 'blobs/sha256/' + expected[7:]), 'config path does not match tested Core image')
+                  config_bytes = small(cfg, 2 * MIB)
+                  require(hexhash(config_bytes) == expected[7:], 'config digest mismatch')
+                  config = json.loads(config_bytes)
+                  require([config.get(k) for k in ('os', 'architecture', 'variant')] == ['linux', 'arm', 'v7'], 'expected linux/arm/v7')
+                  refs = row.get('Layers')
+                  diffs = config.get('rootfs', {}).get('diff_ids')
+                  require(isinstance(refs, list) and 1 <= len(refs) <= 256 and isinstance(diffs, list) and len(refs) == len(diffs), 'invalid layer count')
+                  layers = []
+                  for i, (ref, diff) in enumerate(zip(refs, diffs), 1):
+                      require(isinstance(ref, str) and isinstance(diff, str) and DIGEST.fullmatch(diff), f'invalid layer or digest at position {i}')
+                      name = trim(ref)
+                      if blob:
+                          require(name == 'blobs/sha256/' + diff[7:], f'OCI path/digest mismatch at layer {i}; expected blobs/sha256/<diff-id>')
+                      else:
+                          require(name == 'layer.tar' or name.endswith('/layer.tar'), f'unexpected classic layer path at position {i}')
+                      get(name)
+                      layers.append(name)
+                  repeated = len(layers) - len(set(layers))
+                  if not repeated:
+                      return 'UNCHANGED'
+                  require(blob, 'repeated non-content-addressed classic TAR reference; will not guess an identity')
+                  entries = [(name, '5' if m.isdir() else '0', m.size) for name, m in all_entries.items()]
+                  metadata = {}
+                  total = 0
+                  skip = set(layers) | {cfg, 'manifest.json'}
+                  for name, m in all_entries.items():
+                      if not m.isreg() or name in skip:
+                          continue
+                      total += m.size
+                      require(total <= 32 * MIB, 'combined metadata limit')
+                      metadata[name] = base64.b64encode(small(name, 2 * MIB)).decode('ascii')
+                  packet = dict(parsed=dict(tags=[tag], configPath=cfg, layers=layers),
+                                imageConfig=dict(platform=dict(os='linux', architecture='arm', variant='v7'),
+                                                 labels=config.get('config', {}).get('Labels', {})),
+                                entries=entries, metadata=metadata)
+                  subprocess.run(['node', '--input-type=module', '-e', CHECK, str(verifier)],
+                                 input=json.dumps(packet).encode(), check=True)
+                  # Keep ALL layer positions. Hash uncompressed bytes against the exact
+                  # tested config. Never deduplicate or rewrite a filesystem layer.
+                  need = sum(get(name).size + 1024 for name in layers) + len(config_bytes) + MIB
+                  require(need <= 10 * 1024 * MIB and shutil.disk_usage(file.parent).free >= need + 128 * MIB, 'insufficient disk or expanded archive too large')
+                  with tempfile.TemporaryDirectory(dir=file.parent, prefix='armv7-update-') as tmp:
+                      target = Path(tmp) / 'update.tar'
+                      with tarfile.open(target, 'x:', format=tarfile.USTAR_FORMAT) as out:
+                          dests = [f'layer-{i:03d}/layer.tar' for i in range(len(layers))]
+                          classic = json.dumps([dict(Config=expected[7:]+'.json', RepoTags=[tag], Layers=dests)], separators=(',', ':')).encode()
+                          add(out, 'manifest.json', len(classic), io.BytesIO(classic))
+                          add(out, expected[7:]+'.json', len(config_bytes), io.BytesIO(config_bytes))
+                          for i, (name, dest, diff) in enumerate(zip(layers, dests, diffs), 1):
+                              m = get(name)
+                              h = hashlib.sha256()
+                              with source.extractfile(m) as stream:
+                                  class Reader:
+                                      def read(self, n):
+                                          data = stream.read(n)
+                                          h.update(data)
+                                          return data
+                                  add(out, dest, m.size, Reader())
+                              require(h.hexdigest() == diff[7:], f'layer bytes do not match image config at position {i}')
+                      os.replace(target, file)
+              return f'REPACKED {len(layers)} layer positions, {repeated} repeated references'
+          
+          
+          def probe(directory, verifier):
+              """Tiny ARMv7 test image; no downloads, emulation, product assets or signing keys."""
+              directory = Path(directory)
+              tag = 'bonni-update/armv7:0.0.0'
+              def encoded(obj):
+                  return json.dumps(obj, separators=(',', ':')).encode()
+              layer = bytes(1024)
+              cfg = encoded(dict(architecture='arm', os='linux', variant='v7', config={'Cmd': ['/bin/true']},
+                                 history=[{'created_by': 'probe-one'}, {'created_by': 'probe-two'}],
+                                 rootfs={'type': 'layers', 'diff_ids': ['sha256:' + hexhash(layer)] * 2}))
+              files = {}
+              def descriptor(data, media):
+                  h = hexhash(data)
+                  files['blobs/sha256/' + h] = data
+                  return dict(mediaType='application/vnd.oci.image.'+media, digest='sha256:'+h, size=len(data))
+              desc = descriptor(layer, 'layer.v1.tar')
+              image = encoded(dict(schemaVersion=2, mediaType='application/vnd.oci.image.manifest.v1+json',
+                                   config=descriptor(cfg, 'config.v1+json'), layers=[desc, desc]))
+              top = descriptor(image, 'manifest.v1+json')
+              top['annotations'] = {'org.opencontainers.image.ref.name': tag}
+              files['index.json'] = encoded(dict(schemaVersion=2, manifests=[top]))
+              files['oci-layout'] = encoded(dict(imageLayoutVersion='1.0.0'))
+              files['manifest.json'] = encoded([dict(Config='blobs/sha256/'+hexhash(cfg), RepoTags=[tag],
+                                                   Layers=['blobs/sha256/'+hexhash(layer)] * 2)])
+              archive = directory / 'probe.tar'
+              with tarfile.open(archive, 'x:') as out:
+                  for name, data in files.items():
+                      add(out, name, len(data), io.BytesIO(data))
+              result = prepare(archive, 'sha256:'+hexhash(cfg), tag, verifier)
+              require(result.startswith('REPACKED '), 'probe did not exercise the compatibility path')
+              return 'sha256:'+hexhash(cfg)
+          
+          
+          if __name__ == '__main__':
+              if len(sys.argv) == 4 and sys.argv[1] == '--probe':
+                  print(probe(sys.argv[2], sys.argv[3]))
+              else:
+                  archive, digest, tag, verifier = sys.argv[1:]
+                  print(prepare(Path(archive), digest, tag, Path(verifier)))
+          BONNI_ARMV7_UPDATE_ARCHIVE
+          probe_dir=$(mktemp -d)
+          probe_tag=bonni-update/armv7:0.0.0
+          if docker image inspect "$probe_tag" >/dev/null 2>&1; then echo "ARMv7 probe tag in use" >&2; exit 1; fi
+          expected=$(python3 -I bonni-armv7-update-archive.py --probe "$probe_dir" release/PAYLOAD/SYSTEM/backend/src/system/update-runner/archive-layout.mjs)
+          docker image load --input "$probe_dir/probe.tar"
+          test "$(docker image inspect --format '{{.Id}}' "$probe_tag")" = "$expected"
+          docker image rm "$probe_tag"
 
       - name: Enable emulation
         uses: docker/setup-qemu-action@v4.2.0
@@ -1487,6 +1740,19 @@ jobs:
                   await docker("cp", container + ":/app/APP-INSTALL-TRUST.json", trust);
                   await docker("image", "tag", config.Id, updateTag); tagged = true;
                   await docker("image", "save", "--output", archive, updateTag);
+                  if (plan.platform === "linux/arm/v7") {
+                    const {stdout} = await execute("python3", ["-I", "bonni-armv7-update-archive.py", archive, config.Id, updateTag,
+                      "release/PAYLOAD/SYSTEM/backend/src/system/update-runner/archive-layout.mjs"], {env: {PATH: process.env.PATH}});
+                    const status = stdout.trim();
+                    if (/^REPACKED [0-9]+ layer positions, [0-9]+ repeated references$/.test(status)) {
+                      // Exercise the exact normalized archive before feeding it to the unchanged signer.
+                      await docker("image", "rm", updateTag); tagged = false;
+                      await docker("image", "load", "--input", archive); tagged = true;
+                      if ((await docker("image", "inspect", "--format", "{{.Id}}", updateTag)).trim() !== config.Id)
+                        throw Error("BONNI_ARMV7_UPDATE_ROUNDTRIP_MISMATCH");
+                    } else if (status !== "UNCHANGED") throw Error("BONNI_ARMV7_UPDATE_ARCHIVE_RESULT_INVALID");
+                    console.log("ARMv7 update TAR: " + status);
+                  }
                   const result = await prepare({archive, version, privateKey: key, keyId: signing.keyId, buildAuthorization: signing.authorization, trust, outputDir: path.join(output, arch)});
                   if (result.architecture !== arch) throw Error("BONNI_UPDATE_SIGNED_PLATFORM_MISMATCH");
                 } finally {
