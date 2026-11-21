@@ -18,5 +18,28 @@ export function deploymentTemplate(source) {
 if(process.argv[1]&&pathToFileURL(path.resolve(process.argv[1])).href===import.meta.url){
   const backend=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'../..');
   const source=await fs.readFile(path.join(backend,'docker-compose.runtime.yml'),'utf8');
-  await fs.writeFile(path.join(backend,'docker-compose.deployment.yml'),deploymentTemplate(source));
+  await fs.writeFile(path.join(backend,'docker-compose.deployment.yml'),deploymentTemplate(
+    process.env.TARGETARCH === 'arm' && process.env.TARGETVARIANT === 'v7'
+      ? withArmv7BackendHealthTimeout(source.replace(/\r\n/g, '\n')) : source));
+}
+
+function withArmv7BackendHealthTimeout(source) {
+  for (const service of ['backend-active', 'backend-emergency']) {
+    const fail = () => { throw new Error('CONTAINER_ARMV7_HEALTHCHECK_LAYOUT_INVALID: ' + service); };
+    const heading = new RegExp('^  ' + service + ':[ ]*$', 'gm');
+    const matches = [...source.matchAll(heading)];
+    if (matches.length !== 1) fail();
+    const start = matches[0].index;
+    const body = source.slice(start + matches[0][0].length);
+    const next = /^  \S/m.exec(body);
+    const end = next ? start + matches[0][0].length + next.index : source.length;
+    const block = source.slice(start, end);
+    const health = [...block.matchAll(/^    healthcheck:[ ]*\n((?:^ {6,}[^\n]*\n?)+)/gm)];
+    if (health.length !== 1 || !/^      test: .+http:\/\/127\.0\.0\.1:4000\/api\/health\/ready/m.test(health[0][1])
+      || [...health[0][1].matchAll(/^      timeout:.*$/gm)].length !== 1
+      || !/^      timeout: 5s[ ]*$/m.test(health[0][1])) fail();
+    const updated = block.replace(health[0][0], health[0][0].replace(/^      timeout: 5s/m, '      timeout: 20s'));
+    source = source.slice(0,start) + updated + source.slice(end);
+  }
+  return source;
 }

@@ -111,6 +111,8 @@ COPY SYSTEM/backend/scripts/licenses ./scripts/licenses
 COPY SYSTEM/backend/scripts/runtime ./scripts/runtime
 COPY SYSTEM/backend/scripts/deployment ./scripts/deployment
 COPY SYSTEM/backend/docker-compose.runtime.yml ./docker-compose.runtime.yml
+ARG TARGETARCH
+ARG TARGETVARIANT
 RUN node scripts/deployment/create-runtime-template.mjs
 COPY SYSTEM/backend/scripts/storage ./scripts/storage
 COPY SYSTEM/backend/scripts/setup ./scripts/setup
