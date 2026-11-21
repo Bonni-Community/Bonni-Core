@@ -1,8 +1,9 @@
+import { hubRemovalBlock, createModuleLifecycleQueue } from "../../../core/hub/hub-installation-policy.js";
 import { evaluateModuleCompatibility } from "../compatibility/index.js";
 import { findModuleManifest, listModuleManifests, validateModuleManifest } from "../manifests/index.js";
 import {
   findInstalledModule,
-  listInstalledModules,
+  listInstalledModulesStrict,
   syncInstalledModuleFromManifest,
   updateInstalledModuleStatus,
   upsertInstalledModuleFromManifest,
@@ -16,7 +17,7 @@ export async function getModuleInstallPlan(key: string) {
   const [manifest, installed, installedModules, manifests] = await Promise.all([
     findModuleManifest(key),
     findInstalledModule(key),
-    listInstalledModules(),
+    listInstalledModulesStrict(),
     listModuleManifests(),
   ]);
   const validation = manifest ? validateModuleManifest(manifest) : { ok: false, errors: ["Manifest nicht gefunden."] };
@@ -26,6 +27,7 @@ export async function getModuleInstallPlan(key: string) {
   const activationCompatibility = manifest
     ? evaluateModuleCompatibility(manifest, { installedModules, manifests, requireDependenciesEnabled: true })
     : null;
+  const removalBlock = hubRemovalBlock(key, installedModules);
   const canInstall = Boolean(manifest && validation.ok && compatibility?.ok && manifest.installation?.installable !== false);
 
   return {
@@ -43,17 +45,18 @@ export async function getModuleInstallPlan(key: string) {
       ...(compatibility?.reasons || []),
       ...(manifest?.installation?.installable === false ? ["Dieses Paket ist nicht installierbar."] : []),
     ],
+    removalBlock,
     actions: {
       install: canInstall,
       activate: Boolean(installed && !installed.enabled && activationCompatibility?.ok),
-      deactivate: Boolean(installed && installed.enabled),
-      uninstall: Boolean(installed),
-      delete: Boolean(installed),
+      deactivate: Boolean(installed && installed.enabled && !removalBlock),
+      uninstall: Boolean(installed && !removalBlock),
+      delete: Boolean(installed && !removalBlock),
     },
   };
 }
 
-export async function installModulePackage(key: string) {
+async function installModulePackageInternal(key: string) {
   const manifest = await findModuleManifest(key);
   if (!manifest) {
     return { ok: false, error: "MODULE_MANIFEST_NOT_FOUND", key };
@@ -69,7 +72,7 @@ export async function installModulePackage(key: string) {
   }
 
   const [installedModules, manifests] = await Promise.all([
-    listInstalledModules(),
+    listInstalledModulesStrict(),
     listModuleManifests(),
   ]);
   const compatibility = evaluateModuleCompatibility(manifest, { installedModules, manifests });
@@ -83,7 +86,7 @@ export async function installModulePackage(key: string) {
   return { ok: true, module, prismaAssembly, legalPayload, compatibility };
 }
 
-export async function activateModulePackage(key: string) {
+async function activateModulePackageInternal(key: string) {
   const module = await findInstalledModule(key);
   if (!module) return { ok: false, error: "MODULE_NOT_INSTALLED", key };
 
@@ -91,7 +94,7 @@ export async function activateModulePackage(key: string) {
   if (!manifest) return { ok: false, error: "MODULE_MANIFEST_NOT_FOUND", key };
 
   const [installedModules, manifests] = await Promise.all([
-    listInstalledModules(),
+    listInstalledModulesStrict(),
     listModuleManifests(),
   ]);
   const compatibility = evaluateModuleCompatibility(manifest, {
@@ -127,7 +130,10 @@ export async function activateModulePackage(key: string) {
   return { ok: true, module: enabledModule, runtime, prismaAssembly, legalPayload, compatibility };
 }
 
-export async function deactivateModulePackage(key: string) {
+async function deactivateModulePackageInternal(key: string) {
+  const [installedModules, manifests] = await Promise.all([listInstalledModulesStrict(), listModuleManifests()]);
+  const removalBlock = hubRemovalBlock(key, installedModules, manifests);
+  if (removalBlock) return removalBlock;
   const module = await findInstalledModule(key);
   if (!module) return { ok: false, error: "MODULE_NOT_INSTALLED", key };
   const disabledModule = await updateInstalledModuleStatus(key, "disabled");
@@ -135,7 +141,10 @@ export async function deactivateModulePackage(key: string) {
   return { ok: true, module: disabledModule };
 }
 
-export async function uninstallModulePackage(key: string) {
+async function uninstallModulePackageInternal(key: string) {
+  const [installedModules, manifests] = await Promise.all([listInstalledModulesStrict(), listModuleManifests()]);
+  const removalBlock = hubRemovalBlock(key, installedModules, manifests);
+  if (removalBlock) return removalBlock;
   const module = await findInstalledModule(key);
   if (!module) return { ok: false, error: "MODULE_NOT_INSTALLED", key };
   const uninstalledModule = await updateInstalledModuleStatus(key, "uninstalled");
@@ -143,7 +152,9 @@ export async function uninstallModulePackage(key: string) {
   return { ok: true, module: uninstalledModule };
 }
 
-export async function deleteModulePackage(key: string) {
+async function deleteModulePackageInternal(key: string) {
+  const removalBlock = hubRemovalBlock(key, await listInstalledModulesStrict());
+  if (removalBlock) return removalBlock;
   const module = await findInstalledModule(key);
   if (!module) return { ok: false, error: "MODULE_NOT_INSTALLED", key };
   const deletedModule = await updateInstalledModuleStatus(key, "deleted");
@@ -201,7 +212,14 @@ export function mergeModulePackages(manifests: any[], installed: any[]) {
 export async function listModulePackages() {
   const [manifests, installed] = await Promise.all([
     listModuleManifests(),
-    listInstalledModules(),
+    listInstalledModulesStrict(),
   ]);
   return mergeModulePackages(manifests, installed);
 }
+
+const moduleLifecycle = createModuleLifecycleQueue();
+export const installModulePackage = (key: string) => moduleLifecycle(() => installModulePackageInternal(key));
+export const activateModulePackage = (key: string) => moduleLifecycle(() => activateModulePackageInternal(key));
+export const deactivateModulePackage = (key: string) => moduleLifecycle(() => deactivateModulePackageInternal(key));
+export const uninstallModulePackage = (key: string) => moduleLifecycle(() => uninstallModulePackageInternal(key));
+export const deleteModulePackage = (key: string) => moduleLifecycle(() => deleteModulePackageInternal(key));

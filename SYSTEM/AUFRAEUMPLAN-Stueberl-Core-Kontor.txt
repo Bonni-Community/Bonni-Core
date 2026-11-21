@@ -1,0 +1,79 @@
+StüberlApp – schrittweise Bereinigung zu Bonni Core und KontorApp
+Stand: 18.10.2026 | Core DEV.56 / StüberlApp DEV.32
+
+Arbeitsgrundlage
+Die StüberlApp hat mehrere große Umbauten hinter sich. Bestehende Archivdaten
+bleiben erhalten. Die Bereinigung erfolgt pro geprüftem Vertrag und in kleinen,
+einzeln nachvollziehbaren Änderungen. Die Oberfläche bleibt unverändert.
+
+Zuständigkeiten, die erhalten bleiben
+- Bonni Core: Anmeldung, Benutzer/Identitäten, Rollen/Rechte, 2FA/NFC,
+  kontrollierter Datenzugriff, Modulstart und geschützter Nachrichtentransport.
+- StüberlApp: Produkte, Preise, Lager, Verzehr/Bierdeckel und operative Abläufe.
+  Die App bleibt bei deaktivierter Kontor-Anbindung lokal nutzbar.
+- Bei aktivierter Kontor-Anbindung: Kontor führt übernommene Forderungen,
+  Zahlungszuordnung, Guthaben und Journal; Stüberl verarbeitet Rückmeldungen.
+  Der pro Forderung gespeicherte Eigentümer LOCAL/KONTOR bleibt maßgeblich.
+  Ein Einstellungswechsel darf vorhandene Vorgänge nicht rückwirkend umdeuten.
+
+Schritt 1 – in diesem Update abgeschlossen
+Die ungenutzten Prisma-Archivmodelle LegacyTab/LegacyTabItem sind keine Pflicht
+für den Start mehr. Betroffen sind die alten physischen Tabellen Tab/TabItem;
+der aktuelle Prisma-Tab nutzt TabNew. Bestehende Archive bleiben unverändert.
+Quelle: Core backend/scripts/apps/stueberl-schema-upgrade.mjs;
+App backend/src/runtime/bonni-runtime.contract.ts und bierdeckel_legacy.prisma.
+
+Schritt 2 – als Nächstes: gemeinsamer Finanzvertrag
+Der aktuelle Stüberl-Code sendet bonni.finance.kontor.receivable.requested/v2.
+Die Funktion buildReceivableLines in
+backend/src/core/modules/kontor-bridge/receivable-lines.ts enthält Produkt-ID,
+Produktversion, Bezeichnung, Menge, Leistungsdatum und Steuerangaben je Position.
+Die bestehenden Brückentests prüfen unter anderem noch den v1-Aggregatvertrag.
+Die frühere Nutzerentscheidung sah eine aggregierte Forderung ohne einzelne
+Getränkepositionen vor. Ein späterer ausdrücklicher Nutzerbeschluss, der diese
+Datenumfangsgrenze ersetzt, ist in den abgerufenen Auszügen nicht belegt.
+Deshalb wird hier weder eine Rückstufung noch eine Ausweitung implementiert.
+Zuerst Core- und aktuelles Kontor-Paket als Referenz abgleichen; danach den
+Stüberl-Vertrag gezielt korrigieren und einen gemeinsamen Vertragstest ergänzen.
+Der lokal für Vergleiche vorliegende Kontor-Basisstand 0.19.3+b ist älter und
+belegt nicht die Fähigkeiten der aktuell beim Nutzer ausgewählten Kontor-Version.
+
+Abnahme für diesen Schritt: freigegebene Datenfelder, Betrags-/Steuererhaltung,
+einmalige Übergabe bei Wiederholungen, Neustart nach ausstehender Nachricht,
+Barzahlung, Teilzahlung, Storno und Rückmeldung ohne doppelte Forderungen.
+Lokaler Betrieb ohne Kontor und Kontor-Betrieb sind getrennt zu prüfen.
+Historische Nachübernahme bleibt bewusst auswählbar und nimmt Verkauf/Zahlung
+mit ursprünglichen Vorgangs-IDs gemeinsam mit.
+
+Schritt 3 – Schema und Migrationsverantwortung bereinigen
+Die aktuelle Übergangsmigration liegt noch mit einem Stüberl-spezifischen
+Snapshot im Core. Der weiterführende Schritt ist eine versionierte, App-eigene
+Schema-Vorbereitung über den bestehenden Paket-/Datenbankvertrag.
+APP-DATABASE.json / bonni.app-database/v1 sind dazu im Core bereits vorhanden.
+Das ist ein Prüf- und Umbauschritt, noch keine fertige Umstellung.
+Quellen: Core backend/src/platform/module-manager/distribution/
+app-database-runtime.ts und backend/scripts/apps/app-database.mjs.
+Prisma-Quellen bleiben bei der App; assemblierte Dateien sind technische Ausgabe.
+Erst nach Ablösung der aktiven Referenzen können alte Client-Modelle entfallen.
+Eine Bereinigung des Clients ist keine Erlaubnis zum Löschen alter Datenbanken.
+
+Schritt 4 – weitere Übergänge anhand ihrer Aufrufer entfernen
+Der Architekturcheck verhindert bereits die Rückkehr von core/legacy/bierdeckel,
+billing, member und Prisma-Helfern. Der aktuelle Check besteht.
+Einige alte öffentliche Routen wie /finalize sind noch vorhanden und verweigern
+die alte Aktion bewusst. Vor Entfernung müssen Frontend, RPC-Vertrag und noch
+vorhandene Aufrufer zusammen geprüft werden. Ein Name allein belegt keinen
+ungenutzten Ablauf. Lokale Finanzsnapshots sind weiterhin für den Betrieb ohne
+Kontor und die unveränderliche Historie erforderlich.
+
+Abnahme pro Änderung
+Produkt anlegen und nach Neuladen wiederfinden; Benutzer und Events laden;
+Lagervorgang und Inventur; aktueller Bierdeckel; Kontoübernahme/Zahlung/Storno;
+Betrieb ohne und mit Kontor; Verträge, Berechtigungen und Datenbestand erhalten.
+
+Aktueller Prüfstand
+15 PostgreSQL-Regressionstests mit PGlite, 27 Core-Tests, 14 Frontend-/RPC-Tests,
+44 Stüberl-Vertrags-/Abrechnungstests und Architekturcheck bestanden.
+HTTP-Laden der App und Core-/App-Handschlag in einer DOM-Umgebung geprüft.
+Die reale Nutzerdatenbank, ein nativer Windows-Start und ein gemeinsamer Lauf
+mit dem aktuell installierten Kontor-Paket sind damit noch nicht nachgewiesen.

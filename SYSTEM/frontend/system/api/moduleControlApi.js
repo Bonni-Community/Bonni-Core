@@ -25,9 +25,15 @@ export async function fetchModuleRuntimeRoutes(_token, _key) {
   return [];
 }
 
-export async function runModuleAction(token, key, action, body = {}) {
-  const data = await apiRequest(packagePath(key, action), { token, method: "POST", body });
-  return data?.module || data;
+export async function runModuleAction(token, key, action, body = {}, { signal } = {}) {
+  const data = await apiRequest(packagePath(key, action), {
+    token,
+    signal,
+    method: "POST",
+    body,
+    allowFailover: false,
+  });
+  return data?.ok === true ? data.module || data : data;
 }
 
 export const moduleActions = {

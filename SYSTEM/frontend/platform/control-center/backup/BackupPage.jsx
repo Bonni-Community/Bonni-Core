@@ -138,7 +138,7 @@ export default function BackupPage({ token }) {
                 <div className="cc-backup-card__main">
                   <div className="cc-backup-card__title">
                     <span className="cc-backup-dot" aria-hidden="true" />
-                    <div><strong>{backup.id}</strong><small>{new Date(backup.createdAt).toLocaleString("de-DE")} · Bonni Core {formatBonniCoreVersion(backup.coreVersion)}</small></div>
+                    <div><strong>{backup.id}</strong><small>{new Date(backup.createdAt).toLocaleString("de-DE")} · Bonni Core {formatBonniCoreVersion(backup.coreVersion)}{backup.directory ? ` · /${backup.directory}` : ""}</small></div>
                   </div>
                   <span>{statusLabel(backup.status)}</span>
                 </div>

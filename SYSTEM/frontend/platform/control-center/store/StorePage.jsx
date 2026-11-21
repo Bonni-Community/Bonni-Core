@@ -1,3 +1,5 @@
+import ModuleMaintenance from './ModuleMaintenance.jsx';
+import CaptureLearningModule from './CaptureLearningModule.jsx';
 import AppInstallPanel from "./AppInstallPanel.jsx";
 import { useEffect, useMemo, useRef, useState } from "react";
 
@@ -5,10 +7,8 @@ import {
   activateControlCenterRuntimeModule,
   deactivateControlCenterRuntimeModule,
   fetchControlCenterRuntimeModuleDetails,
-  fetchControlCenterRuntimeModuleInstallPlan,
   fetchControlCenterRuntimeModules,
   installControlCenterRuntimeModule,
-  runControlCenterRuntimeModuleLifecycle,
 } from "../../../system/api/controlCenterRuntimeApi.js";
 import {
   getControlCenterSystemSettings,
@@ -31,6 +31,9 @@ import {
   storeLanguageLabel,
   storeSupportInfo,
 } from "./storeLocalization.js";
+import { stueberlStorePresentation } from "./stueberlStorePresentation.js";
+import { gourmetStorePresentation } from "./gourmetStorePresentation.js";
+import meetAppLogo from "./meetapp-logo.png";
 
 import "./StorePage.css";
 
@@ -51,6 +54,12 @@ const STORE_SECTIONS = [
   { key: "installed", title: "Installierte Pakete", badge: "Aktiv" },
 ];
 
+const PACKAGE_PRESENTATIONS = new Map([
+  ["app.stueberlapp", stueberlStorePresentation],
+  ["addon.gourmet", gourmetStorePresentation],
+  ["app.meetapp", { logo: meetAppLogo }],
+]);
+
 const ICONS = {
   app: "▦",
   addon: "▣",
@@ -63,7 +72,14 @@ const ICONS = {
   internal: "◇",
 };
 
+const CAPTURE_KEY = "addon.capture";
+const CAPTURE_RECORD_TABS = [
+  { key: "description", label: "Allgemein" },
+  { key: "training", label: "Training" },
+  { key: "learning", label: "Lernmodul" },
+];
 const TWO_FACTOR_PLUGIN_KEY = "plugin.privacyidea";
+const CORE_RECORD_KEY = "bonni-core";
 const STORE_FEEDBACK_DRAFT_PREFIX = "bonni.store.feedback.";
 
 const STORE_FEEDBACK_CATEGORIES = Object.freeze([
@@ -223,6 +239,8 @@ function statusClass(module) {
 
 function packageIcon(module) {
   const key = keyOf(module).toLowerCase();
+  const logo = PACKAGE_PRESENTATIONS.get(key)?.logo;
+  if (logo) return <img className="store-package-logo" src={logo} alt="" />;
   if (key.includes("pos")) return "▣";
   if (key.includes("oidc") || key.includes("auth")) return "🔐";
   if (key.includes("dsgvo") || key.includes("privacy")) return "🛡";
@@ -249,6 +267,7 @@ function matchesFilter(module, filter, language = "en") {
   if (filter === "all") return true;
   if (filter === "installed") return isInstalled(module);
   if (filter === "updates") return hasUpdate(module);
+  if (filter === "app" && keyOf(module) === CAPTURE_KEY) return true;
   if (filter === "license") {
     const key = keyOf(module).toLowerCase();
     const title = titleOf(module, language).toLowerCase();
@@ -282,7 +301,7 @@ function buildCounts(modules) {
     total: modules.length,
     active: modules.filter(isActive).length,
     installed: modules.filter(isInstalled).length,
-    apps: modules.filter((module) => kindOf(module) === "app").length,
+    apps: modules.filter((module) => matchesFilter(module, "app")).length,
     addons: modules.filter((module) => kindOf(module) === "addon").length,
     plugins: modules.filter((module) => kindOf(module) === "plugin").length,
     bridges: modules.filter((module) => kindOf(module) === "bridge").length,
@@ -469,57 +488,6 @@ function StoreSection({ section, modules, language, selectedKey, onSelect, onIns
         ))}
       </div>
     </section>
-  );
-}
-
-function StoreSettingsModal({ open, sourceUrl, localUpdatePath, onSourceUrlChange, onLocalUpdatePathChange, onClose, onSaveDraft }) {
-  if (!open) return null;
-
-  return (
-    <div className="store-settings-backdrop" role="presentation" onMouseDown={onClose}>
-      <section className="store-settings-dialog" role="dialog" aria-modal="true" aria-labelledby="store-settings-title" onMouseDown={(event) => event.stopPropagation()}>
-        <header className="store-settings-dialog__header">
-          <div>
-            <p className="store-eyebrow">Store</p>
-            <h2 id="store-settings-title">Einstellungen</h2>
-            <p>Vorbereitung für externe Store-Quellen. Hier kann später eine Webseite oder Repository-Adresse hinterlegt werden.</p>
-          </div>
-          <button type="button" className="store-detail__close" onClick={onClose} aria-label="Einstellungen schließen">×</button>
-        </header>
-
-        <div className="store-settings-grid">
-          <label className="store-settings-field">
-            <span>Externe Store-Quelle / Webseite</span>
-            <input
-              value={sourceUrl}
-              onChange={(event) => onSourceUrlChange(event.target.value)}
-              placeholder="https://example.com/store/index.json"
-            />
-            <small>Nur Vorbereitung: Die Adresse wird aktuell nur in der Oberfläche vorgemerkt.</small>
-          </label>
-
-          <label className="store-settings-field">
-            <span>Lokale Aktualisierung / UPDATE</span>
-            <input
-              value={localUpdatePath}
-              onChange={(event) => onLocalUpdatePathChange(event.target.value)}
-              placeholder="UPDATE/"
-            />
-            <small>Alles, was später im UPDATE-Ordner liegt, kann als lokale Store-Quelle angezeigt und zur Installation vorbereitet werden.</small>
-          </label>
-        </div>
-
-        <div className="store-settings-note">
-          <strong>Späterer Ablauf</strong>
-          <p>Der Package Manager liest externe Katalogdaten und den lokalen UPDATE-Ordner, prüft Manifest, Versionen und Abhängigkeiten und zeigt installierbare Pakete im Store an.</p>
-        </div>
-
-        <footer className="store-settings-dialog__footer">
-          <button type="button" onClick={onClose}>Abbrechen</button>
-          <button type="button" className="is-primary" onClick={onSaveDraft}>Vorbereiten</button>
-        </footer>
-      </section>
-    </div>
   );
 }
 
@@ -867,7 +835,201 @@ function StorePluginFeedback({ module, language, support }) {
   );
 }
 
-function StoreDetail({ open, module, language, details, plan, result, busy, token, onClose, onLoadPlan, onInstall, onActivate, onDeactivate, onHealthcheck, onRollback, onAppUpdate, appOperation }) {
+function moduleServicesOf(module) {
+  return module?.metadata?.moduleServices ?? module?.manifest?.metadata?.moduleServices;
+}
+
+function getAppDependencies(module, compatibility) {
+  const related = new Map();
+  const selectedKey = keyOf(module);
+
+  function add(key, required, state = {}) {
+    if (typeof key !== "string" || !key.startsWith("app.") || key === selectedKey) return;
+    const previous = related.get(key);
+    if (previous && (!required || previous.satisfied === false)) return;
+    related.set(key, { ...state, key, required });
+  }
+
+  for (const key of module.dependsOn ?? module.manifest?.dependsOn ?? []) add(key, true);
+  for (const dependency of compatibility?.dependencies || []) {
+    add(dependency.providerKey || dependency.key, true, dependency);
+  }
+  const services = moduleServicesOf(module);
+  for (const key of services?.connections || []) add(key, false);
+  for (const service of services?.consumes || []) add(service?.provider, false);
+  return [...related.values()];
+}
+
+function hasCompatibleAppServices(module, app) {
+  const offers = moduleServicesOf(app)?.provides ?? [];
+  const uses = moduleServicesOf(module)?.consumes ?? [];
+  return uses.filter(service => service?.provider === keyOf(app)).every(service =>
+    offers.some(offer => offer.id === service.id && offer.version === service.version
+      && (service.operations ?? []).every(operation => offer.operations?.includes(operation)))
+  );
+}
+
+function StoreRecordLink({ name, version, status, ready, busy, onOpen }) {
+  return (
+    <button
+      type="button"
+      className={`store-record-link${ready ? " is-ready" : ""}`}
+      title={status}
+      aria-label={`${name} · ${version} · ${status}`}
+      onClick={onOpen}
+      disabled={busy}
+    >
+      <strong>{name}</strong>
+      <small>{version}</small>
+    </button>
+  );
+}
+
+function StoreRecordLinks({ module, compatibility, packages, language, busy, onOpen }) {
+  const coreVersion = compatibility?.coreVersion || BONNI_CORE_VERSION;
+  const coreReady = compatibility?.coreVersionCompatible === true;
+  const coreStatus = coreReady ? "Installiert und kompatibel"
+    : compatibility?.coreVersionCompatible === false ? "Nicht kompatibel" : "Kompatibilität nicht bestätigt";
+  const core = { key: CORE_RECORD_KEY, name: "Bonni Core", kind: "system", source: "bonni-core", version: coreVersion, recordType: "core" };
+  return (
+    <nav className="store-record-links" aria-label="App-Abhängigkeiten">
+      <StoreRecordLink
+        name="Bonni Core"
+        version={versionOf(core)}
+        status={coreStatus}
+        ready={coreReady}
+        busy={busy}
+        onOpen={() => onOpen(core)}
+      />
+      {getAppDependencies(module, compatibility).map(dependency => {
+        const app = packages.find(item => keyOf(item) === dependency.key);
+        const name = app ? titleOf(app, language) : dependency.key;
+        const installed = app ? isInstalled(app) : dependency.installed;
+        const version = (installed && (app?.installation?.version || app?.installedVersion)) || versionOf(app);
+        const ready = Boolean(app && installed && version !== "—" && dependency.satisfied !== false
+          && isCompatible(app) && hasCompatibleAppServices(module, app));
+        const state = ready ? "Installiert und kompatibel" : installed ? "Kompatibilität nicht bestätigt" : "Nicht installiert";
+        const record = app ?? { key: dependency.key, name, kind: "app", recordType: "missing" };
+        return (
+          <StoreRecordLink
+            key={dependency.key}
+            name={name}
+            version={version === "—" ? (installed ? "Version unbekannt" : "Nicht installiert") : version}
+            status={`${dependency.required ? "Erforderlich" : "Schnittstelle"} · ${state}`}
+            ready={ready}
+            busy={busy}
+            onOpen={() => onOpen(record)}
+          />
+        );
+      })}
+    </nav>
+  );
+}
+
+function StoreAppUpdate({ module, busy, appOperation, onCheck, onInstall }) {
+  const update = module.appUpdate;
+  if (!update && (kindOf(module) !== "app" || !isInstalled(module))) return null;
+  const blocked = Boolean(busy) || appOperation?.busy;
+  const actionLabel = update ? "Installieren" : "Nach Updates suchen";
+  return (
+    <section className="store-detail-block store-app-update" aria-label="Update">
+      <div className="store-detail-actions">
+        <button
+          type="button"
+          className={update ? "is-primary" : undefined}
+          disabled={blocked || Boolean(update?.error)}
+          onClick={update ? () => onInstall(update) : onCheck}
+        >
+          {update && appOperation?.busy ? "Bitte warten …" : actionLabel}
+        </button>
+      </div>
+      {update ? (
+        <>
+          <p className="store-app-version-change">
+            <span>Installiert <strong>{update.installedVersion}</strong></span>
+            <span aria-hidden="true">→</span>
+            <span>Verfügbar <strong>{update.version}</strong></span>
+          </p>
+          {update.channel === "dev" ? <p>DEV – Entwicklungsversion, noch nicht abschließend geprüft.</p> : null}
+          <h4>Das hat sich geändert</h4>
+          <p className="store-app-release-notes">{update.releaseNotes?.trim() || "Für diese Version wurde keine Änderungsbeschreibung veröffentlicht."}</p>
+          <small>{update.source === "offline" ? "Paket im UPDATE-Ordner" : "Veröffentlichung auf GitHub"}</small>
+          {update.error === "APP_CORE_TOO_OLD" ? <p>Benötigt Bonni Core {update.minimumCoreVersion} oder neuer.</p> : null}
+        </>
+      ) : null}
+    </section>
+  );
+}
+
+function CaptureRecordTabs({ activeTab, onSelect, toolsAvailable }) {
+  function moveFocus(event) {
+    const buttons = [...event.currentTarget.querySelectorAll("button:not(:disabled)")];
+    const index = buttons.indexOf(event.target);
+    let next;
+    switch (event.key) {
+      case "ArrowLeft": next = buttons[(index + buttons.length - 1) % buttons.length]; break;
+      case "ArrowRight": next = buttons[(index + 1) % buttons.length]; break;
+      case "Home": next = buttons[0]; break;
+      case "End": next = buttons.at(-1); break;
+      default: return;
+    }
+    event.preventDefault();
+    next?.focus();
+    next?.click();
+  }
+
+  return (
+    <nav className="store-capture-tabs" role="tablist" aria-label="Bonni Capture" onKeyDown={moveFocus}>
+      {CAPTURE_RECORD_TABS.map(({ key, label }) => (
+        <button
+          key={key}
+          id={`capture-record-tab-${key}`}
+          type="button"
+          role="tab"
+          aria-selected={activeTab === key}
+          aria-controls="capture-record-panel"
+          tabIndex={activeTab === key ? 0 : -1}
+          disabled={key !== "description" && key !== activeTab && !toolsAvailable}
+          onClick={() => onSelect(key)}
+        >
+          {label}
+        </button>
+      ))}
+    </nav>
+  );
+}
+
+function StoreRecordDialog({ module, language, onClose, headerTabs, training, children }) {
+  return (
+    <div className={`store-settings-backdrop store-detail-backdrop${training ? " store-detail-backdrop--training" : ""}`}
+      role="presentation" onMouseDown={onClose}>
+      <section
+        className={`store-settings-dialog store-package-dialog store-detail${headerTabs ? " store-package-dialog--capture" : ""}${training ? " store-package-dialog--training" : ""}`}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="store-package-detail-title"
+        onMouseDown={(event) => event.stopPropagation()}
+      >
+        <header className={`store-settings-dialog__header store-detail__header${headerTabs ? " store-detail__header--capture" : ""}`}>
+          <span className="store-detail__icon" aria-hidden="true">{packageIcon(module)}</span>
+          <div>
+            <p className="store-eyebrow">{kindLabel(kindOf(module))}</p>
+            <h2 id="store-package-detail-title">{titleOf(module, language)}</h2>
+            {!headerTabs && <small>{keyOf(module)}</small>}
+          </div>
+          {headerTabs}
+          <button type="button" className="store-detail__close" onClick={onClose} aria-label="Details schließen">×</button>
+        </header>
+        {children}
+      </section>
+    </div>
+  );
+}
+
+function StoreDetail({
+  open, module, packages, language, details, result, busy, token, onClose, onOpenRecord,
+  onOpenCoreUpdate, onInstall, onActivate, onDeactivate, onAppUpdate, onCheckUpdates, appOperation,
+}) {
   const moduleKey = module ? keyOf(module) : "";
   const [activeTab, setActiveTab] = useState("description");
   const [guideLanguage, setGuideLanguage] = useState("auto");
@@ -881,150 +1043,166 @@ function StoreDetail({ open, module, language, details, plan, result, busy, toke
 
   if (!open || !module) return null;
 
+  if (module.recordType) {
+    const core = module.recordType === "core";
+    return (
+      <StoreRecordDialog module={module} language={language} onClose={onClose}>
+        <dl className="store-detail-meta">
+          <div><dt>Version</dt><dd>{versionOf(module)}</dd></div>
+          <div><dt>Status</dt><dd>{core ? "Aktiv" : "Nicht im Store erfasst"}</dd></div>
+        </dl>
+        {core && onOpenCoreUpdate ? (
+          <div className="store-detail-actions">
+            <button type="button" onClick={onOpenCoreUpdate}>Systemupdate öffnen</button>
+          </div>
+        ) : null}
+      </StoreRecordDialog>
+    );
+  }
+
   const installed = isInstalled(module);
   const active = isActive(module);
-  const lifecycleHooks = details?.lifecycle?.value?.hooks || details?.lifecycle?.hooks || [];
+  const presentation = PACKAGE_PRESENTATIONS.get(moduleKey);
+  const descriptionLanguage = presentation?.description && language !== "de" ? "en" : language;
   const support = storeSupportInfo(module);
-  const compatibility = plan?.compatibility || module?.compatibility || null;
+  const compatibility = module?.compatibility || null;
   const compatible = compatibility?.ok !== false;
+  const blocked = Boolean(busy) || appOperation?.busy;
+  const isCapture = moduleKey === CAPTURE_KEY;
   const isTwoFactorPlugin = moduleKey === TWO_FACTOR_PLUGIN_KEY;
+  const hasMaintenance = active && [
+    details?.item?.manifest, details?.item, details?.manifest, details?.value?.manifest, module?.manifest, module,
+  ].some(item => item?.metadata?.moduleServices?.provides?.some(offer => offer.control === true && offer.id === "maintenance"));
+  const captureTab = hasMaintenance && (activeTab === "training" || activeTab === "learning")
+    ? activeTab
+    : "description";
 
-  return (
-    <div className="store-settings-backdrop store-detail-backdrop" role="presentation" onMouseDown={onClose}>
-      <section
-        className="store-settings-dialog store-package-dialog store-detail"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="store-package-detail-title"
-        onMouseDown={(event) => event.stopPropagation()}
-      >
-        <header className="store-settings-dialog__header store-detail__header">
-          <span className="store-detail__icon" aria-hidden="true">{packageIcon(module)}</span>
-          <div>
-            <p className="store-eyebrow">{kindLabel(kindOf(module))}</p>
-            <h2 id="store-package-detail-title">{titleOf(module, language)}</h2>
-            <small>{keyOf(module)}</small>
-          </div>
-          <button type="button" className="store-detail__close" onClick={onClose} aria-label="Details schließen">×</button>
-        </header>
+  const generalDetails = (
+    <>
+      <div className="store-package-dialog__content">
+        <div className="store-package-dialog__main">
+          <dl className="store-detail-meta">
+            <div><dt>Version</dt><dd>{versionOf(module)}</dd></div>
+            <div><dt>Status</dt><dd>{statusText(module)}</dd></div>
+            <div><dt>Owner</dt><dd>{module?.owner || "—"}</dd></div>
+            <div><dt>Quelle</dt><dd>{module?.sourceRoot || module?.source || "Manifest"}</dd></div>
+            <div><dt>Support</dt><dd>{support?.independentlySupported ? `Eigenständig · ${support.extensionKey || keyOf(module)}` : "—"}</dd></div>
+          </dl>
 
-        {appOperation?.message ? <p role="status">{appOperation.message}</p> : null}
-        {appOperation?.error ? <p role="alert">{appOperation.error}</p> : null}
-        {module.appUpdate ? <section className="store-detail-block store-app-update-detail" aria-label="Verfügbare Aktualisierung">
-          <h3>Aktualisierung verfügbar</h3>
-          <p className="store-app-version-change"><span>Aktuell <strong>{module.appUpdate.installedVersion}</strong></span><span aria-hidden="true">→</span><span>Neueste Version <strong>{module.appUpdate.version}</strong></span></p>
-          {module.appUpdate.channel==='dev' ? <p>DEV – Entwicklungsversion, noch nicht abschließend geprüft.</p> : null}
-          <h4>Das hat sich geändert</h4>
-          <p className="store-app-release-notes">{module.appUpdate.releaseNotes?.trim() || "Für diese Version wurde keine Änderungsbeschreibung veröffentlicht."}</p>
-          <small>{module.appUpdate.source==='offline' ? "Paket im UPDATE-Ordner" : "Veröffentlichung auf GitHub"}</small>
-          {module.appUpdate.error==='APP_CORE_TOO_OLD' ? <p>Benötigt Bonni Core {module.appUpdate.minimumCoreVersion} oder neuer.</p> : null}
-          <div className="store-detail-actions"><button type="button" className="is-primary" disabled={Boolean(busy)||appOperation?.busy||!!module.appUpdate.error} onClick={()=>onAppUpdate(module.appUpdate)}>{appOperation?.busy ? "Bitte warten …" : "Update installieren"}</button></div>
-        </section> : null}
+          <p className="store-detail-description" lang={descriptionLanguage} dir={storeLanguageDirection(descriptionLanguage)}>
+            {presentation?.description?.[descriptionLanguage] ?? descriptionOf(module, language)}
+          </p>
 
-        {isTwoFactorPlugin ? (
-          <nav className="store-detail-tabs" role="tablist" aria-label="2FA-Plugin">
-            <button type="button" role="tab" aria-selected={activeTab === "description"} className={activeTab === "description" ? "is-active" : ""} onClick={() => setActiveTab("description")}>Beschreibung</button>
-            <button type="button" role="tab" aria-selected={activeTab === "setup"} className={activeTab === "setup" ? "is-active" : ""} onClick={() => setActiveTab("setup")}>Einrichtung</button>
-            <button type="button" role="tab" aria-selected={activeTab === "guide"} className={activeTab === "guide" ? "is-active" : ""} onClick={() => setActiveTab("guide")}>Installationshilfe</button>
-            <button type="button" role="tab" aria-selected={activeTab === "feedback"} className={activeTab === "feedback" ? "is-active" : ""} onClick={() => setActiveTab("feedback")}>Feedback &amp; Vorschläge</button>
-          </nav>
-        ) : null}
-
-        {activeTab === "setup" && isTwoFactorPlugin ? <StoreTwoFactorProviderSetup token={token} /> : null}
-        {activeTab === "guide" && isTwoFactorPlugin ? <StoreTwoFactorGuide language={language} guideLanguage={guideLanguage} onGuideLanguageChange={setGuideLanguage} /> : null}
-        {activeTab === "feedback" && isTwoFactorPlugin ? <StorePluginFeedback module={module} language={language} support={support} /> : null}
-
-        {activeTab === "description" ? <>
-
-        <div className="store-package-dialog__content">
-          <div className="store-package-dialog__main">
-            <dl className="store-detail-meta">
-              <div><dt>Version</dt><dd>{versionOf(module)}</dd></div>
-              <div><dt>Status</dt><dd>{statusText(module)}</dd></div>
-              <div><dt>Owner</dt><dd>{module?.owner || "—"}</dd></div>
-              <div><dt>Quelle</dt><dd>{module?.sourceRoot || module?.source || "Manifest"}</dd></div>
-              <div><dt>Support</dt><dd>{support?.independentlySupported ? `Eigenständig · ${support.extensionKey || keyOf(module)}` : "—"}</dd></div>
-            </dl>
-
-            <p className="store-detail-description" lang={language} dir={storeLanguageDirection(language)}>
-              {descriptionOf(module, language)}
-            </p>
-
-            <div className="store-detail-actions">
-              <button type="button" onClick={onLoadPlan} disabled={Boolean(busy)}>Plan laden</button>
-              {!installed ? (
-                <button type="button" className="is-primary" onClick={onInstall} disabled={Boolean(busy) || !compatible}>{compatible ? "Installieren" : "Installation gesperrt"}</button>
-              ) : active ? (
-                <button type="button" onClick={onDeactivate} disabled={Boolean(busy)}>Deaktivieren</button>
-              ) : (
-                <button type="button" className="is-primary" onClick={onActivate} disabled={Boolean(busy) || !compatible}>{compatible ? "Aktivieren" : "Aktivierung gesperrt"}</button>
-              )}
-              <button type="button" onClick={onHealthcheck} disabled={Boolean(busy)}>Healthcheck</button>
-              <button type="button" className="is-danger" onClick={onRollback} disabled={Boolean(busy)}>Rollback</button>
-            </div>
-          </div>
-
-          <div className="store-package-dialog__side">
-            <section className={`store-detail-block store-compatibility${compatible ? " is-compatible" : " is-incompatible"}`}>
-              <h3>Kompatibilität</h3>
-              {compatibility ? (
-                <>
-                  <p><strong>{compatible ? "Freigegeben" : "Gesperrt"}</strong> für Bonni Core {formatBonniCoreVersion(compatibility.coreVersion)}</p>
-                  {compatibility.minimumCoreVersion ? <small>Mindestens Bonni Core {formatBonniCoreVersion(compatibility.minimumCoreVersion)}</small> : null}
-                  {compatibility.maximumCoreVersion ? <small>Höchstens Bonni Core {formatBonniCoreVersion(compatibility.maximumCoreVersion)}</small> : null}
-                  {compatibility.reasons?.length ? <ul>{compatibility.reasons.map((reason) => <li key={reason}>{reason}</li>)}</ul> : null}
-                </>
-              ) : <p>Wird aus dem Manifest geladen.</p>}
-            </section>
-            <section className="store-detail-block">
-              <h3>Provides</h3>
-              {module?.provides?.length ? (
-                <ul className="store-chip-list">{module.provides.map((item) => <li key={item}>{item}</li>)}</ul>
-              ) : <p>Keine Provides geladen.</p>}
-            </section>
-
-            <section className="store-detail-block">
-              <h3>Depends On</h3>
-              {compatibility?.dependencies?.length ? (
-                <ul className="store-dependency-list">{compatibility.dependencies.map((item) => <li key={item.key} className={item.satisfied ? "is-ready" : "is-missing"}><span>{item.satisfied ? "✓" : "×"}</span><b>{item.key}</b></li>)}</ul>
-              ) : module?.dependsOn?.length ? (
-                <ul className="store-chip-list">{module.dependsOn.map((item) => <li key={item}>{item}</li>)}</ul>
-              ) : <p>Keine Abhängigkeiten geladen.</p>}
-            </section>
-          </div>
         </div>
 
-        <section className="store-detail-block">
-          <h3>Installationsplan</h3>
-          {plan?.value || plan ? (
-            <pre>{JSON.stringify(plan?.value || plan, null, 2)}</pre>
-          ) : <p>Noch nicht geladen.</p>}
-        </section>
+        <div className="store-package-dialog__side">
+          <StoreRecordLinks
+            module={module}
+            compatibility={compatibility}
+            packages={packages}
+            language={language}
+            busy={blocked}
+            onOpen={onOpenRecord}
+          />
+          <div className="store-package-dialog__actions">
+            <StoreAppUpdate
+              module={module}
+              busy={busy}
+              appOperation={appOperation}
+              onCheck={onCheckUpdates}
+              onInstall={onAppUpdate}
+            />
+            <div className="store-detail-actions store-package-dialog__state-action">
+              {!installed ? (
+                <button type="button" className="is-primary" onClick={onInstall} disabled={blocked || !compatible}>{compatible ? "Installieren" : "Installation gesperrt"}</button>
+              ) : active ? (
+                <button type="button" onClick={onDeactivate} disabled={blocked}>Deaktivieren</button>
+              ) : (
+                <button type="button" className="is-primary" onClick={onActivate} disabled={blocked || !compatible}>{compatible ? "Aktivieren" : "Aktivierung gesperrt"}</button>
+              )}
+            </div>
+          </div>
+        </div>
+      </div>
 
-        <section className="store-detail-block">
-          <h3>Lifecycle</h3>
-          {lifecycleHooks.length ? (
-            <ul className="store-hook-list">
-              {lifecycleHooks.map((hook) => (
-                <li key={hook.hook}><span>{hook.hook}</span><b>{hook.available ? "vorhanden" : "fehlt"}</b></li>
-              ))}
-            </ul>
-          ) : <p>Keine Lifecycle-Information geladen.</p>}
+      {presentation?.screenshots?.length ? (
+        <section className="store-detail-block" lang={descriptionLanguage} aria-labelledby="store-screenshots-heading">
+          <h3 id="store-screenshots-heading">Screenshots</h3>
+          <ul className="store-screenshot-list">
+            {presentation.screenshots.map((screenshot) => (
+              <li key={screenshot.src}>
+                <a className="store-screenshot" href={screenshot.src} target="_blank" rel="noopener">
+                  <img src={screenshot.src} alt="" width="1280" height="800" />
+                  <span>{screenshot[descriptionLanguage]}</span>
+                </a>
+              </li>
+            ))}
+          </ul>
         </section>
+      ) : null}
 
-        {result ? (
-          <section className="store-detail-block">
-            <h3>Letztes Ergebnis</h3>
-            <pre>{JSON.stringify(result, null, 2)}</pre>
-          </section>
-        ) : null}
-        </> : null}
-      </section>
-    </div>
+      {!isCapture && hasMaintenance ? <ModuleMaintenance key={moduleKey} moduleKey={moduleKey} token={token} /> : null}
+
+      {result ? (
+        <section className="store-detail-block">
+          <h3>Letztes Ergebnis</h3>
+          <pre>{JSON.stringify(result, null, 2)}</pre>
+        </section>
+      ) : null}
+    </>
+  );
+
+  const operationFeedback = (
+    <>
+      {appOperation?.message ? <p role="status">{appOperation.message}</p> : null}
+      {appOperation?.error ? <p role="alert">{appOperation.error}</p> : null}
+    </>
+  );
+
+  return (
+    <StoreRecordDialog
+      module={module}
+      language={language}
+      onClose={onClose}
+      training={isCapture && captureTab === "training"}
+      headerTabs={isCapture ? (
+        <CaptureRecordTabs activeTab={captureTab} onSelect={setActiveTab} toolsAvailable={hasMaintenance && !blocked} />
+      ) : null}
+    >
+      {!isCapture && operationFeedback}
+      {isTwoFactorPlugin ? (
+        <nav className="store-detail-tabs" role="tablist" aria-label="2FA-Plugin">
+          <button type="button" role="tab" aria-selected={activeTab === "description"} className={activeTab === "description" ? "is-active" : ""} onClick={() => setActiveTab("description")}>Beschreibung</button>
+          <button type="button" role="tab" aria-selected={activeTab === "setup"} className={activeTab === "setup" ? "is-active" : ""} onClick={() => setActiveTab("setup")}>Einrichtung</button>
+          <button type="button" role="tab" aria-selected={activeTab === "guide"} className={activeTab === "guide" ? "is-active" : ""} onClick={() => setActiveTab("guide")}>Installationshilfe</button>
+          <button type="button" role="tab" aria-selected={activeTab === "feedback"} className={activeTab === "feedback" ? "is-active" : ""} onClick={() => setActiveTab("feedback")}>Feedback &amp; Vorschläge</button>
+        </nav>
+      ) : null}
+
+      {activeTab === "setup" && isTwoFactorPlugin ? <StoreTwoFactorProviderSetup token={token} /> : null}
+      {activeTab === "guide" && isTwoFactorPlugin ? <StoreTwoFactorGuide language={language} guideLanguage={guideLanguage} onGuideLanguageChange={setGuideLanguage} /> : null}
+      {activeTab === "feedback" && isTwoFactorPlugin ? <StorePluginFeedback module={module} language={language} support={support} /> : null}
+
+      {isCapture ? (
+        <div className="store-capture-record-panel" id="capture-record-panel" role="tabpanel" aria-labelledby={`capture-record-tab-${captureTab}`}>
+          {operationFeedback}
+          {captureTab === "description" ? generalDetails : (
+            <>
+              <CaptureLearningModule key={captureTab} view={captureTab} token={token} />
+              {captureTab === "learning" ? (
+                <div className="store-detail-actions store-capture-learning__maintenance">
+                  <ModuleMaintenance moduleKey={CAPTURE_KEY} token={token} />
+                </div>
+              ) : null}
+            </>
+          )}
+        </div>
+      ) : activeTab === "description" ? generalDetails : null}
+    </StoreRecordDialog>
   );
 }
 
-export default function StorePage({ token }) {
+export default function StorePage({ token, onNavigate }) {
   const [payload, setPayload] = useState(null);
   const [packages, setPackages] = useState([]);
   const [appCheck,setAppCheck]=useState({availableUpdates:[]});
@@ -1034,10 +1212,10 @@ export default function StorePage({ token }) {
     const appUpdate=(appCheck.availableUpdates||[]).find(item=>keyOf(module)==='app.'+item.appId.toLowerCase());
     return appUpdate?{...module,appUpdate,updateAvailable:true}:module;
   }),[packages,appCheck]);
-  const [selectedKey, setSelectedKey] = useState("");
+  const [selection, setSelection] = useState(null);
+  const currentSelection = useRef(null);
   const [detailOpen, setDetailOpen] = useState(false);
   const [details, setDetails] = useState(null);
-  const [plan, setPlan] = useState(null);
   const [busy, setBusy] = useState("");
   const [loading, setLoading] = useState(false);
   const [search, setSearch] = useState("");
@@ -1047,8 +1225,6 @@ export default function StorePage({ token }) {
   const [error, setError] = useState("");
   const [result, setResult] = useState(null);
   const [storeSettingsOpen, setStoreSettingsOpen] = useState(false);
-  const [storeSourceUrl, setStoreSourceUrl] = useState("");
-  const [localUpdatePath, setLocalUpdatePath] = useState("UPDATE/");
   const [languageMode, setLanguageMode] = useState(readStoreLanguageMode);
   const storeLanguage = useMemo(
     () => resolveStoreLanguage({ mode: languageMode, controlCenterLanguage: labels.language }),
@@ -1060,7 +1236,10 @@ export default function StorePage({ token }) {
     const filtered = storePackages.filter((module) => matchesFilter(module, filter, storeLanguage) && matchesSearch(module, search, storeLanguage));
     return sortPackages(filtered, sortMode, storeLanguage);
   }, [storePackages, filter, search, sortMode, storeLanguage]);
-  const selectedPackage = storePackages.find((module) => keyOf(module) === selectedKey) || null;
+  const selectedKey = selection?.key || "";
+  const selectedPackage = selection?.record?.recordType === "core" ? selection.record
+    : storePackages.find((module) => keyOf(module) === selectedKey) ?? selection?.record ?? null;
+  const detailKey = selectedPackage && !selectedPackage.recordType ? selectedKey : "";
 
   async function loadPackages({ preserveSelection = true } = {}) {
     setLoading(true);
@@ -1070,11 +1249,13 @@ export default function StorePage({ token }) {
       const items = normalizePayload(nextPayload);
       setPayload(nextPayload);
       setPackages(items);
-      if (!preserveSelection || (selectedKey && !items.some((item) => keyOf(item) === selectedKey))) {
-        setSelectedKey("");
+      const activeSelection = currentSelection.current;
+      if (!preserveSelection || (activeSelection && !activeSelection.record
+        && !items.some((item) => keyOf(item) === activeSelection.key))) {
+        currentSelection.current = null;
+        setSelection(null);
         setDetailOpen(false);
         setDetails(null);
-        setPlan(null);
       }
     } catch (loadError) {
       setError(loadError?.message || labels.store.loadError || "Store konnte nicht geladen werden.");
@@ -1084,33 +1265,19 @@ export default function StorePage({ token }) {
   }
 
   async function loadDetails(key = selectedKey) {
-    if (!key) return null;
+    const requestSelection = currentSelection.current;
+    if (!key || requestSelection?.key !== key) return null;
     setError("");
     try {
       const nextDetails = await fetchControlCenterRuntimeModuleDetails(token, key);
-      setDetails(nextDetails);
+      if (currentSelection.current === requestSelection) setDetails(nextDetails);
       return nextDetails;
     } catch (detailsError) {
-      setDetails(null);
-      setError(detailsError?.message || labels.store.detailsLoadError || "Details konnten nicht geladen werden.");
+      if (currentSelection.current === requestSelection) {
+        setDetails(null);
+        setError(detailsError?.message || labels.store.detailsLoadError || "Details konnten nicht geladen werden.");
+      }
       return null;
-    }
-  }
-
-  async function loadPlan(key = selectedKey) {
-    if (!key) return null;
-    setBusy(`plan:${key}`);
-    setError("");
-    try {
-      const nextPlan = await fetchControlCenterRuntimeModuleInstallPlan(token, key);
-      setPlan(nextPlan);
-      setResult(nextPlan);
-      return nextPlan;
-    } catch (planError) {
-      setError(planError?.message || labels.store.planLoadError || "Installationsplan konnte nicht geladen werden.");
-      return null;
-    } finally {
-      setBusy("");
     }
   }
 
@@ -1136,11 +1303,11 @@ export default function StorePage({ token }) {
   }
 
   function selectPackage(module) {
-    const key = keyOf(module);
-    setSelectedKey(key);
+    const nextSelection = { key: keyOf(module), record: module.recordType ? module : null };
+    currentSelection.current = nextSelection;
+    setSelection(nextSelection);
     setDetailOpen(true);
     setDetails(null);
-    setPlan(null);
     setResult(null);
   }
 
@@ -1153,21 +1320,20 @@ export default function StorePage({ token }) {
   }, []);
 
   useEffect(() => {
-    if (selectedKey) loadDetails(selectedKey);
-  }, [selectedKey]);
+    if (detailOpen && detailKey) loadDetails(detailKey);
+  }, [detailOpen, detailKey, selection]);
 
   return (
-    <section className="control-center-page store-page">
+    <section className="control-center-page store-page" aria-labelledby="store-page-title">
       <header className="store-hero">
         <div>
           <p className="store-eyebrow">Control Center</p>
-          <h1>Store</h1>
+          <h1 id="store-page-title">Store</h1>
           <p>Apps verwalten und verfügbare Aktualisierungen prüfen.</p>
         </div>
 
       </header>
 
-      <AppInstallPanel ref={appInstallerRef} token={token} onChecked={setAppCheck} onOperation={setAppOperation} onRefresh={() => loadPackages({preserveSelection:true})} onInstalled={() => loadPackages({preserveSelection:true})} />
       <SummaryBar counts={counts} />
 
       {error ? <div className="store-alert store-alert--error">{error}</div> : null}
@@ -1223,37 +1389,34 @@ export default function StorePage({ token }) {
             </section>
           )}
           <StoreDetail
+            key={detailOpen ? selectedKey : ""}
             appOperation={appOperation}
             onAppUpdate={item=>appInstallerRef.current?.install(item,item.source)}
+            onCheckUpdates={() => appInstallerRef.current?.refresh()}
             open={detailOpen}
             module={selectedPackage}
+            packages={storePackages}
             language={storeLanguage}
             details={details}
-            plan={plan}
             result={result}
             busy={busy}
             token={token}
             onClose={() => setDetailOpen(false)}
-            onLoadPlan={() => loadPlan(keyOf(selectedPackage || {}))}
+            onOpenRecord={selectPackage}
+            onOpenCoreUpdate={onNavigate ? () => onNavigate("update") : undefined}
             onInstall={() => runAction(selectedPackage, "Install", (key) => installControlCenterRuntimeModule(token, key))}
             onActivate={() => runAction(selectedPackage, "Activate", (key) => activateControlCenterRuntimeModule(token, key))}
             onDeactivate={() => runAction(selectedPackage, "Deactivate", (key) => deactivateControlCenterRuntimeModule(token, key))}
-            onHealthcheck={() => runAction(selectedPackage, "Healthcheck", (key) => runControlCenterRuntimeModuleLifecycle(token, key, "healthcheck", { source: "store" }))}
-            onRollback={() => runAction(selectedPackage, "Rollback", (key) => runControlCenterRuntimeModuleLifecycle(token, key, "rollback", { source: "store" }))}
           />
-          <StoreSettingsModal
+          <AppInstallPanel
+            ref={appInstallerRef}
+            token={token}
             open={storeSettingsOpen}
-            sourceUrl={storeSourceUrl}
-            localUpdatePath={localUpdatePath}
-            onSourceUrlChange={setStoreSourceUrl}
-            onLocalUpdatePathChange={setLocalUpdatePath}
             onClose={() => setStoreSettingsOpen(false)}
-            onSaveDraft={() => {
-              setStoreSettingsOpen(false);
-              const externalPart = storeSourceUrl ? `Externe Quelle: ${storeSourceUrl}` : "Externe Quelle: nicht gesetzt";
-              const localPart = localUpdatePath ? `Lokale Quelle: ${localUpdatePath}` : "Lokale Quelle: nicht gesetzt";
-              setMessage(`Store-Einstellungen vorbereitet. ${externalPart}. ${localPart}.`);
-            }}
+            onChecked={setAppCheck}
+            onOperation={setAppOperation}
+            onRefresh={() => loadPackages({ preserveSelection: true })}
+            onInstalled={() => loadPackages({ preserveSelection: true })}
           />
         </main>
       </div>

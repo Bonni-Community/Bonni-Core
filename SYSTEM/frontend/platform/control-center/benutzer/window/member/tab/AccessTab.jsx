@@ -5,11 +5,13 @@ import {
   updateControlCenterLocalMemberAccess,
 } from "../../../../../../system/api/controlCenterUsersApi.js";
 import ExactSecretInput from "../../../../../../core/modules/security/two-factor/components/ExactSecretInput.jsx";
+import SystemErasurePanel from "../../../../../../core/modules/security/identity/components/SystemErasurePanel.jsx";
 import {
   countUnicodeCodePoints,
   validateExactSecret,
 } from "../../../../../../core/modules/security/two-factor/model/exactSecretPolicy.js";
 import { getAccounts, getPrimaryAccount } from "../memberWindowUtils.js";
+import { isBootstrapAdminLoginName } from "../../../../../../system/auth/systemAccountPolicy.js";
 
 function generatePassword(length = 14) {
   function randomIndex(size) {
@@ -105,6 +107,7 @@ function AccessPanel({
   const accountId = account?.accountId || account?.id;
   const accountType = String(account?.type || "").toUpperCase();
   const terminal = accountType === "TERMINAL";
+  const technical = terminal || accountType === "SERVICE";
   const passwordAllowed = ["MEMBER", "ADMIN", "TERMINAL"].includes(accountType);
   const loginName = account?.loginName || member?.loginName || member?.name || "";
   const originalEmail = useMemo(() => getEmailCandidate(member, account), [account, member]);
@@ -228,12 +231,13 @@ function AccessPanel({
   }, [account, accountId, cleanEmail, emailChanged, password, passwordChanged, passwordRepeat, setBusy, token, onAccountChange]);
 
   const handleDelete = useCallback(async () => {
+    if (!technical || bootstrapAdmin) return;
     if (!accountId) {
       setError("Dieser Benutzer hat keinen löschbaren Zugang.");
       return;
     }
 
-    const confirmed = window.confirm(`Benutzer "${loginName}" wirklich löschen? Dieser Vorgang kann nicht automatisch rückgängig gemacht werden.`);
+    const confirmed = window.confirm(`Technischen Zugang "${loginName}" wirklich entfernen?`);
     if (!confirmed) return;
 
     setDeleting(true);
@@ -250,7 +254,7 @@ function AccessPanel({
       setDeleting(false);
       onBusyChange?.(false);
     }
-  }, [accountId, loginName, member, onBusyChange, onDeleted, token]);
+  }, [accountId, bootstrapAdmin, technical, loginName, member, onBusyChange, onDeleted, token]);
 
   useEffect(() => {
     if (!onFooterActionChange) return undefined;
@@ -367,23 +371,24 @@ function AccessPanel({
         <p className="cc-member-window-note">
           Der feste Systembenutzer admin kann nicht gelöscht oder deaktiviert werden. Sein Passwort darf hier geändert werden.
         </p>
-      ) : (
+      ) : technical ? (
         <div className="cc-member-window-danger-zone">
           <div>
-            <strong>Benutzer löschen</strong>
-            <span>Entfernt den lokalen Zugang und blendet den Benutzer aus der Verwaltung aus.</span>
+            <strong>Technischen Zugang entfernen</strong>
+            <span>Entfernt diesen technischen Zugang aus der Benutzerverwaltung.</span>
           </div>
           <button type="button" className="cc-member-window__danger" onClick={handleDelete} disabled={saving || deleting}>
-            {deleting ? "Löscht..." : "Benutzer löschen"}
+            {deleting ? "Wird entfernt …" : "Technischen Zugang entfernen"}
           </button>
         </div>
-      )}
+      ) : null}
     </section>
   );
 }
 
 export default function AccessTab({
   member,
+  erasureReviewerAccountId = null,
   token,
   onAccountChange,
   onDeleted,
@@ -393,6 +398,12 @@ export default function AccessTab({
 }) {
   const accounts = getAccounts(member);
   const primaryAccount = getPrimaryAccount(member) || accounts[0] || null;
+  const [reviewId, setReviewId] = useState("");
+  const idOf = account => account?.accountId || account?.id;
+  const personal = accounts.filter(account => idOf(account)
+    && ["MEMBER", "ADMIN"].includes(String(account.type || "").toUpperCase())
+    && !isBootstrapAdminLoginName(account.loginName));
+  const reviewed = personal.find(a => idOf(a) === reviewId) || personal.find(a => a === primaryAccount) || personal[0];
 
   useEffect(() => () => onFooterActionChange?.(null), [onFooterActionChange]);
 
@@ -412,6 +423,16 @@ export default function AccessTab({
         onFooterActionChange={onFooterActionChange}
         bootstrapAdmin={bootstrapAdmin}
       />
+      {erasureReviewerAccountId && !bootstrapAdmin && reviewed ? <>
+        {personal.length > 1 ? <label>Persönlichen Zugang für die Antragsprüfung auswählen
+          <select value={idOf(reviewed)} onChange={event => setReviewId(event.target.value)}>
+            {personal.map(a => <option key={idOf(a)} value={idOf(a)}>{a.loginName || idOf(a)}</option>)}
+          </select>
+        </label> : null}
+        <SystemErasurePanel token={token} actorAccountId={erasureReviewerAccountId}
+          targetAccountId={idOf(reviewed)} targetLabel={reviewed.loginName || member?.displayName}
+          isOwnRecord={accounts.some(a => idOf(a) === erasureReviewerAccountId)}/>
+      </> : null}
     </div>
   );
 }

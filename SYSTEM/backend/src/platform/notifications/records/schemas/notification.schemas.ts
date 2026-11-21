@@ -1,5 +1,9 @@
 import { z } from "zod";
 
+export const notificationQuerySchema = z.object({
+  query: z.object({ accountId: z.string().min(1).max(180).optional() }).strict(),
+});
+
 export const createNotificationSchema = z.object({
   body: z.object({
     type: z.string().min(1),

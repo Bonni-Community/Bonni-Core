@@ -1,3 +1,4 @@
+import { operationReportRouter } from "../../core/logger/operation-report.routes.js";
 import type { Express } from "express";
 import { presenceBridgeRouter } from "../../core/modules/security/presence/routes.js";
 
@@ -45,6 +46,7 @@ export function registerCoreRoutes(app: Express) {
   app.use("/api/runtime", runtimeRouter);
   app.use("/api/run-container", runContainerRouter);
   app.use("/api/oidc", oidcRouter);
+  app.use("/api/debug", operationReportRouter);
   app.use("/api/debug", clientLogRouter);
   app.use("/api/update", updateRouter);
   app.use("/api/internal/runtime", runtimeControlRouter);

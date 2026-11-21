@@ -1,3 +1,4 @@
+import { withMediaDiagnostic } from "../logger/media-diagnostics.js";
 import { constants as fileConstants, promises as fs } from "node:fs";
 import { createHash, randomBytes } from "node:crypto";
 import path from "node:path";
@@ -297,9 +298,8 @@ function decodeBase64(value: unknown, maximumBytes: number) {
   if (value.length > maximumEncodedLength) {
     throw mediaError("CORE_MEDIA_TOO_LARGE", 413, { maxBytes: maximumBytes });
   }
-  if (!/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(value)) {
-    throw mediaError("CORE_MEDIA_BASE64_INVALID", 400);
-  }
+  // Canonical decode/re-encode below validates alphabet, padding and unused
+  // bits without a repeated RegExp group that can overflow on large photos.
   const bytes = Buffer.from(value, "base64");
   if (!bytes.length || bytes.toString("base64") !== value) {
     throw mediaError("CORE_MEDIA_BASE64_INVALID", 400);
@@ -692,7 +692,7 @@ export function createModuleMediaRuntime(
 ) {
   const moduleKey = assertModuleKey(moduleKeyValue);
 
-  return Object.freeze({
+  const runtime = {
     contractVersion: MODULE_MEDIA_CONTRACT_VERSION,
     moduleKey,
     async createMedia(input: CreateModuleMediaInput) {
@@ -761,5 +761,10 @@ export function createModuleMediaRuntime(
       }
       return { ok: true, id: mediaId };
     },
+  };
+  return Object.freeze({
+    ...runtime,
+    createMedia: (input: CreateModuleMediaInput) => withMediaDiagnostic(moduleKey, 'create', () => runtime.createMedia(input)),
+    readMedia: (mediaId: string) => withMediaDiagnostic(moduleKey, 'read', () => runtime.readMedia(mediaId)),
   });
 }

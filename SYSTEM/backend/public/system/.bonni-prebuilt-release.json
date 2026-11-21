@@ -1,21 +1,66 @@
 {
   "schemaVersion": "bonni.prebuilt-frontend/v1",
-  "coreVersion": "0.1.20+e",
+  "coreVersion": "0.1.20+h-DEV.75",
   "files": [
     {
-      "path": "assets/index-BovihJN1.css",
-      "bytes": 280823,
-      "sha256": "5a7e2f4c00310e1416b759094c25869b534c7cab821d769c9ac9a0ef784c76b5"
+      "path": "assets/barkeeper-DW36THA2.jpg",
+      "bytes": 167945,
+      "sha256": "df6c7bb07312405cd79f81e2c8ba15f261fa0a64be0e4cd6eaecfa7310d3ed63"
     },
     {
-      "path": "assets/index-HFhm-CI-.js",
-      "bytes": 702843,
-      "sha256": "25a55e81cd98a41db131dfe7efc443c82247e9c70a8f10ff60111a90aa36c6dc"
+      "path": "assets/gourmet-logo-Dm8oWyJ8.jpg",
+      "bytes": 53941,
+      "sha256": "43cc70bee33afb5464d413bb8528d684465eddcaf9f3fe86ed94eb603e794a0a"
+    },
+    {
+      "path": "assets/gourmet-rezept-Bg6guLBC.jpg",
+      "bytes": 87376,
+      "sha256": "50d65ea100cf942f7b9ba804d57a6820a8e84d94405eefb41f27f47e46d31b1b"
+    },
+    {
+      "path": "assets/gourmet-speisekalender-DDUcO83r.jpg",
+      "bytes": 123953,
+      "sha256": "6155d72ba53e9a77d74ce2bf450a6262f1d56fe1f15217c29cb1d46d26d3801e"
+    },
+    {
+      "path": "assets/gourmet-vorraete-XCiS0-p8.jpg",
+      "bytes": 114662,
+      "sha256": "4d38343f9b794cff59c171643dd5c40697feca81ef4a1c6a796b097523416bbd"
+    },
+    {
+      "path": "assets/index-B1zugbRm.css",
+      "bytes": 323837,
+      "sha256": "a5f6d7c5049d90f7ea6f318e1b8b5132c5baa22f09535f041d8369571682cfb2"
+    },
+    {
+      "path": "assets/index-DjFPUF2b.js",
+      "bytes": 1077267,
+      "sha256": "5cea3cf53b4b40f32e525d17c6395a6da3c4e0ef8826a9dd2cf68c2b0e5c6e16"
+    },
+    {
+      "path": "assets/kassenbuch-BGUyWM8c.jpg",
+      "bytes": 115980,
+      "sha256": "236e6a7b97804adc25c9c68b32ef570e907dc3e1ab77f16bfab08310d9ef2c7a"
+    },
+    {
+      "path": "assets/lager-BOuVl087.jpg",
+      "bytes": 122377,
+      "sha256": "7185bf73551b6e78e4258a9dfde39e1a0cbab5012ee16768eb19bf79cd56fda5"
+    },
+    {
+      "path": "assets/meetapp-logo-DSB4AFNq.png",
+      "bytes": 127408,
+      "sha256": "5e5b94d2f4bf52ccf123453a008ccc7e3b2f5e7720bc4da22056ff4b87bb4871"
+    },
+    {
+      "path": "assets/stueberlapp-logo-CGfUNAlk.jpg",
+      "bytes": 56598,
+      "sha256": "d49849c0fbc654c4029a906809e2b9de1ae12ff0da406b2196fdfed376c87e40"
     },
     {
       "path": "index.html",
-      "bytes": 423,
-      "sha256": "9197969efaf774321f68d152e87c00ad865dc9edf9e54e2d3838628a006e492a"
+      "bytes": 437,
+      "sha256": "51e00b2891cdb4887ae316468e0fb0313d142ed7899fbf8155030a52f71a29b9"
     },
     {
       "path": "system/brand/bonni-logo-original.png",
@@ -53,5 +98,5 @@
       "sha256": "2ba1afe1dbe06b792968d00fb47344ec2157ef045102143c9495a0d1c746e21b"
     }
   ],
-  "treeSha256": "e5092e6b763363637d433d32e174f381a932c7806fcee8cce0e86ab14dbac021"
+  "treeSha256": "ec6622e4b1bb988ad4ac95d3205e6a88a5ea387f9d86023f7b2867685b3f7947"
 }

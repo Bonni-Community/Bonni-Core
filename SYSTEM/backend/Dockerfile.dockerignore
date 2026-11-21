@@ -39,6 +39,9 @@ run_system/**
 **/backups
 **/*private*.pem
 **/*.key
+!SYSTEM/backend/scripts/runtime/operation-catalog.json
+!SYSTEM/backend/scripts/backup/backup-paths.mjs
+!SYSTEM/backend/scripts/backup/backup-paths.d.mts
 
 # Development tests are not part of a published container.
 SYSTEM/backend/tests

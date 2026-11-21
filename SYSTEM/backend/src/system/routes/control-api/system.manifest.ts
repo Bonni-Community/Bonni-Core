@@ -3,7 +3,7 @@ export const systemManifest = {
   legacyKeys: ["system"],
   label: "Bonni Core",
   kind: "system",
-  version: "0.1.20+h-DEV.46",
+  version: "0.1.20+h-DEV.75",
   provides: [
     "system",
     "system.overview",
@@ -23,5 +23,5 @@ export const systemManifest = {
     "system.modules.runtime.facade",
     "core.network-requests"
   ],
-  sourceRoot: "System/backend/src/system/application",
+  sourceRoot: "SYSTEM/backend/src/system",
 } as const;

@@ -20,6 +20,7 @@ import {
 } from "../../src/core/database/data-domains.js";
 import {
   buildDomainPrismaSchema,
+  applyDomainPrismaUpgrades,
   listActiveDataDomains,
 } from "./domain-prisma-schema.mjs";
 
@@ -258,6 +259,9 @@ async function deploySchemas(
       for (const target of ["normal", "redundant"] as const) {
         const database = databases[databaseGroup][target];
         console.log(`[bonni-core] Schema ${domain} -> ${database}.${dataDomainSchemas[domain]}`);
+        const upgradeClient = await connect(withDatabase(adminUrl, database));
+        try { await applyDomainPrismaUpgrades(projectRoot, domain, upgradeClient); }
+        finally { await upgradeClient.end(); }
         await runPrismaPush(
           schemaFile,
           withDatabase(adminUrl, database, dataDomainSchemas[domain]),

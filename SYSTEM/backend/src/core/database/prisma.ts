@@ -57,14 +57,20 @@ const MODEL_PROPERTIES = new Map(
     model,
   ]),
 );
-const appClients = new Map<DataDomain, {constructor:any; models: typeof MODEL_PROPERTIES}>();
+type DatabaseJsonNulls = Readonly<{ database: unknown; json: unknown }>;
+const coreJsonNulls: DatabaseJsonNulls = Object.freeze({ database: Prisma.DbNull, json: Prisma.JsonNull });
+const appClients = new Map<DataDomain, {constructor:any; models: typeof MODEL_PROPERTIES; jsonNulls: DatabaseJsonNulls}>();
+export function getDataDomainJsonNulls(domain: DataDomain): DatabaseJsonNulls {
+  return appClients.get(domain)?.jsonNulls || coreJsonNulls;
+}
 function modelsFor(domain:DataDomain) {return appClients.get(domain)?.models || MODEL_PROPERTIES;}
-export async function registerAppDatabaseClient(domain:DataDomain, constructor:any, models:any[]) {
+export async function registerAppDatabaseClient(domain:DataDomain, constructor:any, models:any[], namespace?: { DbNull: unknown; JsonNull: unknown }) {
   if(!['stueberl','hocket','kontor','meet','pos'].includes(domain))throw new Error('APP_DATABASE_DOMAIN_DENIED');
+  if (constructor && (!namespace?.DbNull || !namespace?.JsonNull)) throw new Error('APP_DATABASE_JSON_NULLS_REQUIRED');
   for(const [key,entry] of [...clients])if(key.endsWith(':'+domain)) {
     clients.delete(key);await Promise.allSettled([entry.client.$disconnect(),entry.pool.end()]);
   }
-  if(constructor)appClients.set(domain,{constructor,models:new Map(models.map(m=>[m.name[0].toLowerCase()+m.name.slice(1),m]))});
+  if(constructor)appClients.set(domain,{constructor,models:new Map(models.map(m=>[m.name[0].toLowerCase()+m.name.slice(1),m])),jsonNulls:Object.freeze({database:namespace!.DbNull,json:namespace!.JsonNull})});
   else appClients.delete(domain);
   routedServerClients.delete(domain);
   for(const key of delegateProxies.keys())if(key.startsWith(domain+':'))delegateProxies.delete(key);

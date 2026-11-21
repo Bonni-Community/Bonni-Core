@@ -142,12 +142,6 @@ model FinanceAccount {
   active Boolean @default(true)
   sortOrder Int @default(100)
 
-  // Optional für Bank A / Bank B / SumUp etc.
-  institutionName String?
-  iban String?
-  bic String?
-  providerAccountRef String?
-
   lines FinanceTransactionLine[]
   cashDrawer CashDrawer?
 
@@ -219,6 +213,37 @@ model FinanceTransaction {
   @@index([financeSessionId])
   @@index([financeSessionEntryId])
   @@index([sourceModule, sourceType, sourceId])
+}
+
+// Durable source-side evidence for app-to-app cash settlement. Delivery to POS
+// happens through Core's opaque DomainMessage transport.
+model StueberlPosTransferRequest {
+  id                   String   @id @default(cuid())
+  correlationId        String   @unique
+  idempotencyKey       String   @unique
+  financeTransactionId String?
+  amount               Decimal  @db.Decimal(14, 2)
+  currency             String   @default("EUR")
+  transferType         String   @default("CASH")
+  purpose              String
+  status               String   @default("PENDING")
+  requestedByAccountId String?
+  domainMessageId      String?
+  posTransferId        String?
+  kontorInvoiceId      String?
+  kontorInvoiceNumber  String?
+  requestedAt          DateTime @default(now())
+  deliveredAt          DateTime?
+  completedAt          DateTime?
+  accountingCompletedAt DateTime?
+  rejectedAt           DateTime?
+  failureCode          String?
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  @@index([status, requestedAt])
+  @@index([domainMessageId])
+  @@index([financeTransactionId])
 }
 
 model FinanceTransactionLine {

@@ -1,14 +1,18 @@
 import { randomUUID } from "node:crypto";
 
-export function safeRequestId(value: unknown): string {
-  return typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,79}$/.test(value) ? value : randomUUID();
+export function safeRequestId(_value?: unknown): string {
+  // This ID belongs to one diagnostic request, never to an account or client.
+  return randomUUID();
 }
 
 export function safeLogPath(value: unknown): string {
-  if (typeof value !== "string") return "/";
-  // Query values can contain recovery capabilities, tokens and personal data.
-  return value.split(/[?#]/, 1)[0].replace(/[\x00-\x1f\x7f]/g, "").slice(0, 512) || "/";
+  if (typeof value !== "string") return "[Route ausgelassen]";
+  // Only pass a router's declared pattern, never req.originalUrl or parameters.
+  const result = privateValue({ route: value });
+  return result.route || "[Route ausgelassen]";
 }
+
+import { privateValue } from "../../../scripts/runtime/log-privacy.mjs";
 
 export function safeLogHeader(value: unknown): string | null {
   return typeof value === "string" ? value.replace(/[\x00-\x1f\x7f]/g, "").slice(0, 256) : null;

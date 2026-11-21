@@ -5,6 +5,7 @@ import LoginView from "./LoginView.jsx";
 import BonniCoreIndex from "./BonniCoreIndex.jsx";
 import ControlCenter from "../../platform/control-center/ControlCenter.jsx";
 import FeatureModuleHost from "../feature-modules/FeatureModuleHost.jsx";
+import {setMediaUploadSession} from "../feature-modules/moduleMediaQueue.ts";
 import ShellAddonDock from "../addons/ShellAddonDock.jsx";
 import MySettingsPage from "../../platform/my-settings/MySettingsPage.jsx";
 import ExplorerPage from "../../platform/control-center/explorer/ExplorerPage.jsx";
@@ -124,6 +125,11 @@ export default function AppShell() {
     applyOwnProfile,
     logout,
   } = useSession();
+
+  useEffect(() => {
+    setMediaUploadSession({token,user});
+    return () => setMediaUploadSession({});
+  }, [token,user?.accountId,user?.id]);
 
   const [runtimeEndpoint, setRuntimeEndpoint] = useState(() => getRuntimeEndpointState());
   const authenticated = Boolean(token && user);
@@ -356,6 +362,7 @@ export default function AppShell() {
         {content}
         {token && user ? (
           <ShellAddonDock
+            activeModuleId={activeTarget}
             token={token}
             user={user}
             shell={shell}

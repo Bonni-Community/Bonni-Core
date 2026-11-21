@@ -1437,7 +1437,8 @@
 }
 
 .cc-tool-button:hover,
-.cc-tool-button:focus-visible {
+.cc-tool-button:focus-visible,
+.cc-tool-button[aria-current="page"] {
   color: #ffffff;
   border-bottom-color: var(--cc-nav-orange);
   outline: none;

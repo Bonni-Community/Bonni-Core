@@ -54,7 +54,7 @@ async function preflight(checked:any) {
   if(before?.version&&before.version===module.version)throw appIdError('APP_VERSION_ALREADY_INSTALLED');
   const backup=await createSystemBackup({reason:'App-Installation '+key+' '+module.version});
   if(!backup.ok)throw appIdError('APP_BACKUP_FAILED');
-  return {key,before,backup,database};
+  return {key,before,backup,database,manifest:module};
 }
 async function rollback(_checked:any,context:any) {
   await deactivateRuntimeModule(context.key);
@@ -82,10 +82,10 @@ function service() {
       beforeReplace:async(_checked:any,context:any)=>{if(context.before?.status==='ENABLED') {
         const result=await deactivateModulePackage(context.key);if(!result.ok)throw appIdError('APP_DEACTIVATION_FAILED');
       }
-      if(context.database?.mode==='scoped-v1')await prepareInstalledAppDatabase(_checked.appRoot,_checked.manifest.appId,context.database.delegates);
+      if(context.database?.mode==='scoped-v1')await prepareInstalledAppDatabase(_checked.appRoot,_checked.manifest.appId,context.database.delegates,context.manifest);
       },
       install:async(_checked:any,context:any)=>{
-        await ensureAppDatabaseRuntime(_checked.appRoot,context.key,true);
+        await ensureAppDatabaseRuntime(_checked.appRoot,context.key,context.manifest,true);
         const result=await installModulePackage(context.key);if(!result.ok)return result;
         const activated=await activateModulePackage(context.key);
         return {...activated,backup:context.backup};

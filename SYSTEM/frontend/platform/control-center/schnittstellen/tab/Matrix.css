@@ -1,0 +1,22 @@
+.cc-matrix .cc-system-card__header { display: flex; justify-content: space-between; gap: 16px; align-items: flex-start; }
+.cc-matrix-state { padding: 7px 12px; border: 1px solid var(--border-color, #444); border-radius: 24px; white-space: nowrap; font-size: .8rem; }
+.cc-matrix-state--online { color: #7fe0a5; border-color: #386f4b; }
+.cc-matrix-summary { display: grid; grid-template-columns: repeat(3, minmax(0,1fr)); gap: 14px; margin: 18px 0; }
+.cc-matrix-summary dt { opacity: .65; font-size: .78rem; margin-bottom: 5px; }
+.cc-matrix-summary dd { margin: 0; overflow-wrap: anywhere; }
+.cc-matrix-actions { display: flex; flex-wrap: wrap; gap: 10px; }
+.cc-matrix button { border: 1px solid rgba(255,255,255,.16); border-radius: 9px; padding: 9px 14px; color: inherit; background: rgba(255,255,255,.045); cursor: pointer; }
+.cc-matrix button:hover:not(:disabled) { border-color: var(--accent, #e9a148); }
+.cc-matrix button:disabled { opacity: .4; cursor: default; }
+.cc-matrix-details summary { cursor: pointer; font-weight: 600; }
+.cc-matrix-details > button { margin-top: 16px; }
+.cc-matrix-fields { display: grid; gap: 15px; margin-top: 18px; max-width: 750px; }
+.cc-matrix-fields label { display: grid; gap: 7px; }
+.cc-matrix-fields input:not([type=checkbox]), .cc-matrix-fields textarea { width: 100%; box-sizing: border-box; background: rgba(255,255,255,.04); color: inherit; border: 1px solid rgba(255,255,255,.16); border-radius: 9px; padding: 10px 12px; font: inherit; }
+.cc-matrix-fields small, .cc-matrix-fields p { opacity: .7; font-size: .8rem; line-height: 1.5; }
+.cc-matrix-fields .cc-matrix-check { display: flex; align-items: center; gap: 10px; }
+.cc-matrix-check input { width: 18px; height: 18px; flex-shrink: 0; }
+.cc-matrix-fields > button { justify-self: start; }
+.cc-matrix-job { display: grid; gap: 6px; padding: 12px; margin-top: 16px; border: 1px solid rgba(255,255,255,.12); border-radius: 10px; }
+.cc-matrix-job small { overflow-wrap: anywhere; opacity: .7; }
+@media(max-width:640px) { .cc-matrix-summary { grid-template-columns: 1fr; } .cc-matrix .cc-system-card__header { flex-direction: column; } }

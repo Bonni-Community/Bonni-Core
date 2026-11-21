@@ -16,6 +16,10 @@ function publicModuleAsset(req: Request): boolean {
   for (const mount of mounts) {
     if (!req.path.startsWith(`${mount}/`)) continue;
     const relative = req.path.slice(mount.length + 1);
+    // Local OCR/PDF binaries are public build assets of Gourmet only. This
+    // grants no opaque-origin access to APIs, documents or user media.
+    if((mount==='/feature-modules/gourmet' || mount==='/feature-modules/capture') && /^assets\/(?:import|capture)\/[a-z0-9/_-]+\/[a-z0-9/_.-]+\.(?:wasm|gz|bcmap|ttf|pfb)$/i.test(relative)
+      && !relative.split('/').some(segment=>segment==='.'||segment==='..'))return true;
     if (/^[a-z0-9/_-][a-z0-9/_.-]*\.(?:m?js|css|woff2?|png|jpe?g|webp|gif|svg|ico)$/i.test(relative)
       && !relative.split("/").some(segment => segment === "." || segment === "..")) return true;
   }

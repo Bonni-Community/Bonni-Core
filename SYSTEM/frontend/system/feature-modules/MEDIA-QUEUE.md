@@ -1,0 +1,15 @@
+# Allgemeiner Kamera- und Fotoablagevertrag, Version 1
+
+Core DEV69 vermittelt Kamera und dauerhafte Bildübertragung für isolierte Moduloberflächen. Fachliche Erkennung und Datenhaltung definiert das empfangende Modul. Die Sandbox erhält kein allow-same-origin und keine freien Zugangsdaten.
+
+Nach Prüfung von konkretem iframe, opaker Origin, Modul und Sitzung nimmt FeatureModuleHost `bonni:module-media-request` an und antwortet auf dem bestehenden RPC-Antwortkanal. `media.operation` erlaubt ausschließlich `capture`, `list`, `retry` und `cancel`. Ein Aufnahmeauftrag enthält `count` mit 1, 5 oder 10 und `upload` mit einem konkreten `pathPrefix` und höchstens 4 KB JSON-Metadaten. Die aus Foto-ID, Metadaten, Hash, Bytelänge, MIME-Typ und `imageBase64` entstehende PUT-Anfrage wird gegen den tatsächlichen Modul-RPC-Vertrag geprüft. Dies ist keine zusätzliche allgemeine API-Freigabe.
+
+Die Kamera läuft als begrenzter Core-Dialog im sicheren Ursprung und verlangt Browserfreigabe. Jede Aufnahme ist manuell; nach der gewählten Anzahl oder Zurück stoppt Core alle Kameraspuren. Der Dialog speichert zunächst eine Konto-/Modul-gebundene Blob-Aufnahme in IndexedDB und startet danach die Übertragung. Quelle und Sitzung werden vor Antworten erneut geprüft. Fensterentladen beendet die Aufnahme, nicht bereits angenommene Hintergrundübertragungen.
+
+Core hält Anmeldedaten ausschließlich im Arbeitsspeicher. Die Uploadpumpen werden aus AppShell mit der aktuellen Anmeldung verbunden und bleiben beim Menü-/Modulwechsel bestehen. Konto- oder Tokenwechsel stoppt laufende Versuche; ein neues Konto übernimmt keine fremden Einträge. Kontoänderungen erzeugen außerdem einen neuen RPC-Kanal und ein tatsächlich neu gemountetes iframe. Bei einem Neuladen wird vor dem erneuten Versand der aktuelle aktivierte Modulvertrag aus Core geladen.
+
+Der Empfänger muss erst nach dauerhafter Annahme `{schema:'bonni.media-receipt/v1',uploadId,sha256,bytes}` zurückgeben. Nur ein passender Datensatz entfernt die lokale Bildkopie. HTTP-Erfolg ohne passende Quittung genügt nicht. Wiederholungen verwenden dieselbe Foto-ID als Idempotenzschlüssel. Der Empfänger definiert wiederholbare Annahme, Inhaltskonflikte und weitere Verarbeitung. Bereits serverseitig angenommene Bilder werden durch ein lokales cancel nicht gelöscht.
+
+Grenzen: JPEG/PNG/WebP als lokale Eingabe, Übertragung nach JPEG-Konvertierung; höchstens 6 MB je Bild, 200 offene Aufnahmen beziehungsweise 100 MB je Konto/Modul. Abgeschlossene Metadaten werden begrenzt aufbewahrt; Token gehören nicht zu einem Datensatz. Browserdaten-Löschung und Gerätewechsel stellen noch nicht übertragene Fotos nicht wieder her. Ein geschlossener oder pausierter Browser garantiert keinen laufenden Upload. Die Ablage bewahrt offene Aufträge zum Fortsetzen beim nächsten aktiven, angemeldeten Betrieb.
+
+Implementierung: moduleMediaQueue.ts und moduleMediaCapture.tsx. Ein aktueller Verbraucher ist Stüberl DEV54; dessen Foto-/Artikel-/Bonsemantik ist ausschließlich im Stüberl-Regelwerk beschrieben. Nachweise im getrennten Gourmet-DEV27-Paket sowie verification/core-dev69 dieses Core-Pakets.

@@ -1,15 +1,31 @@
 import { Router } from "express";
 
 import {
+  copyBackupEntryController,
   createBackupController,
+  createBackupFolderController,
   getBackupOverviewController,
+  listBackupFolderController,
+  readBackupFileController,
+  removeBackupFileController,
+  removeBackupFolderController,
   requestRestoreController,
+  saveBackupFileController,
+  touchBackupFileController,
   validateBackupController,
 } from "./backup.controller.js";
 
 export const systemBackupRouter = Router();
 
 systemBackupRouter.get("/", getBackupOverviewController);
+systemBackupRouter.get("/directory", listBackupFolderController);
+systemBackupRouter.post("/directory", createBackupFolderController);
+systemBackupRouter.delete("/directory", removeBackupFolderController);
+systemBackupRouter.get("/file", readBackupFileController);
+systemBackupRouter.post("/file", touchBackupFileController);
+systemBackupRouter.put("/file", saveBackupFileController);
+systemBackupRouter.delete("/file", removeBackupFileController);
+systemBackupRouter.post("/copy", copyBackupEntryController);
 systemBackupRouter.post("/", createBackupController);
 systemBackupRouter.post("/:id/validate", validateBackupController);
 systemBackupRouter.post("/:id/restore", requestRestoreController);

@@ -1,3 +1,4 @@
+import { createMemberDevicesRuntime } from './member-devices-runtime.js';
 import {
   AccountType,
   AuthProviderType,
@@ -68,6 +69,7 @@ type PrismaLike = {
 };
 
 type ModuleMembersRuntimeOptions = {
+  memberDevicesEnabled?: boolean;
   prisma?: PrismaLike;
   moduleLabel?: string;
   autoAssignDefaultProfile?: boolean;
@@ -1360,6 +1362,10 @@ export function createModuleMembersRuntime(
 
   return publicResult({
     moduleKey,
+    ...(options.memberDevicesEnabled ? { devices: createMemberDevicesRuntime({ prisma, moduleKey, resolveAccounts: async memberId => {
+      const member: any = await get(memberId);
+      return (member?.accessAccounts || []).filter((account: any) => ["MEMBER", "ADMIN"].includes(account.type) && !account.isSandbox && account.accessProfiles?.length).map((account: any) => ({ accountId: account.accountId, loginName: account.loginName }));
+    } }) } : {}),
     list,
     get,
     getByAccountId,

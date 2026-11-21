@@ -1,0 +1,12 @@
+import { Router } from "express";
+import { checkForLocalSourceUpdateController, checkForCoreUpdateController, finalizeDeploymentLifecycleController, getCoreUpdateCenterStatusController, rollbackDeploymentLifecycleController, startLocalSourceUpdateInstallationController, startCoreUpdateInstallationController, startCoreUpdatePreparationController, updateCoreUpdateSettingsController, } from "./update-center.controller.js";
+export const systemUpdateCenterRouter = Router();
+systemUpdateCenterRouter.get("/", getCoreUpdateCenterStatusController);
+systemUpdateCenterRouter.post("/check", checkForCoreUpdateController);
+systemUpdateCenterRouter.post("/local-source/check", checkForLocalSourceUpdateController);
+systemUpdateCenterRouter.post("/local-source/install", startLocalSourceUpdateInstallationController);
+systemUpdateCenterRouter.post("/prepare", startCoreUpdatePreparationController);
+systemUpdateCenterRouter.post("/install", startCoreUpdateInstallationController);
+systemUpdateCenterRouter.post("/deployment-lifecycle/finalize", finalizeDeploymentLifecycleController);
+systemUpdateCenterRouter.post("/deployment-lifecycle/rollback", rollbackDeploymentLifecycleController);
+systemUpdateCenterRouter.put("/settings", updateCoreUpdateSettingsController);

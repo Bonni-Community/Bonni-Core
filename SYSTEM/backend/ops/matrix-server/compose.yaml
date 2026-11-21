@@ -1,0 +1,51 @@
+services:
+  db:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: matrix
+      POSTGRES_DB: matrix
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+      POSTGRES_INITDB_ARGS: --encoding=UTF8 --lc-collate=C --lc-ctype=C
+    secrets:
+      - postgres_password
+    volumes:
+      - ./postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: [CMD-SHELL, pg_isready -U matrix -d matrix]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+  synapse:
+    image: bonni-synapse:${MATRIX_INSTALLATION_ID}-${SYNAPSE_VERSION}
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        SYNAPSE_BASE_IMAGE: ghcr.io/element-hq/synapse:v${SYNAPSE_VERSION}
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      SYNAPSE_SERVER_NAME: ${MATRIX_SERVER_NAME}
+      SYNAPSE_REPORT_STATS: "no"
+      UID: ${MATRIX_UID}
+      GID: ${MATRIX_GID}
+      PYTHONPATH: /opt/bonni
+    volumes:
+      - ./data:/data
+      - ./settings.json:/run/bonni-settings.json:ro
+    secrets:
+      - postgres_password
+    ports:
+      - 127.0.0.1:${MATRIX_CLIENT_PORT}:8008
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8008/_matrix/client/versions',timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 20
+      start_period: 60s
+secrets:
+  postgres_password:
+    file: ./secrets/postgres_password

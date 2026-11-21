@@ -1,5 +1,10 @@
+import { diagnosticCatalog, readCoreDiagnostics, validDiagnosticId } from "../../../../core/logger/diagnostic-journal.js";
+import { isDiagnosticModuleKey, rememberDiagnosticModule } from "../../../../core/logger/diagnostic-context.js";
 import { getLocalAuthProviderStatus } from "../../../../platform/auth/providers/local/index.js";
 import { getOidcAuthProviderStatus } from "../../../../platform/auth/providers/oidc/index.js";
+import { listModuleManifests } from "../../../../platform/module-manager/manifests/index.js";
+import { listInstalledModulesStrict } from "../../../../platform/module-manager/registry/index.js";
+import type { ModuleKind } from "../../../../platform/module-manager/types.js";
 import { env } from "../../../../core/config/env.js";
 import {
   CORE_ERROR_FILE_NAME,
@@ -42,8 +47,83 @@ export function getSystemDiagnostics() {
   };
 }
 
-export function getSystemDiagnosticsLogs(limit?: number) {
-  return readCoreLogSnapshot({ limit });
+type DiagnosticApplication = { id: string; kind: ModuleKind; name: string; version: string };
+
+async function readDiagnosticApplications() {
+  // Package discovery and the installation database can fail independently.
+  // The file journal remains readable if one or both are unavailable.
+  const [manifests, installed] = await Promise.allSettled([listModuleManifests(), listInstalledModulesStrict()]);
+  const applications = new Map<string, DiagnosticApplication>();
+
+  function add(module: { key: string; kind: ModuleKind; name: string; version: string }) {
+    if (!isDiagnosticModuleKey(module.key)) return;
+    rememberDiagnosticModule(module.key);
+    applications.set(module.key, { id: module.key, kind: module.kind, name: module.name, version: module.version });
+  }
+
+  if (installed.status === "fulfilled") {
+    for (const module of installed.value) {
+      // Retain the identity of removed packages for the journal's history.
+      rememberDiagnosticModule(module.key);
+      if (module.installed) add(module);
+    }
+  }
+  if (manifests.status === "fulfilled") {
+    for (const manifest of manifests.value) add(manifest);
+  }
+  return {
+    applications: [...applications.values()],
+    applicationRegistryAvailable: manifests.status === "fulfilled" && installed.status === "fulfilled",
+  };
+}
+
+function selectedCategory(category: string) {
+  return Object.hasOwn(diagnosticCatalog.categories, category) ? category : "all";
+}
+
+export async function getSystemDiagnosticsLogs(limit?: number, category = "all", moduleId?: string) {
+  const selected = selectedCategory(category);
+  if (selected === "applications") {
+    const inventory = await readDiagnosticApplications();
+    return {
+      ...inventory,
+      root: resolveCoreLogPaths().displayRoot,
+      journal: readCoreDiagnostics({ category: selected, limit, moduleId }),
+    };
+  }
+  if (selected === "all") await readDiagnosticApplications();
+  return {
+    ...await readCoreLogSnapshot({ limit }),
+    journal: readCoreDiagnostics({ category: selected, limit, moduleId }),
+  };
+}
+
+type JournalExportFilter = { errorsOnly?: boolean; operationId?: string; moduleId?: string };
+
+export async function getSystemDiagnosticsJournal(
+  category = "all",
+  { errorsOnly = false, operationId, moduleId }: JournalExportFilter = {},
+) {
+  const selected = selectedCategory(category);
+  if (selected === "applications" || selected === "all") await readDiagnosticApplications();
+
+  const snapshot = readCoreDiagnostics({ category: selected, moduleId, all: true });
+  const entries = snapshot.entries
+    .filter(entry => !errorsOnly || entry.level === "error" || entry.level === "critical")
+    .filter(entry => !operationId || (
+      validDiagnosticId(operationId) && entry.operationId === operationId && (!moduleId || entry.moduleId === moduleId)
+    ));
+  const lines = entries.map(entry => {
+    const operation = entry.operationId ? `[Vorgang ${entry.operationId}] ` : "";
+    const label = diagnosticCatalog.stages[entry.phase || ""]?.[0] || entry.message || entry.code || "Technische Meldung";
+    return `${entry.timestamp} ${entry.level.toUpperCase()} [${entry.moduleId}] ${operation}${label} ${JSON.stringify(entry)}`;
+  });
+  return [
+    `Bonni Core – ${diagnosticCatalog.categories[selected]}`,
+    `Gesamtjournal: ${snapshot.available ? "verfügbar" : "möglicherweise unvollständig"}; höchstens 72 Stunden / 3×2 MB`,
+    ...lines,
+    "",
+  ].join("\n");
 }
 
 export async function getSystemDiagnosticsLogFile(stream: "log" | "error") {

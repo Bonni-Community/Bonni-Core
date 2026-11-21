@@ -1,3 +1,4 @@
+import { hubInstallationPolicy, usesHubProducts } from "../../../core/hub/hub-installation-policy.js";
 import { getSystemRuntimeConfig } from "../../../system/runtime/runtime.config.js";
 import { listModuleManifests } from "../manifests/index.js";
 import { listInstalledModules } from "../registry/index.js";
@@ -35,16 +36,22 @@ export type ModuleCompatibilityResult = {
 
 const CORE_CAPABILITIES = new Set([
   "core.auth",
+  "core.hub-products",
+  "core.hub-provider",
   "core.permissions",
   "core.event-bus",
   "core.archive",
   "core.media",
+  "core.files",
+  "core.module-services",
+  "core.public-web",
   "core.members",
   "core.module-settings",
   "core.two-factor",
   "core.nfc",
   "core.two-factor-provider",
   "core.private-data",
+  "core.paypal-payments",
   "core.domain-messages",
   "core.protected-people",
   "core.protected-organization",
@@ -155,7 +162,16 @@ export function evaluateModuleCompatibility(
     reasons.push(`Bonni Core ${coreVersion} ist neuer als die unterstützte Version ${maximumCoreVersion}.`);
   }
 
-  const dependencies = requiredDependencies(manifest).map<ModuleDependencyStatus>((key) => {
+  const required = requiredDependencies(manifest);
+  const hubCandidate = {
+    key: source.key, kind: source.kind, installed: true,
+    enabled: Boolean(options.requireDependenciesEnabled || installedByKey.get(source.key)?.enabled),
+    manifestJson: source,
+  };
+  const hubPolicy = hubInstallationPolicy(installedModules, hubCandidate, manifests);
+  const requiresHub = usesHubProducts(hubCandidate) && hubPolicy.required;
+  if (requiresHub && !required.includes("addon.hub")) required.push("addon.hub");
+  const dependencies = required.map<ModuleDependencyStatus>((key) => {
     if (CORE_CAPABILITIES.has(key)) {
       return { key, source: "core", installed: true, enabled: true, satisfied: true };
     }
@@ -196,6 +212,9 @@ export function evaluateModuleCompatibility(
     };
   });
 
+  if (requiresHub && (!hubPolicy.installed || (options.requireDependenciesEnabled && !hubPolicy.enabled))) {
+    reasons.push("Ab zwei aktiven Apps mit Hub-Schnittstelle ist Hub erforderlich. Bitte Hub installieren und aktivieren.");
+  }
   const dependenciesCompatible = dependencies.every((dependency) => dependency.satisfied);
   for (const dependency of dependencies.filter((entry) => !entry.satisfied)) {
     reasons.push(

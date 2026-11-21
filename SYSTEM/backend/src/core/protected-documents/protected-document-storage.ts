@@ -92,6 +92,7 @@ export async function storeProtectedDocument(input: {
   domain: DocumentDomain;
   subjectId: string;
   bytes: Buffer | Uint8Array;
+  objectKey?: string;
 }) {
   const domain = domainValue(input.domain);
   const subjectId = String(input.subjectId || "").trim();
@@ -102,7 +103,7 @@ export async function storeProtectedDocument(input: {
     storageError(413, "PROTECTED_DOCUMENT_TOO_LARGE", "Die ausgewählte Datei überschreitet die zulässige Größe.");
   }
 
-  const objectKey = `pd_${createBase64UrlToken(24)}.arc`;
+  const objectKey = input.objectKey || `pd_${createBase64UrlToken(24)}.arc`;
   const directory = documentDirectory(domain, subjectId);
   const finalPath = documentPath(domain, subjectId, objectKey);
   const temporaryPath = `${finalPath}.${createBase64UrlToken(8)}.tmp`;

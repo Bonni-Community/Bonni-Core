@@ -8,14 +8,14 @@ export function inspectCrashTarget({pid,fsImpl,pathImpl,
   const argv=fsImpl.readFileSync(proc+'/cmdline','utf8').split('\0').filter(Boolean);
   // With pid:host Docker does not insert tini, even when init:true is set.
   // entrypoint.sh execs this Node controller. QEMU may prefix its argv.
-  // DEV.44 also recorded the exact ARM64 form with preserved original argv[0].
-  // Only that four-argument shape is added; no arbitrary QEMU options are allowed.
+  // DEV.44 recorded ARM64; run #27 recorded the same argv[0]-preserving
+  // four-argument shape with qemu-arm. No arbitrary QEMU options are allowed.
   const emulated=argv.length===3
     &&/^qemu-(arm|aarch64)(-static)?$/.test(pathImpl.basename(argv[0]));
-  const preservedArm64=argv.length===4
-    &&pathImpl.basename(argv[0])==='qemu-aarch64'
+  const preservedQemu=argv.length===4
+    &&/^qemu-(arm|aarch64)$/.test(pathImpl.basename(argv[0]))
     &&argv[1]==='/usr/local/bin/node'&&argv[2]==='node';
-  const command=preservedArm64?[argv[1],argv[3]]:emulated?argv.slice(1):argv;
+  const command=preservedQemu?[argv[1],argv[3]]:emulated?argv.slice(1):argv;
   if(command.length!==2||pathImpl.basename(command[0]||'')!=='node'
     ||command[1]!==controllerPath) {
     const error=Error('SMOKE_CRASH_PROCESS_MISMATCH');
@@ -81,7 +81,7 @@ export async function testControllerRecovery({docker,id,project,root,delay,
     const diagnostic=readCrashProcessDiagnostic(error?.stdout);
     if(diagnostic) {
       log('Controller-Prozessdiagnose: '+JSON.stringify(diagnostic));
-      log('Controller-Soll: node + controller-exact; optional QEMU-Präfix. Zusätzlich exakt qemu-aarch64 + /usr/local/bin/node + node + controller-exact. Unbekannte Argumente sind maskiert.');
+      log('Controller-Soll: node + controller-exact; optional QEMU-Präfix. Zusätzlich exakt qemu-arm oder qemu-aarch64 + /usr/local/bin/node + node + controller-exact. Unbekannte Argumente sind maskiert.');
     }
   };
   let target;

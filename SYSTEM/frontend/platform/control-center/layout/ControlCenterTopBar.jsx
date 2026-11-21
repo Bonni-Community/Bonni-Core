@@ -8,6 +8,7 @@ import {
   prepareCoreUpdate,
 } from "../../../system/api/coreUpdateApi.js";
 import { BONNI_CORE_VERSION } from "../../../system/version.js";
+import MonitorIcon from "../system/MonitorIcon.jsx";
 import CoreUpdatePopover from "../update/CoreUpdatePopover.jsx";
 import {
   formatBonniCoreVersion,
@@ -112,9 +113,10 @@ const QUICK_ACTIONS = [
   { key: "sync", icon: "↻", label: "Registry synchronisieren", action: "sync" },
   { key: "logout", icon: "⎋", label: "Logout", action: "logout" },
   { key: "my-settings", icon: "◉", label: "Einstellungen", action: "my-settings" },
-  { key: "terminal", icon: ">_", label: "Terminal", target: "terminal" },
-  { key: "files", icon: "▤", label: "Datei-Verwaltung", target: "system" },
-  { key: "help", icon: "?", label: "Systemstatus", target: "system" },
+  { key: "terminal", icon: ">_", label: "Terminal", target: "terminal", title: "Terminal in neuem Fenster öffnen" },
+  { key: "system-monitor", icon: <MonitorIcon />, label: "Systemmonitor", target: "system-monitor", title: "Systemdaten in neuem Fenster öffnen" },
+  { key: "live-terminal", icon: "▤", label: "Live-Terminal", target: "live-terminal", title: "Live-Terminal in neuem Fenster öffnen" },
+  { key: "help", icon: "?", label: "Core-Diagnose", target: "diagnostics" },
 ];
 
 export default function ControlCenterTopBar({
@@ -277,8 +279,8 @@ export default function ControlCenterTopBar({
       return;
     }
 
-    if (key === "terminal") {
-      onNavigate?.({ key: "terminal", label: "Terminal", description: "Administrative Shell." });
+    if (["terminal", "system-monitor", "live-terminal"].includes(key)) {
+      onNavigate?.({ key });
       return;
     }
 
@@ -415,8 +417,9 @@ export default function ControlCenterTopBar({
                 type="button"
                 className={`cc-tool-button${action.kind === "status" ? " cc-tool-button--status" : ""}`}
                 onClick={() => handleQuickAction(action)}
-                title={action.label}
+                title={action.title || action.label}
                 aria-label={action.label}
+                aria-current={action.key === "help" && activeNavigationKey === "diagnostics" ? "page" : undefined}
               >
                 {action.icon}
               </button>
@@ -426,7 +429,7 @@ export default function ControlCenterTopBar({
       </div>
 
       <nav className="cc-primary-nav" aria-label="Control Center Navigation">
-        {navItems.map((item) => {
+        {navItems.filter(item => item.showInTopBar !== false).map((item) => {
           const active = activeNavigationKey === item.key;
 
           return (

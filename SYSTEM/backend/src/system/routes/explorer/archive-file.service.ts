@@ -506,3 +506,18 @@ export async function searchArchiveFiles(accountId: string, query: unknown) {
   }
   return visible;
 }
+
+/** Internal erasure participant only; authorization belongs to the host's
+ * approved erasure workflow. These helpers are never exposed as module ports. */
+export async function readArchiveFileForRetention(file: any, folderStorageKey: string) {
+ const encrypted = await fs.readFile(objectPath(folderStorageKey, file.objectKey), "utf8");
+ const key = deriveArchiveFileKey(file.ownerPersonId);
+ try {
+  const bytes = decryptAes256Gcm(encrypted, key, fileAad(file.id, file.folderId, file.ownerPersonId));
+  if (bytes.length !== file.sizeBytes || sha256(bytes) !== file.sha256) throw fileError(409, "ERASURE_DOCUMENT_HASH_INVALID", "Der Dokumentinhalt konnte nicht geprüft werden.");
+  return bytes;
+ } finally { key.fill(0); }
+}
+export async function deleteArchiveObjectForRetention(folderStorageKey: string, objectKey: string) {
+ await fs.unlink(objectPath(folderStorageKey, objectKey)).catch((error: NodeJS.ErrnoException) => { if (error.code !== "ENOENT") throw error; });
+}

@@ -679,6 +679,7 @@ async function waitForState(paths, key, predicate, timeoutMs) {
 function workerArguments(paths, options) {
   const cli = path.join(path.dirname(fileURLToPath(import.meta.url)), "development-test-runtime-cli.mjs");
   const args = [
+    "--import", new URL("../runtime/log-private-preload.mjs", import.meta.url).href,
     cli,
     "__worker",
     "--product-root", paths.productRoot,
@@ -1033,7 +1034,7 @@ export async function runDevelopmentTestRuntimeWorker(options, dependencies = {}
   try {
     child = dependencies.spawnCandidate
       ? await dependencies.spawnCandidate({ plan, environment: launchEnvironment })
-      : spawn(process.execPath, [plan.serverEntry], {
+      : spawn(process.execPath, ["--import", new URL("../runtime/log-private-preload.mjs", import.meta.url).href, plan.serverEntry], {
         cwd: plan.backendRoot,
         env: launchEnvironment,
         stdio: ["ignore", "inherit", "inherit", "ipc"],
@@ -1258,3 +1259,4 @@ export async function cleanupDevelopmentTestRuntime(options, dependencies = {}) 
     dataStatus: dataCleanup?.status || "none",
   };
 }
+import "../runtime/log-private-preload.mjs";

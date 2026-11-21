@@ -1,3 +1,4 @@
+import { assertAccountNotErasing } from "./erasure-write-barrier.js";
 import {
   AccountType,
   AuthProviderType,
@@ -681,6 +682,7 @@ export async function updateMemberById(
   await assertCanManageUsers(prisma, currentUser);
 
   const memberId = cleanText(memberIdValue, 160);
+  await assertAccountNotErasing(memberId);
   if (!memberId) {
     throw new UserMutationError("MEMBER_ID_REQUIRED", "Die Mitglieds-ID fehlt.");
   }
@@ -848,6 +850,7 @@ export async function updateLocalMemberProfile(
   await assertCanManageUsers(prisma, currentUser);
 
   const accountId = cleanText(accountIdValue, 160);
+  await assertAccountNotErasing(accountId);
   if (!accountId) {
     throw new UserMutationError("LOCAL_MEMBER_ACCOUNT_REQUIRED", "Der Benutzerzugang fehlt.");
   }
@@ -1070,6 +1073,7 @@ export async function updateLocalMemberAccess(
   await assertCanManageUsers(prisma, currentUser);
 
   const accountId = cleanText(accountIdValue, 160);
+  await assertAccountNotErasing(accountId);
   if (!accountId) {
     throw new UserMutationError("LOCAL_MEMBER_ACCOUNT_REQUIRED", "Der Benutzerzugang fehlt.");
   }
@@ -1293,6 +1297,13 @@ export async function deleteLocalMemberAccount(
         "Der Benutzer hat noch nachvollziehbare Archivfreigaben erteilt. Diese müssen zuerst übertragen oder widerrufen werden.",
         409,
       );
+    }
+
+    // All aliases of the legacy admin endpoint must respect the request workflow.
+    // Preserve its previous bootstrap/last-admin/archive guards and technical-account handling.
+    if (PERSONAL_ACCOUNT_TYPES.has(existing.type)) {
+      throw new UserMutationError("PERSONAL_ACCOUNT_ERASURE_REQUEST_REQUIRED",
+        "Für persönliche Benutzerkonten ist der systemweite Löschantrag mit gesonderter Freigabe erforderlich.", 409);
     }
 
     await transaction.accountRole.deleteMany({ where: { accountId } });

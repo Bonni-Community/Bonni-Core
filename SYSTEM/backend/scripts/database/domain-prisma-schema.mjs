@@ -11,9 +11,17 @@ export const dataDomains = Object.freeze([
   "meet",
   "stueberl",
   "pos",
+  "hub",
+  "gourmet",
+  "capture",
+  "paypal",
 ]);
 
 const sourceDirectories = Object.freeze({
+  hub: ["prisma/domains/assembled/add-on/hub"],
+  gourmet: ["prisma/domains/assembled/addon/gourmet"],
+  capture: ["prisma/domains/assembled/add-on/capture"],
+  paypal: ["prisma/domains/assembled/add-on/paypal"],
   people: ["prisma/domains/people"],
   organization: ["prisma/domains/organization"],
   privacy: ["prisma/domains/system/privacy"],
@@ -25,6 +33,10 @@ const sourceDirectories = Object.freeze({
 });
 
 const moduleDomainPackages = Object.freeze({
+  hub: Object.freeze({ packageDirectory: "hub", required: false }),
+  gourmet: Object.freeze({ packageDirectory: "gourmet", required: false }),
+  capture: Object.freeze({ packageDirectory: "capture", required: false }),
+  paypal: Object.freeze({ packageDirectory: "paypal", required: false }),
   hocket: Object.freeze({ packageDirectory: "hocketapp", required: false }),
   kontor: Object.freeze({ packageDirectory: "kontorapp", required: false }),
   meet: Object.freeze({ packageDirectory: "meetapp", required: false }),
@@ -42,7 +54,7 @@ async function optionalState(target) {
 async function packageRoots(projectRoot, packageDirectory, domain) {
   const systemRoot = path.resolve(projectRoot, "..");
   const roots = [];
-  for (const parent of ["app", "apps"]) {
+  for (const parent of (["hub", "gourmet", "capture", "paypal"].includes(domain) ? ["addons", "add-on", "addon"] : ["app", "apps"])) {
     const relative = `${parent}/${packageDirectory}`;
     const absolute = path.join(systemRoot, parent, packageDirectory);
     const state = await optionalState(absolute);
@@ -103,6 +115,31 @@ export async function listActiveDataDomains(projectRoot) {
 }
 
 export const listAvailableDataDomains = listActiveDataDomains;
+
+/** Module-owned, idempotent SQL upgrades run before schema push. No runtime DB access is widened. */
+export async function applyDomainPrismaUpgrades(projectRoot, domain, client) {
+  if (!dataDomains.includes(domain)) throw new Error(`UNKNOWN_DATA_DOMAIN:${domain}`);
+  for (const source of sourceDirectories[domain] || []) {
+    const directory = path.join(projectRoot, source, "upgrades");
+    const state = await optionalState(directory);
+    if (!state) continue;
+    if (!state.isDirectory() || state.isSymbolicLink()) throw new Error(`DATA_DOMAIN_UPGRADES_INVALID:${domain}`);
+    const entries = await fs.readdir(directory, { withFileTypes: true });
+    for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
+      if (!/^[0-9]{3}-[a-z0-9-]+\.sql$/.test(entry.name) || !entry.isFile() || entry.isSymbolicLink()) throw new Error(`DATA_DOMAIN_UPGRADE_FILE_INVALID:${domain}`);
+      const sql = await fs.readFile(path.join(directory, entry.name), "utf8");
+      await client.query("BEGIN");
+      try {
+        await client.query("SET LOCAL lock_timeout = '10s'");
+        await client.query(sql);
+        await client.query("COMMIT");
+      } catch (error) {
+        await client.query("ROLLBACK");
+        throw error;
+      }
+    }
+  }
+}
 
 async function prismaFiles(directory) {
   const entries = await fs.readdir(directory, { withFileTypes: true });

@@ -1,0 +1,294 @@
+.bonni-terminal {
+  min-height: 100dvh;
+  height: 100dvh;
+  box-sizing: border-box;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  color: #e8edf2;
+  background: #14181e;
+  font: 14px/1.5 system-ui, sans-serif;
+  color-scheme: dark;
+}
+
+body:has(.bonni-terminal) {
+  margin: 0;
+}
+
+html:has(.bonni-control-window, .bonni-terminal--shell) {
+  scrollbar-gutter: auto;
+  color-scheme: dark;
+  background: #14181e;
+}
+
+.bonni-terminal__header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px clamp(12px, 3vw, 26px);
+  background: #20252e;
+  border-bottom: 1px solid #363e49;
+}
+
+.bonni-terminal__glyph {
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 36px;
+  border: 1px solid #975238;
+  border-radius: 8px;
+  color: #ff986a;
+  background: #342822;
+  font: 600 17px ui-monospace, monospace;
+}
+
+.bonni-terminal__title p {
+  margin: 0;
+  color: #aab4c0;
+  font-size: 11px;
+}
+
+.bonni-terminal__title h1 {
+  margin: 0;
+  font-size: 20px;
+  line-height: 1.15;
+}
+
+.bonni-terminal__status {
+  margin-inline-start: auto;
+  color: #b9c3d0;
+  font-size: 12px;
+}
+
+.bonni-terminal__status[data-busy] {
+  color: #ffb185;
+}
+
+.bonni-terminal button {
+  cursor: pointer;
+}
+
+.bonni-terminal button:disabled {
+  cursor: default;
+  opacity: .55;
+}
+
+.bonni-terminal :focus-visible {
+  outline: 2px solid #ff996d;
+  outline-offset: 2px;
+}
+
+.bonni-terminal__close {
+  min-width: 32px;
+  min-height: 32px;
+  border: 1px solid #49525e;
+  border-radius: 7px;
+  color: inherit;
+  background: #292f39;
+  font-size: 20px;
+  line-height: 1;
+}
+
+.bonni-control-window .bonni-terminal__close {
+  margin-inline-start: auto;
+}
+
+.bonni-terminal__log {
+  min-width: 0;
+  overflow: auto;
+  padding: 18px clamp(12px, 3vw, 26px);
+  scrollbar-color: #4a5563 #14181e;
+}
+
+.bonni-terminal__welcome {
+  color: #b9c3d0;
+}
+
+.bonni-terminal__welcome strong {
+  color: #edf0f4;
+}
+
+.bonni-terminal__welcome p {
+  margin: 5px 0 0;
+}
+
+.bonni-terminal__welcome code {
+  color: #ffb185;
+}
+
+.bonni-terminal--shell {
+  background: #101210;
+}
+
+.bonni-terminal--shell .bonni-terminal__header {
+  gap: 8px;
+  padding: 0 12px;
+  background: #080908;
+  border-color: #292d28;
+}
+
+.bonni-terminal--shell .bonni-terminal__glyph {
+  width: 23px;
+  height: 23px;
+  border: 0;
+  border-radius: 3px;
+  color: #fff5ec;
+  background: #b74839;
+  font-size: 13px;
+}
+
+.bonni-terminal--shell .bonni-terminal__title h1 {
+  padding: 10px 13px 8px;
+  border-bottom: 2px solid #64b7ed;
+  color: #8dcaf0;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.bonni-terminal__console {
+  min-width: 0;
+  overflow: auto;
+  padding: 8px 10px;
+  color: #8cdf64;
+  scrollbar-color: #384336 #101210;
+  font: 14px/1.4 ui-monospace, SFMono-Regular, Consolas, monospace;
+  user-select: text;
+}
+
+.bonni-terminal__console :is([data-terminal-tone="text"], [data-terminal-tone="command"]) {
+  color: inherit;
+}
+
+.bonni-terminal__shell-hint {
+  color: #a9b7a4;
+}
+
+.bonni-terminal__shell-hint code {
+  color: #d4df74;
+  font: inherit;
+}
+
+.bonni-terminal__line {
+  margin: 0;
+  font: inherit;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.bonni-terminal__prompt {
+  color: #d4df74;
+}
+
+.bonni-terminal__entry:not([hidden]) {
+  display: flex;
+  align-items: start;
+  gap: 1ch;
+}
+
+.bonni-terminal__entry > .bonni-terminal__prompt {
+  max-inline-size: min(60%, 36ch);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bonni-terminal__input {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+}
+
+.bonni-terminal__input textarea {
+  display: block;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  caret-color: currentColor;
+  resize: none;
+}
+
+.bonni-terminal__input textarea:focus-visible {
+  outline: none;
+}
+
+.bonni-terminal__input textarea:focus:placeholder-shown {
+  caret-color: transparent;
+}
+
+.bonni-terminal__input:has(textarea:focus:placeholder-shown)::after {
+  position: absolute;
+  inset: .16em auto auto 0;
+  width: 1ch;
+  height: 1.08em;
+  background: currentColor;
+  content: "";
+  pointer-events: none;
+}
+
+.bonni-terminal__dialog {
+  width: min(680px, calc(100vw - 36px));
+  max-height: calc(100dvh - 44px);
+  box-sizing: border-box;
+  overflow: auto;
+  padding: 22px;
+  border: 1px solid #d7dce3;
+  border-radius: 13px;
+  color: #20252e;
+  background: #f5f7fa;
+  color-scheme: light;
+}
+
+.bonni-terminal__dialog::backdrop {
+  background: rgb(6 10 15 / 72%);
+}
+
+.bonni-terminal__dialog h2 {
+  margin: 0 0 10px;
+  font-size: 1.2rem;
+}
+
+.bonni-terminal__dialog input:not([type="checkbox"]) {
+  display: block;
+  box-sizing: border-box;
+  width: 100%;
+  margin: 5px 0 12px;
+}
+
+.bonni-terminal__dialog-close {
+  margin-top: 12px;
+}
+
+.bonni-terminal__editor-path {
+  color: #495464;
+  overflow-wrap: anywhere;
+}
+
+.bonni-terminal__editor-text {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  min-height: 14rem;
+  max-height: 48dvh;
+  resize: vertical;
+  padding: 12px;
+  border: 1px solid #49525e;
+  border-radius: 7px;
+  color: #f2f5f8;
+  background: #15191f;
+  font: 14px/1.5 ui-monospace, SFMono-Regular, Consolas, monospace;
+}
+
+.bonni-terminal__editor-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  margin-top: 12px;
+}
+
+.bonni-terminal__import-preview {
+  padding-inline-start: 20px;
+}

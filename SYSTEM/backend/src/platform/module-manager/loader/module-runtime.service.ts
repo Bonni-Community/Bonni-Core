@@ -1,18 +1,28 @@
+import { guardModuleWrite, withErasureWriteLock, guardErasurePort } from "../../auth/users/erasure-write-barrier.js";
+import {moduleServicesRegistry} from '../../../core/module-services/module-services-runtime.js';
+import { hubInstallationPolicy, usesHubProducts } from "../../../core/hub/hub-installation-policy.js";
+import { hubProductsRegistry } from "../../../core/hub/hub-products-registry.js";
+import { runtimeModuleIdentity } from "./module-runtime-identity.js";
 import {ensureAppDatabaseRuntime} from "../distribution/app-database-runtime.js";
-import {createHash} from "node:crypto";
+import {createHash,randomUUID} from "node:crypto";
+import { logger as coreLogger } from "../../../core/logger/logger.js";
+import { logError as logRuntimeError } from "../../../core/logger/errorLogger.js";
+import { recordModuleDiagnostic } from "../../../core/logger/diagnostic-context.js";
 import {readFile} from "node:fs/promises";
 import { Router, type Express, type NextFunction, type Request, type Response } from "express";
 import { existsSync } from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 
-import { findModuleManifest } from "../manifests/index.js";
+import { findModuleManifest, listModuleManifests } from "../manifests/index.js";
 import { resolveBonniProjectRoot } from "../project-root.js";
 import { listInstalledModulesStrict } from "../registry/index.js";
 import type { InstalledModuleSummary, ModuleManifestSummary } from "../types.js";
 import { coreEventBus } from "../../../core/event-bus/event-bus.js";
 import { createModuleDataAdapterRuntime } from "../../../core/data-adapters/index.js";
 import { createModuleMediaRuntime } from "../../../core/media/index.js";
+import { createModulePublicWebRuntime } from "../../../core/http/public-web.js";
+import { createModuleFilesRuntime } from "../../../core/files/module-files-runtime.js";
 import { createModuleVideoConferenceRuntime } from "../../../core/video-conferencing/index.js";
 import { createModuleInstanceIdentityRuntime } from "../../../core/instance-identity/index.js";
 import { createStagedModuleDomainMessageRuntime } from "../../../core/domain-messages/index.js";
@@ -29,6 +39,7 @@ import { createModuleTerminalAccountRuntime } from "../../auth/terminal-accounts
 import { registerUsersNetworkDataAdapter } from "../../auth/users/users-network-data-adapter.js";
 import {
   getDataDomainPrismaClient,
+  getDataDomainJsonNulls,
   getPrismaClient,
 } from "../../../core/database/database.js";
 import { createModulePrivateDataRuntime } from "../../security/crypto/index.js";
@@ -135,8 +146,8 @@ const dynamicRuntime = createDynamicModuleRuntime(activeRuntimeModuleKeys);
 
 export function runtimeModuleKeyForApiPath(requestPath: string) {
   const pathname = String(requestPath || "").split("?", 1)[0];
-  const match = pathname.match(/^\/api\/apps\/([a-z0-9](?:[a-z0-9-]*[a-z0-9])?)(?:\/|$)/i);
-  return match ? `app.${match[1].toLowerCase()}` : null;
+  const match = pathname.match(/^\/api\/(apps|addons|plugins)\/([a-z0-9](?:[a-z0-9-]*[a-z0-9])?)(?:\/|$)/i);
+  return match ? `${match[1].toLowerCase().slice(0,-1)}.${match[2].toLowerCase()}` : null;
 }
 
 async function recoverMissingModuleRoute(
@@ -202,11 +213,26 @@ async function loadModule(
   module: InstalledModuleSummary,
   isCurrent: () => boolean,
 ): Promise<RegisteredRuntimeModule> {
-  const manifest = await findModuleManifest(module.key);
+  const loadAttemptId = randomUUID();
+  const startedAt = performance.now();
+  let phase = "discover-manifest";
+  let loadedVersion = module.version;
+  const observe = (status = "loading", extra: Record<string, unknown> = {}) => recordModuleDiagnostic(module.key, {
+    loadAttemptId, registryVersion: module.version, selectedVersion: loadedVersion, phase, status, ...extra,
+  });
+  observe();
+  let manifest: ModuleManifestSummary | null;
+  try { manifest = await findModuleManifest(module.key); }
+  catch (error) {
+    observe("error");
+    logRuntimeError(error, { module: "module-manager", moduleId: module.key, phase, loadAttemptId });
+    throw error;
+  }
   const backendEntry = manifest?.backend?.entry || module.backendEntry || null;
   const installPath = manifest?.sourcePath || module.sourcePath || module.installPath || null;
 
   if (!module.enabled || !backendEntry || !installPath) {
+    observe("skipped");
     return {
       key: module.key,
       kind: module.kind,
@@ -220,6 +246,7 @@ async function loadModule(
   let registrationCleanup: RuntimeModuleCleanup | undefined;
   let published = false;
   try {
+    phase = "resolve-entry"; observe();
     const resolvedEntry = resolveRuntimeModuleEntry(module, manifest);
     if (!resolvedEntry) {
       throw new Error(
@@ -227,8 +254,25 @@ async function loadModule(
       );
     }
 
-    await ensureAppDatabaseRuntime(path.resolve(resolveBonniProjectRoot(),installPath),module.key);
+    const loadedModule = runtimeModuleIdentity(module, manifest, resolvedEntry);
+    loadedVersion = loadedModule.version;
+    phase = "check-hub-policy"; observe();
+    const hubCandidate = { ...loadedModule, manifestJson: manifest || loadedModule.manifestJson };
+    if (usesHubProducts(hubCandidate)) {
+      const [installedModules, manifests] = await Promise.all([listInstalledModulesStrict(), listModuleManifests()]);
+      const hubPolicy = hubInstallationPolicy(installedModules, hubCandidate, manifests);
+      if (hubPolicy.required && !hubPolicy.enabled) {
+        throw Object.assign(new Error("HUB_REQUIRED_FOR_MULTIPLE_APPS"), {
+          code: "HUB_REQUIRED_FOR_MULTIPLE_APPS",
+          diagnostic: { phase, hubConsumerCount: hubPolicy.appKeys.length },
+        });
+      }
+    }
     const codeHash=createHash("sha256").update(await readFile(resolvedEntry.entryPath)).digest("hex");
+    phase = "prepare-database";
+    observe("loading", { entrySha256: codeHash, backendEntry: resolvedEntry.backendEntry });
+    await ensureAppDatabaseRuntime(path.resolve(resolveBonniProjectRoot(),resolvedEntry.installPath),module.key,manifest);
+    phase = "import-entry"; observe();
     const entry = await import(pathToFileURL(resolvedEntry.entryPath).href+"?bonni="+codeHash);
     const register = entry.registerModule || entry.default;
 
@@ -237,10 +281,13 @@ async function loadModule(
     }
     if (!isCurrent()) return cancelledModuleLoad(module);
 
+    phase = "create-core-services"; observe();
     const corePrisma = getPrismaClient();
     const declaredDependencies = new Set(
       (manifest?.dependsOn || []).map((dependency) => String(dependency).trim()),
     );
+    const moduleServicesRuntime = declaredDependencies.has('core.module-services') && manifest ? moduleServicesRegistry.stage(module.key,manifest) : null;
+    const hubRuntime = manifest ? hubProductsRegistry.stage(module.key, manifest) : null;
     const networkRequestRuntime = createStagedModuleNetworkRequestRuntime(
       module.key,
       createModuleNetworkPolicyAuthorizer(corePrisma),
@@ -253,14 +300,21 @@ async function loadModule(
       ? createStagedModuleDomainMessageRuntime(module.key, corePrisma)
       : null;
     registrationCleanup = normalizeRuntimeModuleCleanup(() => {
+      hubRuntime?.dispose();
+      moduleServicesRuntime?.dispose();
       domainMessageRuntime?.dispose();
       networkRequestRuntime.dispose();
       twoFactorProviderRuntime.dispose();
     });
     const dataDomain = moduleDatabaseDomain(module.key, manifest);
     const modulePrisma = dataDomain ? getDataDomainPrismaClient(dataDomain) : null;
-    const database = createModuleDatabaseRuntime(module.key, modulePrisma, manifest);
-    const services = Object.freeze({
+    const database = createModuleDatabaseRuntime(module.key, modulePrisma, manifest, dataDomain ? () => getDataDomainJsonNulls(dataDomain) : undefined, { write: guardModuleWrite, transaction: withErasureWriteLock });
+    const rawServices = {
+      ...(moduleServicesRuntime ? {moduleServices:moduleServicesRuntime.runtime} : {}),
+      ...(declaredDependencies.has('core.files') ? {files:createModuleFilesRuntime(module.key)} : {}),
+      ...(declaredDependencies.has('core.public-web') ? {publicWeb:createModulePublicWebRuntime()} : {}),
+      ...(hubRuntime?.providerRuntime ? { hubProvider: hubRuntime.providerRuntime } : {}),
+      ...(hubRuntime?.client ? { hubProducts: hubRuntime.client } : {}),
       eventBus: coreEventBus,
       dataAdapters: createModuleDataAdapterRuntime(module.key),
       networkRequests: networkRequestRuntime.runtime,
@@ -322,6 +376,7 @@ async function loadModule(
               manifest?.metadata?.legacyAccessMappings,
               {
                 prisma: corePrisma,
+                memberDevicesEnabled: (manifest?.metadata?.memberDevices as { contractVersion?: string } | undefined)?.contractVersion === "bonni.member-devices/v1",
                 moduleLabel: manifest?.name || module.name,
                 autoAssignDefaultProfile: manifest?.metadata?.autoAssignMemberAccess !== false,
                 technicalAccounts: manifest?.metadata?.technicalAccounts,
@@ -356,23 +411,36 @@ async function loadModule(
       // Compatibility alias. It is either the delegate-restricted client or
       // a fail-closed proxy for explicitly database-less modules.
       prisma: database.client,
-    });
+    };
+    const guarded = ["members", "protectedPeople", "archive", "files", "media", "nfc", "moduleSettings"];
+    const services = Object.freeze(Object.fromEntries(Object.entries(rawServices).map(([key, value]) =>
+      [key, guarded.includes(key) && value && typeof value === "object" ? guardErasurePort(value) : value])) as typeof rawServices);
+
 
     const moduleRouter = Router();
+    const logModule = (level: string, message: string, metadata?: unknown) => {
+      coreLogger.log(level, message, {
+        module: module.key,
+        moduleId: module.key,
+        appVersion: loadedVersion,
+        consoleArguments: metadata === undefined ? undefined : [metadata],
+      });
+    };
     const logger = Object.freeze({
       info(message: string, metadata?: unknown) {
-        console.info(`[module:${module.key}] ${message}`, metadata ?? "");
+        logModule("info", message, metadata);
       },
       warn(message: string, metadata?: unknown) {
-        console.warn(`[module:${module.key}] ${message}`, metadata ?? "");
+        logModule("warn", message, metadata);
       },
       error(message: string, metadata?: unknown) {
-        console.error(`[module:${module.key}] ${message}`, metadata ?? "");
+        logModule("error", message, metadata);
       },
     });
+    phase = "register-module"; observe();
     const registrationResult = await register({
       app: moduleRouter as unknown as Express,
-      module,
+      module: loadedModule,
       services,
       prisma: services.prisma,
       logger,
@@ -382,6 +450,8 @@ async function loadModule(
       // Revoke every Core capability and abort in-flight work before awaiting
       // add-on cleanup. A slow disposer must not keep the module remotely
       // reachable or leave message subscriptions/retry timers alive.
+      hubRuntime?.dispose();
+      moduleServicesRuntime?.dispose();
       domainMessageRuntime?.dispose();
       networkRequestRuntime.dispose();
       twoFactorProviderRuntime.dispose();
@@ -394,12 +464,15 @@ async function loadModule(
       if (cleanupError) throw cleanupError;
     });
 
+    phase = "publish-routes"; observe();
     published = await dynamicRuntime.publish(
       module.key,
       moduleRouter,
       registrationCleanup,
       isCurrent,
       () => {
+        hubRuntime?.activate();
+        moduleServicesRuntime?.activate();
         domainMessageRuntime?.activate();
         networkRequestRuntime.activate();
         twoFactorProviderRuntime.activate();
@@ -407,11 +480,15 @@ async function loadModule(
     );
     if (!published) return cancelledModuleLoad(module);
 
+    phase = "ready";
+    observe("loaded");
+    coreLogger.info("Fachmodul geladen", { module: "module-manager", moduleId: module.key, selectedVersion: loadedVersion, registryVersion: module.version, loadAttemptId, phase, durationMs: Math.round(performance.now() - startedAt) });
+
     const result: RegisteredRuntimeModule = {
       key: module.key,
       kind: module.kind,
-      name: module.name,
-      version: module.version,
+      name: loadedModule.name,
+      version: loadedModule.version,
       status: "loaded",
       route: resolvedEntry.backendEntry,
     };
@@ -424,15 +501,14 @@ async function loadModule(
       key: module.key,
       kind: module.kind,
       name: module.name,
-      version: module.version,
+      version: loadedVersion,
       status: "error",
       route: backendEntry || undefined,
       error: error instanceof Error ? error.message : String(error),
     };
-    console.error(
-      `[module:${module.key}] Laufzeit konnte nicht geladen werden.`,
-      error instanceof Error ? error.stack || error.message : error,
-    );
+    observe("error");
+    logRuntimeError(error, { module: "module-manager", moduleId: module.key, phase, loadAttemptId,
+      selectedVersion: loadedVersion, registryVersion: module.version, durationMs: Math.round(performance.now() - startedAt) });
     return result;
   }
 }
@@ -549,6 +625,7 @@ export async function deactivateRuntimeModule(key: string) {
       cleanupError ||= error;
     }
     lastLoadedModules = lastLoadedModules.filter((entry) => entry.key !== key);
+    recordModuleDiagnostic(key, { status: "unloaded", phase: "deactivate" });
     managedRuntimeKeys.delete(key);
     if (cleanupError) throw cleanupError;
   })();
@@ -569,6 +646,8 @@ export async function registerModules(app: Express) {
   const modules = (await listInstalledModulesStrict()).filter((module) => module.enabled);
   lastLoadedModules = [];
 
+  // Providers are published before consumers; clients also resolve Hub on every call.
+  modules.sort((a, b) => Number(b.key === "addon.hub") - Number(a.key === "addon.hub"));
   for (const module of modules) {
     const result = await ensureModuleLoaded(module, true);
     if (result.status === "error") {

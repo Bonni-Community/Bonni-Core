@@ -5,12 +5,14 @@ import FfAgentTab from "./tab/FFAgent.jsx";
 import PosTab from "./tab/POS.jsx";
 import JitsiTab from "./tab/Jitsi.jsx";
 import WebBridgeTab from "./tab/WebBridge.jsx";
+import MatrixTab from "./tab/Matrix.jsx";
 
 const TABS = [
   { key: "ffAgent", label: "FF-Agent" },
   { key: "pos", label: "POS" },
   { key: "fiskalyApi", label: "Fiskaly API" },
   { key: "jitsi", label: "Jitsi / WebRTC" },
+  { key: "matrix", label: "Matrix / Synapse" },
   { key: "web", label: "Web & Shop" },
 ];
 
@@ -22,7 +24,7 @@ export default function SchnittstellenPage({ token }) {
       <div className="cc-user-page__header cc-menu-page-header">
         <div>
           <h1>Schnittstellen</h1>
-          <p>Externe Dienste sowie Drupal und TYPO3 für Web und Shop verwalten.</p>
+          <p>Externe Dienste, eigenständige Server und Web-Anbindungen verwalten.</p>
         </div>
       </div>
 
@@ -46,6 +48,7 @@ export default function SchnittstellenPage({ token }) {
         {activeTab === "pos" ? <PosTab /> : null}
         {activeTab === "fiskalyApi" ? <FiskalyApiTab /> : null}
         {activeTab === "jitsi" ? <JitsiTab token={token} /> : null}
+        {activeTab === "matrix" ? <MatrixTab token={token} /> : null}
         {activeTab === "web" ? <WebBridgeTab token={token} /> : null}
       </div>
     </section>

@@ -42,6 +42,7 @@ export const CONTROL_CENTER_NAV_ITEMS = [
     label: labels.navigation.diagnostics,
     targetModule: "diagnostics",
     description: labels.navigationDescriptions.diagnostics,
+    showInTopBar: false,
   },
   {
     key: "explorer",

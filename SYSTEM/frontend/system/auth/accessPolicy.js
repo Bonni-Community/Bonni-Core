@@ -236,7 +236,7 @@ function roleKeys(user, shell) {
     ...asList(user?.permissions?.roles),
     ...asList(shell?.identity?.roles),
     ...asList(shell?.permissions?.roles),
-  ].map((role) => String(role?.key || role?.label || role || "").trim().toUpperCase());
+  ].map((role) => String(typeof role === "string" ? role : role?.key || "").trim().toUpperCase());
 }
 
 export function canOpenControlCenter(user, shell) {
@@ -248,7 +248,7 @@ export function canOpenControlCenter(user, shell) {
   ));
 }
 
-export function canOpenSystemUpdate(user, shell) {
+export function hasSystemAdministratorAccess(user, shell) {
   const administratorRole = roleKeys(user, shell).some((role) => (
     ["ADMIN", "SYSTEM_ADMIN", "SYSTEM.ADMIN"].includes(role)
   ));
@@ -257,6 +257,10 @@ export function canOpenSystemUpdate(user, shell) {
   return permissionKeys(user, shell).some((permission) => (
     permission === "*" || permission.replace(/_/g, ".") === "system.admin"
   ));
+}
+
+export function canOpenSystemUpdate(user, shell) {
+  return hasSystemAdministratorAccess(user, shell);
 }
 
 export function canOpenLaunchTarget(target, user, shell) {

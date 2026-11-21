@@ -5,6 +5,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 
 import { resolvePersistentStorageRoot } from "../storage/persistent-storage-root.mjs";
+import { findBackupLocation } from "./backup-paths.mjs";
 
 function storageRoot() {
   return resolvePersistentStorageRoot();
@@ -121,7 +122,8 @@ async function validateBackup(root, manifest) {
     expectedPaths.add(normalizedPath);
     const file = path.resolve(root, expected.path);
     if (!isInside(file, root) || !existsSync(file)) throw new Error(`Backup-Datei fehlt: ${expected.path}`);
-    const stat = await fs.stat(file);
+    const stat = await fs.lstat(file);
+    if (!stat.isFile() || path.relative(file, await fs.realpath(file))) throw new Error("Ungültige Datei im Backup.");
     if (stat.size !== expected.sizeBytes) throw new Error(`Backup-Größe stimmt nicht: ${expected.path}`);
     if (await sha256File(file) !== expected.sha256) throw new Error(`Backup-Prüfsumme stimmt nicht: ${expected.path}`);
   }
@@ -141,10 +143,21 @@ async function restore() {
   if (!["active", "previous"].includes(role)) return;
 
   const id = String(request.backupId || "");
-  if (!/^backup-[a-zA-Z0-9._-]+$/.test(id)) throw new Error("Ungültige Backup-ID.");
-  const root = path.join(backupsRoot(), id);
-  const manifest = await readJson(path.join(root, "manifest.json"));
+  const location = await findBackupLocation(backupsRoot(), id);
+  if (!location || location.directory !== (request.backupDirectory ?? "")) throw new Error("Die vorgemerkte Sicherung wurde am erwarteten Ort nicht gefunden.");
+  const root = location.absolutePath;
+  const manifestFile = path.join(root, "manifest.json");
+  if (!(await fs.lstat(manifestFile)).isFile()) throw new Error("Ungültiges Backup-Manifest.");
+  const manifest = await readJson(manifestFile);
+  if (manifest?.id !== id) throw new Error("Die ID des Backup-Manifests stimmt nicht überein.");
   await validateBackup(root, manifest);
+  const erasureLedger = await readJson(path.join(storageRoot(), "system", "erasure-ledger.json"));
+  if (erasureLedger?.entries?.some(entry => Date.parse(entry.completedAt) >= Date.parse(manifest.createdAt))) {
+    throw new Error("RESTORE_ERASURE_REPLAY_REQUIRED: Die Sicherung enthält inzwischen gelöschte Benutzerdaten. Wiederherstellung vor dem Login angehalten.");
+  }
+  if (manifest.domainDatabases?.length) {
+    throw new Error("RESTORE_ISOLATED_DOMAINS_REQUIRED: Getrennte Datenbanken müssen gemeinsam kontrolliert wiederhergestellt werden.");
+  }
 
   const databaseDump = path.join(root, "database", "database.dump");
   await run("pg_restore", [
@@ -162,6 +175,7 @@ async function restore() {
       relative !== "system/backups"
       && !relative.startsWith("system/backups/")
       && relative !== "system/restore-request.json"
+      && relative !== "system/erasure-ledger.json"
     ));
   }
 

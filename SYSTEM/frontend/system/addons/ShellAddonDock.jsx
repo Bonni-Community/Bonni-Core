@@ -8,6 +8,7 @@ import {
   getShellAddonForSlot,
 } from "./shellAddonUtils.js";
 import "./ShellAddonDock.css";
+import { messengerSectionAllowed } from "./messengerNavigation.js";
 
 const CHAT_DOCK_SLOT = "chat-dock";
 const REFRESH_INTERVAL_MS = 15_000;
@@ -35,6 +36,8 @@ function ShellAddonFrame({
   onLogout,
   onChangeWorkspace,
   onOpenMySettings,
+  navigationTarget,
+  onNavigate,
 }) {
   const frameRef = useRef(null);
   const moduleId = addonKey(addon);
@@ -46,9 +49,11 @@ function ShellAddonFrame({
     frameRef.current?.contentWindow?.postMessage({
       type: "bonni:module-context",
       moduleId,
-      payload: { token, user, shell, branding, activeWorkspace, allowedWorkspaces },
+      payload: { token, user, shell, branding, activeWorkspace, allowedWorkspaces,
+        messengerNavigation: navigationTarget ? { version: 1, sections: navigationTarget.sections,
+          openPanel: navigationTarget.openPanel } : null },
     }, entryUrl.origin);
-  }, [activeWorkspace, allowedWorkspaces, branding, entryUrl.origin, moduleId, shell, token, user]);
+  }, [activeWorkspace, allowedWorkspaces, branding, entryUrl.origin, moduleId, shell, token, user, navigationTarget]);
 
   useEffect(() => {
     function receiveMessage(event) {
@@ -67,12 +72,13 @@ function ShellAddonFrame({
         onChangeWorkspace?.(event.data?.payload?.workspace);
       }
       if (action === "open-my-settings") onOpenMySettings?.();
+      if (action === "messenger-navigate") onNavigate?.(event.data?.payload?.section);
     }
 
     window.addEventListener("message", receiveMessage);
     sendContext();
     return () => window.removeEventListener("message", receiveMessage);
-  }, [entryUrl.origin, moduleId, onChangeWorkspace, onClose, onLogout, onOpenMySettings, sendContext]);
+  }, [entryUrl.origin, moduleId, onChangeWorkspace, onClose, onLogout, onOpenMySettings, onNavigate, sendContext]);
 
   return (
     <iframe
@@ -96,14 +102,35 @@ export default function ShellAddonDock({
   onLogout,
   onChangeWorkspace,
   onOpenMySettings,
+  activeModuleId,
 }) {
   const [addon, setAddon] = useState(null);
   const [open, setOpen] = useState(false);
+  const [loadState, setLoadState] = useState("loading");
+  const [navigationTarget, setNavigationTarget] = useState(null);
+  const [initializedFor, setInitializedFor] = useState("");
+  const accountId = String(user?.accountId || user?.id || "");
+  const panelRef = useRef(null);
+  useEffect(() => { if (open && accountId) setInitializedFor(accountId); }, [open, accountId]);
+  useEffect(() => {
+    if (!open) return undefined;
+    const previous = document.activeElement;
+    panelRef.current?.querySelector("button")?.focus();
+    return () => { if (previous?.isConnected) previous.focus?.(); };
+  }, [open]);
+
+  useEffect(() => {
+    if (!token || !user) return undefined;
+    const openChat = (event) => { setNavigationTarget(event.detail || null); setOpen(true); };
+    window.addEventListener("bonni:open-chat", openChat);
+    return () => window.removeEventListener("bonni:open-chat", openChat);
+  }, [token, user]);
 
   useEffect(() => {
     if (!token || !user) {
       setAddon(null);
       setOpen(false);
+      setNavigationTarget(null);
       return undefined;
     }
 
@@ -115,10 +142,10 @@ export default function ShellAddonDock({
         if (!cancelled) {
           const nextAddon = getShellAddonForSlot(packages, CHAT_DOCK_SLOT);
           setAddon(nextAddon);
-          if (!nextAddon) setOpen(false);
+          setLoadState("ready");
         }
       } catch {
-        if (!cancelled) setAddon(null);
+        if (!cancelled) { setAddon(null); setLoadState("error"); }
       }
     }
 
@@ -140,15 +167,25 @@ export default function ShellAddonDock({
   }, [open]);
 
   const close = useCallback(() => setOpen(false), []);
+  const navigate = useCallback((section) => {
+    if (!messengerSectionAllowed(navigationTarget, section)) return;
+    window.dispatchEvent(new CustomEvent("bonni:messenger-navigate", {
+      detail: { ...navigationTarget, section },
+    }));
+    setOpen(false);
+  }, [navigationTarget]);
 
-  if (!addon) return null;
+  if (!addon && !open) return null;
 
-  const label = addonName(addon);
+  const label = addon ? addonName(addon) : "Matrix-Chat";
 
   return (
-    <div className={`shell-addon-dock${open ? " shell-addon-dock--open" : ""}`}>
-      {open ? (
-        <aside className="shell-addon-dock__panel" aria-label={label}>
+    <div className={`shell-addon-dock${open ? " shell-addon-dock--open" : ""}${open && navigationTarget ? " shell-addon-dock--messenger" : ""}`}>
+      {open || (addon && initializedFor === accountId) ? (
+        <aside ref={panelRef} className="shell-addon-dock__panel" aria-label={label} hidden={!open}
+          role={navigationTarget ? "dialog" : undefined} aria-modal={open && navigationTarget ? true : undefined}>
+          <span className="shell-addon-dock__focus-boundary" tabIndex={open ? 0 : -1}
+            onFocus={() => panelRef.current?.querySelector("iframe")?.focus()} />
           <header className="shell-addon-dock__header">
             <span className="shell-addon-dock__header-title">
               <MatrixDockMark />
@@ -159,7 +196,8 @@ export default function ShellAddonDock({
               ×
             </button>
           </header>
-          <ShellAddonFrame
+          {addon ? <ShellAddonFrame
+            key={accountId}
             addon={addon}
             token={token}
             user={user}
@@ -171,20 +209,31 @@ export default function ShellAddonDock({
             onLogout={onLogout}
             onChangeWorkspace={onChangeWorkspace}
             onOpenMySettings={onOpenMySettings}
-          />
+            navigationTarget={navigationTarget}
+            onNavigate={navigate}
+          /> : (
+            <p role="status" style={{ padding: 20, lineHeight: 1.5 }}>
+              {loadState === "loading" ? "Chat wird geladen …"
+                : loadState === "error" ? "Der Chat konnte nicht geladen werden. Die Verbindung wird automatisch erneut geprüft."
+                  : "Matrix-Chat ist noch nicht verfügbar. Bitte das Matrix-Add-on in Bonni Core installieren und aktivieren."}
+            </p>
+          )}
+          <span className="shell-addon-dock__focus-boundary" tabIndex={open ? 0 : -1}
+            onFocus={() => panelRef.current?.querySelector("button")?.focus()} />
         </aside>
-      ) : (
+      ) : null}
+      {!open && activeModuleId !== "app.stueberlapp" ? (
         <button
           className="shell-addon-dock__trigger"
           type="button"
-          onClick={() => setOpen(true)}
+          onClick={() => { setNavigationTarget(null); setOpen(true); }}
           aria-label={`${label} öffnen`}
           title={`${label} öffnen`}
         >
           <MatrixDockMark />
           <span>{label}</span>
         </button>
-      )}
+      ) : null}
     </div>
   );
 }

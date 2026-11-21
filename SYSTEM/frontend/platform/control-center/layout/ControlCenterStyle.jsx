@@ -142,7 +142,7 @@ function buildStatusCards(overview) {
       detail: cpu.model || `${toNumber(cpu.cores, 0)} Kerne`,
       percent: cpuPercent,
       state: getLoadState(cpuPercent),
-      footer: cpu.cores ? `${cpu.cores} Kerne · ${cpu.source === "proc-stat" ? "Live-Messung" : "Load-Average"}` : "Wird vom Backend gemessen",
+      footer: cpu.cores ? `${cpu.cores} Kerne · ${["proc-stat", "cpu-times"].includes(cpu.source) ? "Live-Messung" : "Load-Average"}` : "Wird vom Backend gemessen",
     },
     {
       key: "ram",

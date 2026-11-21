@@ -1,4 +1,5 @@
 import type { NextFunction, Request, RequestHandler, Response, Router } from "express";
+import { getDiagnosticRequest, isDiagnosticModuleKey } from "../../../core/logger/diagnostic-context.js";
 
 type EnabledModuleKeys = () => Promise<Iterable<string>>;
 
@@ -79,6 +80,8 @@ export function createDynamicModuleRuntime(enabledModuleKeys: EnabledModuleKeys)
     }
 
     const candidates = [...slots.entries()].filter(([key, slot]) => slot.active && enabled.has(key));
+    const diagnostic = getDiagnosticRequest();
+    const originalModuleId = diagnostic?.moduleId;
     let index = 0;
 
     const dispatch: NextFunction = (error?: unknown) => {
@@ -94,7 +97,12 @@ export function createDynamicModuleRuntime(enabledModuleKeys: EnabledModuleKeys)
         return;
       }
 
-      candidate[1].router(request, response, dispatch);
+      const [key, slot] = candidate;
+      if (diagnostic && isDiagnosticModuleKey(key)) diagnostic.moduleId = key;
+      slot.router(request, response, (routeError?: unknown) => {
+        if (diagnostic && !routeError) diagnostic.moduleId = originalModuleId;
+        dispatch(routeError);
+      });
     };
 
     dispatch();

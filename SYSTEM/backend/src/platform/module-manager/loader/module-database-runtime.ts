@@ -7,6 +7,10 @@ const DELEGATE_NAME = /^[a-z][A-Za-z0-9]{0,99}$/;
 type PrismaLike = Record<string, any> & {
   $transaction?: (...arguments_: any[]) => Promise<any>;
 };
+type WriteGuard = {
+  transaction<T>(work: () => Promise<T>): Promise<T>;
+  write<T>(delegate: any, operation: string, args: any[], work: () => Promise<T>): Promise<T>;
+};
 
 function databaseDeclaration(manifest: ModuleManifestSummary | null) {
   const normalizedManifest = normalizeLegacyPrivacyIdeaManifest(manifest);
@@ -126,6 +130,7 @@ function scopedPrismaProxy(
   moduleKey: string,
   prisma: PrismaLike,
   allowedDelegates: ReadonlySet<string>,
+  guard?: WriteGuard,
 ): PrismaLike {
   const proxyTarget = Object.create(null);
   return new Proxy(proxyTarget, {
@@ -141,9 +146,10 @@ function scopedPrismaProxy(
             throw new Error("MODULE_DATABASE_TRANSACTION_CALLBACK_REQUIRED");
           }
           const transactionOptions = validatedTransactionOptions(options);
-          return prisma.$transaction!(async (transaction: Record<string, any>) => (
-            callback(scopedPrismaProxy(moduleKey, transaction, allowedDelegates))
+          const work = () => prisma.$transaction!(async (transaction: Record<string, any>) => (
+            callback(scopedPrismaProxy(moduleKey, transaction, allowedDelegates, guard))
           ), transactionOptions);
+          return guard ? guard.transaction(work) : work();
         };
       }
       if (typeof property !== "string" || !allowedDelegates.has(property)) {
@@ -153,7 +159,17 @@ function scopedPrismaProxy(
       if (!delegate || typeof delegate !== "object") {
         throw new Error(`MODULE_DATABASE_DELEGATE_UNAVAILABLE:${moduleKey}:${property}`);
       }
-      return delegate;
+      if (!guard) return delegate;
+      return new Proxy(delegate, {
+        get(target, method) {
+          const value = Reflect.get(target, method, target);
+          if (typeof value !== "function") return value;
+          const mutation = typeof method === "string" && /^(create|update|delete|upsert)/.test(method);
+          return (...args: any[]) => mutation
+            ? guard.write(target, String(method), args, () => Promise.resolve(Reflect.apply(value, target, args)))
+            : Reflect.apply(value, target, args);
+        },
+      });
     },
     has(_target, property) {
       return typeof property === "string" && allowedDelegates.has(property);
@@ -181,6 +197,8 @@ export function createModuleDatabaseRuntime(
   moduleKey: string,
   prisma: PrismaLike | null,
   manifest: ModuleManifestSummary | null,
+  jsonNulls?: () => Readonly<{ database: unknown; json: unknown }>,
+  guard?: WriteGuard,
 ) {
   const declaration = databaseDeclaration(manifest);
   if (declaration.mode === "none") {
@@ -193,12 +211,13 @@ export function createModuleDatabaseRuntime(
   }
   if (!prisma) throw new Error(`MODULE_DATABASE_CLIENT_REQUIRED:${moduleKey}`);
   const delegates = configuredDelegates(manifest);
-  const client = scopedPrismaProxy(moduleKey, prisma, delegates);
+  const client = scopedPrismaProxy(moduleKey, prisma, delegates, guard);
 
   return Object.freeze({
     mode: "scoped-v1" as const,
     moduleKey,
     allowedDelegates: Object.freeze([...delegates]),
     client,
+    get jsonNulls() { return jsonNulls?.(); },
   });
 }

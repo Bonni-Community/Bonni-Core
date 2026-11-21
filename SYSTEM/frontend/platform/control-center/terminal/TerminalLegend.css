@@ -1,0 +1,75 @@
+.bonni-terminal-legend {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 16px;
+  min-width: 0;
+  margin: 0;
+  padding: 8px clamp(12px, 3vw, 26px);
+  list-style: none;
+  border-bottom: 1px solid #363e49;
+  background: #20252e;
+  font: 600 12px/1.45 ui-monospace, SFMono-Regular, Consolas, monospace;
+}
+
+.bonni-terminal-legend--interactive li {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.bonni-terminal-legend--interactive button {
+  min-height: 26px;
+  padding: 0;
+  border: 0;
+  color: inherit;
+  background: transparent;
+  font: inherit;
+  cursor: pointer;
+}
+
+.bonni-terminal-legend__application {
+  position: relative;
+  display: block;
+  max-width: 230px;
+  overflow: hidden;
+  line-height: 26px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Keep the native dropdown and keyboard handling over the text-sized label. */
+.bonni-terminal-legend__application select {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0;
+  color-scheme: dark;
+  font: inherit;
+  cursor: pointer;
+}
+
+.bonni-terminal-legend--interactive button:hover,
+.bonni-terminal-legend__application:hover {
+  text-decoration: underline;
+}
+
+.bonni-terminal-legend--interactive button:focus-visible,
+.bonni-terminal-legend__application:has(select:focus-visible) {
+  outline: 2px solid #ffb185;
+  outline-offset: 1px;
+}
+
+.bonni-terminal-legend--interactive button[aria-pressed="false"],
+.bonni-terminal-legend__application[data-hidden="true"] {
+  color: #a1aab5;
+  text-decoration: line-through;
+}
+
+[data-terminal-tone="text"] { color: #dfe8ee; }
+[data-terminal-tone="command"] { color: #ffac80; }
+[data-terminal-tone="error"] { color: #ff9097; }
+[data-terminal-tone="warning"] { color: #ffd27d; }
+[data-terminal-tone="system"] { color: #8ee0ea; }
+[data-terminal-tone="application"] { color: #b7e386; }
+[data-terminal-tone="login"] { color: #e1aef0; }

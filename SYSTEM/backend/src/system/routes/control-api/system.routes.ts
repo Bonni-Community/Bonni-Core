@@ -16,7 +16,7 @@ import { systemSecurityRouter } from "../../../platform/security/control/index.j
 import { systemSystemConfigRouter } from "../config/index.js";
 import { systemUsersRouter } from "../../../platform/auth/users/index.js";
 import { systemUpdateCenterRouter } from "./update-center/index.js";
-import { systemJitsiRouter, systemWebBridgeRouter } from "./integrations/index.js";
+import { systemJitsiRouter, systemWebBridgeRouter, systemMatrixRouter } from "./integrations/index.js";
 import { systemNetworkPoliciesRouter } from "./network-policies/index.js";
 import { requireAuth } from "../../../platform/security/identity/middleware/requireAuth.js";
 import { requirePermission } from "../../../platform/security/identity/middleware/requirePermission.js";
@@ -45,5 +45,6 @@ systemRouter.use("/update-center", systemUpdateCenterRouter);
 systemRouter.use("/licenses", systemLicensesRouter);
 systemRouter.use("/integrations/jitsi", systemJitsiRouter);
 systemRouter.use("/integrations/web", systemWebBridgeRouter);
+systemRouter.use("/integrations/matrix", systemMatrixRouter);
 systemRouter.use("/network-policies", systemNetworkPoliciesRouter);
 systemRouter.post("/tools/registry-sync/run", runRegistrySyncToolController);

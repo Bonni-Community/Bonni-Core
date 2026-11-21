@@ -11,6 +11,14 @@
 // ENUMS
 // =====================================================
 
+enum StueberlLogLevel {
+  DEBUG
+  INFO
+  WARN
+  ERROR
+  FATAL
+}
+
 enum TabStatus {
   ACTIVE
   CANCELLED
@@ -253,23 +261,6 @@ enum EventStatus {
   CANCELLED
   COMPLETED
   ARCHIVED
-}
-
-// Events können vollständig in der StüberlApp angelegt werden. HocketApp ist
-// nur eine optionale Quelle für importierten Kontext und keine Voraussetzung.
-enum StueberlEventSource {
-  LOCAL
-  HOCKET
-}
-
-enum StueberlEventKind {
-  SHORT_TERM
-  PLANNED
-}
-
-enum EventPriceSource {
-  LOCAL
-  HOCKET
 }
 
 enum EventRegistrationStatus {
@@ -565,10 +556,8 @@ model MembershipFeeRun {
 // - TabService sagt, ob der Tab bestellt, in Bearbeitung, ausgeliefert oder storniert ist.
 // - TabAssumption ist eine spätere Übernahme, aber keine Zahlung.
 //
-// Die alten Tabellen Tab/TabItem liegen isoliert in bierdeckel_legacy.prisma
-// als LegacyTab/LegacyTabItem und können später entfernt werden.
-// Das neue Prisma-Modell Tab wird bewusst auf die neue Tabelle TabNew gemappt,
-// damit die alte Tabelle Tab während der Migration unverändert bleiben kann.
+// Dieses Schema ist der vollständige neue Schnitt. Ein paralleles Legacy-Tab-
+// Schema oder ein Startzeit-Migrationspfad ist nicht Bestandteil der App.
 // -----------------------------------------------------
 
 model TabSessionGroup {
@@ -614,11 +603,8 @@ model TabSessionGroupEntry {
 }
 
 model TabSession {
-  dailySequence Int @default(0)
   id                 String           @id @default(cuid())
   memberId           String
-  eventId            String?
-  event              Event?           @relation(fields: [eventId], references: [id])
   businessDate       DateTime
   status             TabSessionStatus @default(OPEN)
   startedAt          DateTime         @default(now())
@@ -638,10 +624,9 @@ model TabSession {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  @@unique([memberId, businessDate, dailySequence])
+  @@unique([memberId, businessDate])
   @@index([memberId, status])
   @@index([businessDate, status])
-  @@index([eventId, businessDate, status])
 }
 
 model TabOrder {
@@ -673,11 +658,6 @@ model TabEvent {
 
 model TabGroup {
   id                 String   @id @default(cuid())
-  clientOrderId      String?  @unique
-  orderRequestHash   String?
-  orderActorAccountId String?
-  orderResponse      Json?
-  orderCompletedAt   DateTime?
   tabOrderId         String?
   tabOrder           TabOrder? @relation(fields: [tabOrderId], references: [id])
   tabEventId         String?
@@ -745,8 +725,6 @@ model Tab {
   tabLocation        TabLocation?      @relation(fields: [tabLocationId], references: [id])
   tabSeatId          String?
   tabSeat            TabSeat?          @relation(fields: [tabSeatId], references: [id])
-  eventId            String?
-  event              Event?            @relation(fields: [eventId], references: [id])
 
   serviceArea        TabServiceArea
   status             TabStatus         @default(ACTIVE)
@@ -760,9 +738,6 @@ model Tab {
   priceSnapshotJson  Json?
   scheduledFor       DateTime?
   note               String?
-  cancelledAt        DateTime?
-  cancelledByAccountId String?
-  cancellationReason String?
   createdByTerminalId String?
   createdByAccountId  String?
   createdAt          DateTime          @default(now())
@@ -776,9 +751,8 @@ model Tab {
   @@index([tabGroupId, status])
   @@index([serviceArea, status])
   @@index([productId, createdAt])
-  @@index([eventId, createdAt])
   @@index([tabLocationId, tabSeatId])
-  @@map("TabNew")
+  @@map("Tab")
 }
 
 model TabService {
@@ -1274,14 +1248,7 @@ model Event {
   startAt            DateTime
   endAt              DateTime?
   status             EventStatus @default(DRAFT)
-  source             StueberlEventSource @default(LOCAL)
-  sourceEventId      String?
-  kind               StueberlEventKind @default(SHORT_TERM)
-  location           String?
-  revision           Int         @default(1)
   organizerId        String?
-  createdByAccountId  String?
-  updatedByAccountId  String?
   budgetFundId       String?
   accountingPeriodId String?
   maxParticipants    Int?
@@ -1294,12 +1261,6 @@ model Event {
   roomReservations EventRoomReservation[]
   menus            EventMenu[]
   needs            EventNeed[]
-  benefitRules     EventBenefitRule[]
-  tabSessions      TabSession[]
-  tabs             Tab[]
-
-  @@unique([source, sourceEventId])
-  @@index([source, status, startAt])
 }
 
 model EventRegistration {
@@ -1480,28 +1441,15 @@ model EventRoomReservation {
 model EventBenefitRule {
   id                  String               @id @default(cuid())
   eventId             String
-  event               Event                @relation(fields: [eventId], references: [id], onDelete: Cascade)
   ruleType            EventBenefitRuleType
   productId           String?
   productVersionId    String?
   categoryId          String?
-  // NULL bleibt die bisherige kostenlose Benefit-Regel. Ein gesetzter Wert
-  // ist ein versionsgebundener Eventpreis in Cent.
-  unitPriceCents      Int?
-  validFrom           DateTime             @default(now())
-  validUntil          DateTime?
-  revision            Int                  @default(1)
-  source              EventPriceSource     @default(LOCAL)
   maxQuantity         Decimal?
   memberRole          String?
   requiresReservation Boolean              @default(false)
   active              Boolean              @default(true)
   note                String?
-  createdByAccountId  String?
-  createdAt            DateTime             @default(now())
-  updatedAt            DateTime             @updatedAt
-
-  @@index([eventId, productId, productVersionId, active, validFrom])
 }
 
 model EventBenefitUsage {

@@ -29,6 +29,13 @@ function compareNumericIdentifiers(left: string, right: string): VersionComparis
 function parseModuleVersion(value: unknown, allowLeadingV = false): ParsedModuleVersion | null {
   if (typeof value !== "string" || value.trim() !== value) return null;
   const candidate = allowLeadingV ? value.replace(/^v/i, "") : value;
+  const compact = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)([a-z]+)-DEV\.(0*[1-9]\d*)$/.exec(candidate);
+  if (compact) {
+    const development = Number(compact[5]);
+    const revision = [...compact[4]].reduce((total, character) => total * 26 + character.charCodeAt(0) - 96, 0);
+    if (!Number.isSafeInteger(development) || !Number.isSafeInteger(revision)) return null;
+    return { major: compact[1], minor: compact[2], patch: compact[3], prerelease: [], bonniRevision: revision, bonniDevelopment: development };
+  }
   const match = SEMVER.exec(candidate);
   if (!match) return null;
 

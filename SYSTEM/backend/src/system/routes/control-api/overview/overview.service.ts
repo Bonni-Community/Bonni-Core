@@ -1,11 +1,10 @@
 import os from "node:os";
-import { readFileSync, statfsSync } from "node:fs";
+import { statfsSync } from "node:fs";
 
 import { getPrismaClient } from "../../../../core/database/database.js";
 import { getRuntimeLiveStatus } from "../../../runtime/index.js";
 import { getLicenseStatus } from "../../../../platform/module-manager/licensing/index.js";
-
-let previousCpuSample: { idle: number; total: number } | null = null;
+import { capacityUsage, getCpuMeasurement, getMemoryStatus, resourcePercent } from "../monitoring/resource.service.js";
 
 type RawCountRow = Record<string, unknown>;
 
@@ -24,81 +23,16 @@ function round(value: number, decimals = 1) {
   return Math.round(value * factor) / factor;
 }
 
-function clampPercent(value: number) {
-  if (!Number.isFinite(value)) return 0;
-  return Math.max(0, Math.min(100, round(value, 1)));
-}
-
-function readLinuxCpuSample() {
-  try {
-    const stat = readFileSync("/proc/stat", "utf8");
-    const cpuLine = stat.split("\n").find((line) => line.startsWith("cpu "));
-
-    if (!cpuLine) return null;
-
-    const values = cpuLine
-      .trim()
-      .split(/\s+/)
-      .slice(1)
-      .map((entry) => Number(entry));
-
-    if (values.some((value) => !Number.isFinite(value))) return null;
-
-    const idle = (values[3] || 0) + (values[4] || 0);
-    const total = values.reduce((sum, value) => sum + value, 0);
-
-    return { idle, total };
-  } catch {
-    return null;
-  }
-}
-
-function estimateCpuPercentFromLoadAverage() {
-  const cpuCount = Math.max(1, os.cpus().length || 1);
-  const [oneMinuteLoad = 0] = os.loadavg();
-  return clampPercent((oneMinuteLoad / cpuCount) * 100);
-}
-
 function getCpuStatus() {
-  const cpuCount = Math.max(1, os.cpus().length || 1);
-  const sample = readLinuxCpuSample();
-  let percent = estimateCpuPercentFromLoadAverage();
-  let source: "proc-stat" | "load-average" = "load-average";
-
-  if (sample && previousCpuSample) {
-    const totalDelta = sample.total - previousCpuSample.total;
-    const idleDelta = sample.idle - previousCpuSample.idle;
-
-    if (totalDelta > 0) {
-      percent = clampPercent((1 - idleDelta / totalDelta) * 100);
-      source = "proc-stat";
-    }
-  }
-
-  if (sample) {
-    previousCpuSample = sample;
-  }
-
+  const measured = getCpuMeasurement();
+  const cores = Math.max(1, measured.cores);
+  const loadAverage = os.loadavg();
   return {
-    percent,
-    cores: cpuCount,
-    model: os.cpus()[0]?.model || "CPU",
-    loadAverage: os.loadavg().map((value) => round(value, 2)),
-    source,
-  };
-}
-
-function getMemoryStatus() {
-  const totalBytes = os.totalmem();
-  const freeBytes = os.freemem();
-  const usedBytes = Math.max(0, totalBytes - freeBytes);
-  const percent = totalBytes > 0 ? clampPercent((usedBytes / totalBytes) * 100) : 0;
-
-  return {
-    totalBytes,
-    freeBytes,
-    usedBytes,
-    percent,
+    model: measured.model,
+    cores,
+    percent: measured.percent ?? resourcePercent(100 * (loadAverage[0] || 0) / cores),
+    source: measured.percent === null ? "load-average" : measured.source,
+    loadAverage: loadAverage.map(value => round(value, 2)),
   };
 }
 
@@ -107,15 +41,9 @@ function getStorageStatus() {
     const stats = statfsSync(process.cwd());
     const totalBytes = Number(stats.blocks) * Number(stats.bsize);
     const freeBytes = Number(stats.bavail) * Number(stats.bsize);
-    const usedBytes = Math.max(0, totalBytes - freeBytes);
-    const percent = totalBytes > 0 ? clampPercent((usedBytes / totalBytes) * 100) : 0;
-
     return {
       path: process.cwd(),
-      totalBytes,
-      freeBytes,
-      usedBytes,
-      percent,
+      ...capacityUsage(totalBytes, freeBytes),
       available: true,
     };
   } catch (error) {

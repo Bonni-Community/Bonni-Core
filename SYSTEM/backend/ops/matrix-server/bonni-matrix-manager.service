@@ -1,0 +1,24 @@
+[Unit]
+Description=Bonni Matrix Server Manager
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=bonni-matrix
+SupplementaryGroups=docker
+WorkingDirectory=/srv/bonni-matrix
+Environment=DOCKER_CONFIG=/srv/bonni-matrix/docker-client
+ExecStart=/usr/bin/node /opt/bonni-matrix-tools/cli.mjs serve --directory /srv/bonni-matrix
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=45min
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/srv/bonni-matrix
+
+[Install]
+WantedBy=multi-user.target

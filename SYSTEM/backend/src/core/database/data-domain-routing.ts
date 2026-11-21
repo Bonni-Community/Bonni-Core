@@ -178,6 +178,13 @@ export function getDataDomainConnectionString(
   const configured = configuredConnection(domain, target);
   if (configured) return configured;
 
+  // Hub is a new shared data owner. Never fall back to another domain's or
+  // maintenance credentials while its isolated routing is not provisioned.
+  if (domain === "hub") throw new Error("HUB_DATABASE_ROUTING_REQUIRED");
+  if (domain === "gourmet") throw new Error("GOURMET_DATABASE_ROUTING_REQUIRED");
+  if (domain === "capture") throw new Error("CAPTURE_DATABASE_ROUTING_REQUIRED");
+  if (domain === "paypal") throw new Error("PAYPAL_DATABASE_ROUTING_REQUIRED");
+
   if (dataDomainDatabase(domain) === "pos") {
     const environmentValue = target === "redundant"
       ? process.env.POS_REDUNDANT_DATABASE_URL

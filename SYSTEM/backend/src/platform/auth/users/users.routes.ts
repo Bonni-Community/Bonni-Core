@@ -1,4 +1,5 @@
 import { Router } from "express";
+import { erasureRouter } from "./erasure.routes.js";
 import { nfcManagementRouter } from "../../../core/modules/security/nfc/routes.js";
 import { presenceManagementRouter } from "../../../core/modules/security/presence/routes.js";
 
@@ -25,6 +26,7 @@ export const systemUsersRouter = Router();
 // selbst auf, damit schreibende Benutzeraktionen immer einen aktuellen User haben.
 systemUsersRouter.use(currentUserMiddleware);
 systemUsersRouter.use(requireAuth);
+systemUsersRouter.use("/erasure", erasureRouter);
 
 const requireUserManager = requireAnyPermission(
   "SYSTEM_ADMIN",

@@ -5,7 +5,7 @@ export const createTerminalSchema = z.object({
     key: z.string().min(1),
     name: z.string().min(1),
     type: z.string().min(1),
-    layoutPreset: z.string().default("DEFAULT"),
+    layoutPreset: z.string().trim().min(1).max(160).default("DEFAULT"),
     roomId: z.string().optional(),
     localNodeId: z.string().optional()
   })
@@ -14,7 +14,7 @@ export const createTerminalSchema = z.object({
 export const updateTerminalSchema = z.object({
   body: z.object({
     name: z.string().optional(),
-    layoutPreset: z.string().optional(),
+    layoutPreset: z.string().trim().min(1).max(160).optional(),
     active: z.boolean().optional()
   })
 });

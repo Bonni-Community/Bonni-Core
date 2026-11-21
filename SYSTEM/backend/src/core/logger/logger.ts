@@ -1,7 +1,11 @@
+import { recordLoggerDiagnostic } from "./diagnostic-journal.js";
 import fs from "node:fs";
-import { Writable } from "node:stream";
-import { format as utilFormat } from "node:util";
 import winston from "winston";
+import { randomUUID } from "node:crypto";
+import { getDiagnosticRequest, getDiagnosticRuntime } from "./diagnostic-context.js";
+import { sanitizeDiagnosticText } from "./diagnostic-serialization.js";
+import { privateValue, privateMessage, privateCode } from "../../../scripts/runtime/log-privacy.mjs";
+import { createErrorWindow } from "./error-window.js";
 
 import { env } from "../config/env.js";
 import {
@@ -9,6 +13,8 @@ import {
   ensureCoreLogDirectory,
   resolveCoreLogPaths,
   rotateCoreLogFiles,
+  cleanCoreLogFiles,
+  pruneCoreLogFiles,
   type CoreLogPaths,
 } from "./coreLogStorage.js";
 
@@ -29,6 +35,7 @@ const previousLines: string[] = [];
 const coreLogPaths: CoreLogPaths = resolveCoreLogPaths();
 
 ensureCoreLogDirectory(coreLogPaths);
+cleanCoreLogFiles(coreLogPaths);
 // A new Core process owns a new diagnostic session. Any previous current
 // files are retained as .1/.2 so a crashed process remains diagnosable.
 rotateCoreLogFiles(coreLogPaths, { force: true });
@@ -41,47 +48,31 @@ const originalConsole = {
   debug: console.debug.bind(console),
 };
 
-function redact(value: unknown, key = ""): unknown {
-  if (/password|secret|token|authorization|cookie|master.?key|private.?key|api.?key|credential/i.test(key)) {
-    return "[redacted]";
-  }
-  if (value instanceof Error) {
-    return { name: value.name, message: value.message, stack: value.stack };
-  }
-  if (Array.isArray(value)) return value.map((entry) => redact(entry, key));
-  if (value && typeof value === "object") {
-    return Object.fromEntries(Object.entries(value).map(([entryKey, entry]) => [
-      entryKey,
-      redact(entry, entryKey),
-    ]));
-  }
-  return value;
-}
-
 function safeJson(value: unknown): string {
   try {
-    return JSON.stringify(redact(value));
+    return JSON.stringify(privateValue(value));
   } catch {
     return "[unserializable]";
   }
 }
 
 function compactText(value: unknown): string {
-  return String(value ?? "")
+  return sanitizeDiagnosticText(value)
     .replace(/[\r\n]+/gu, "\\n")
     .trim();
 }
 
+function logTimestamp(value: unknown): string {
+  return typeof value === "string" && /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/.test(value) ? value : new Date().toISOString();
+}
+
 function errorCodeAndDetail(info: any): { code: string; detail: string } {
-  const message = compactText(info.message);
-  const explicitCode = compactText(info.errorCode || info.code || "");
+  const message = privateMessage(info.message);
+  const explicitCode = info.errorCode || info.code ? privateCode(info.errorCode || info.code) : "";
   const match = /^([A-Z][A-Z0-9_.-]{2,})(?::\s*(.*))?$/u.exec(message);
   const code = (explicitCode || match?.[1] || "CORE_ERROR").toUpperCase();
   const detail = compactText(
-    match?.[2]
-      || info.detail
-      || info.reason
-      || (explicitCode && message !== explicitCode ? message : ""),
+    match?.[2] || (message !== code ? message : ""),
   );
   return { code, detail };
 }
@@ -98,11 +89,12 @@ function isCriticalLevel(info: any): boolean {
 }
 
 function renderLogLine(info: any): string {
-  const timestamp = compactText(info.timestamp || new Date().toISOString());
+  const timestamp = logTimestamp(info.timestamp);
   const level = isCriticalLevel(info) ? "CRITICAL" : String(info.level).toUpperCase();
-  const moduleName = info.module ? `[${compactText(info.module)}]` : "";
-  const requestId = info.requestId ? `[${compactText(info.requestId)}]` : "";
-  const message = compactText(info.message);
+  const safe = privateValue({ module: info.module, requestId: info.requestId });
+  const moduleName = safe.module ? `[${safe.module}]` : "";
+  const requestId = safe.requestId ? `[${safe.requestId}]` : "";
+  const message = privateMessage(info.message);
 
   const meta: Record<string, unknown> = { ...info };
   delete meta.level;
@@ -119,10 +111,10 @@ function renderLogLine(info: any): string {
 function renderErrorBlock(info: any, context: string[]): string {
   const { code, detail } = errorCodeAndDetail(info);
   const marker = isCriticalLevel(info) ? "[CRITICAL ERROR]" : "[ERROR]";
-  const errorLines = [`${marker} ${code}`, ...(detail ? [detail] : [])];
+  const errorLines = [`${marker} ${code}`, `[DIAGNOSE-ID] ${info.errorId}`, ...(detail ? [detail] : []), renderLogLine(info)];
 
   return [
-    `= ${compactText(info.timestamp || new Date().toISOString())}`,
+    `= ${logTimestamp(info.timestamp)}`,
     "——————————————-",
     ...context,
     "",
@@ -132,6 +124,18 @@ function renderErrorBlock(info: any, context: string[]): string {
 }
 
 const coreRecordFormat = winston.format((info: any) => {
+  const request = getDiagnosticRequest();
+  if (request) {
+    info.requestId = request.requestId;
+    info.method ??= request.method;
+    info.path ??= request.path;
+    info.moduleId ??= request.moduleId;
+  }
+  if (isErrorLevel(info)) {
+    info.errorId = randomUUID();
+    info.runtime = getDiagnosticRuntime();
+  }
+  try { recordLoggerDiagnostic(info); } catch { /* Diagnostic journal failure must not abort work. */ }
   const line = renderLogLine(info);
   // Winston may clone `info` once per transport. Keep these derived values
   // enumerable so the text and Error transports receive the same rendered
@@ -144,6 +148,8 @@ const coreRecordFormat = winston.format((info: any) => {
       configurable: true,
     });
   }
+  try { errorWindow.record(line, isErrorLevel(info) ? { id: info.errorId, block: String(info[CORE_ERROR_BLOCK]) } : undefined); }
+  catch { originalConsole.error("CORE_LOG_WRITE_FAILED"); }
   previousLines.push(line);
   if (previousLines.length > 5) previousLines.shift();
   return info;
@@ -162,27 +168,20 @@ function assertSafeLogFile(file: string) {
   }
 }
 
-function appendStream(file: string): Writable {
-  return new Writable({
-    write(chunk, _encoding, callback) {
-      try {
-        ensureCoreLogDirectory(coreLogPaths);
-        assertSafeLogFile(file);
-        const value = String(chunk);
-        fs.appendFileSync(file, value.endsWith("\n") ? value : `${value}\n`, {
-          encoding: "utf8",
-          mode: 0o600,
-        });
-        callback();
-      } catch (error) {
-        callback(error as Error);
-      }
-    },
-  });
-}
-
 const levelName = String(env.LOG_LEVEL || "info").toLowerCase();
 const selectedLevel = Object.hasOwn(CORE_LEVELS, levelName) ? levelName : "info";
+const appendPrivate = (file: string, text: string) => {
+  ensureCoreLogDirectory(coreLogPaths); assertSafeLogFile(file);
+  try { if (fs.statSync(file).size > 8 * 1024 * 1024) rotateCoreLogFiles(coreLogPaths, { force: true }); }
+  catch (error: any) { if (error?.code !== "ENOENT") throw error; }
+  const fd = fs.openSync(file, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_APPEND | (fs.constants.O_NOFOLLOW || 0), 0o600);
+  try {
+    const state = fs.fstatSync(fd);
+    if (!state.isFile() || state.nlink !== 1) throw new Error("CORE_LOG_FILE_UNSAFE");
+    fs.writeFileSync(fd, text, "utf8");
+  } finally { fs.closeSync(fd); }
+};
+const errorWindow = createErrorWindow(text => appendPrivate(coreLogPaths.logFile, text), text => appendPrivate(coreLogPaths.errorFile, text));
 
 export const logger = winston.createLogger({
   levels: CORE_LEVELS,
@@ -197,28 +196,25 @@ export const logger = winston.createLogger({
   ),
   transports: [
     new winston.transports.Console({
-      format: winston.format.printf((info: any) => String(info[CORE_LINE] || "")),
-    }),
-    new winston.transports.Stream({
-      stream: appendStream(coreLogPaths.logFile),
-      format: winston.format.printf((info: any) => String(info[CORE_LINE] || "")),
-    }),
-    new winston.transports.Stream({
-      level: "error",
-      stream: appendStream(coreLogPaths.errorFile),
-      format: winston.format.printf((info: any) => String(info[CORE_ERROR_BLOCK] || "")),
+      format: winston.format.combine(
+        winston.format((info: any) => info.source === "console" ? false : info)(),
+        winston.format.printf((info: any) => String(info[CORE_LINE] || "")),
+      ),
     }),
   ],
 });
 
 let closed = false;
 const rotationTimer = setInterval(() => {
-  if (closed || !coreLogRotationDue(coreLogPaths)) return;
+  if (closed) return;
   try {
+    pruneCoreLogFiles(coreLogPaths);
+    if (!coreLogRotationDue(coreLogPaths)) return;
     rotateCoreLogFiles(coreLogPaths);
     previousLines.length = 0;
+    errorWindow.reset();
   } catch (error) {
-    originalConsole.error("[bonni-core] Log-Rotation fehlgeschlagen", error);
+    originalConsole.error("CORE_LOG_WRITE_FAILED");
   }
 }, 60_000);
 rotationTimer.unref?.();
@@ -235,11 +231,24 @@ function installConsoleBridge() {
 
   for (const [method, level] of methods) {
     (console as any)[method] = (...args: unknown[]) => {
-      originalConsole[method](...args);
+      let safeArgs: unknown[];
+      try { safeArgs = args.map(value => privateValue(value)); }
+      catch { safeArgs = ["CORE_LOG_PRIVACY_FAILED"]; }
+      originalConsole[method](...safeArgs);
       if (forwarding || closed) return;
       forwarding = true;
       try {
-        logger.log(level, utilFormat(...args), { module: "console", source: "console" });
+        const errors = args.filter(value => value instanceof Error).map(value => privateValue(value));
+        const message = typeof safeArgs[0] === "string" ? privateMessage(safeArgs[0]) : "CORE_ERROR";
+        let firstRecord: any = safeArgs[0];
+        if (typeof firstRecord === "string" && firstRecord.startsWith("{")) {
+          try { firstRecord = JSON.parse(firstRecord); } catch { firstRecord = null; }
+        }
+        const code = errors[0]?.code || (firstRecord && typeof firstRecord === "object" ? firstRecord.code : undefined);
+        const selectedLevel = level === "error" && typeof args[0] === "string" && /^\(node:\d+\) (?:[A-Za-z]+Warning|Warning):/.test(args[0]) ? "warn" : level;
+        logger.log(selectedLevel, message, { module: "console", source: "console", code, consoleArguments: message === safeArgs[0] ? safeArgs.slice(1) : safeArgs, ...(errors.length ? { errors } : {}) });
+      } catch {
+        originalConsole.error("CORE_LOG_PRIVACY_FAILED");
       } finally {
         forwarding = false;
       }
@@ -268,7 +277,7 @@ process.once("exit", () => {
   try {
     rotateCoreLogFiles(coreLogPaths, { force: true });
   } catch (error) {
-    originalConsole.error("[bonni-core] Log-Dateien konnten beim Prozessende nicht rotiert werden", error);
+    originalConsole.error("CORE_LOG_WRITE_FAILED");
   }
 });
 

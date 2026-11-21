@@ -1,3 +1,6 @@
+import {validateModuleServicesManifest} from '../../../core/module-services/module-services-runtime.js';
+import { isValidModuleVersion } from "../compatibility/module-version.js";
+import { validateHubManifest } from "../../../core/hub/hub-products-registry.js";
 import { existsSync, promises as fs } from "node:fs";
 import path from "node:path";
 
@@ -290,8 +293,8 @@ export function validateModuleManifest(manifest: any) {
   const version = String(manifest.version || "").trim();
   if (!version) {
     errors.push("Manifest braucht version.");
-  } else if (!SEMVER.test(version)) {
-    errors.push("Manifest-version muss SemVer entsprechen.");
+  } else if (!isValidModuleVersion(version)) {
+    errors.push("Manifest-version muss eine gültige SemVer- oder Bonni-Modulversion sein.");
   }
 
   errors.push(...validateCoreVersionCompatibility(manifest.compatibility).errors);
@@ -312,6 +315,7 @@ export function validateModuleManifest(manifest: any) {
       if (frontend.entry !== undefined && !isPackageRelativePath(frontend.entry)) {
         errors.push("frontend.entry muss innerhalb des Pakets liegen.");
       }
+      if (frontend.localProcessing !== undefined && typeof frontend.localProcessing !== 'boolean') errors.push('frontend.localProcessing muss boolesch sein.');
       if (frontend.publicRoot !== undefined && !isPackageRelativePath(frontend.publicRoot)) {
         errors.push("frontend.publicRoot muss innerhalb des Pakets liegen.");
       }
@@ -412,6 +416,9 @@ export function validateModuleManifest(manifest: any) {
     }
   }
 
+  errors.push(...validateHubManifest(manifest));
+  errors.push(...validateModuleServicesManifest(manifest));
+
   if (manifest.permissions !== undefined) {
     const permissions = manifest.permissions;
     const valid = Array.isArray(permissions)
@@ -498,15 +505,32 @@ export function validateModuleManifest(manifest: any) {
         } else if (
           database.mode === "scoped-v1"
           && !isDatabaseLessPrivacyIdeaCompatibility
-          && !["hocket", "kontor", "meet", "stueberl", "pos"].includes(String(database.domain || ""))
+          && !["hocket", "kontor", "meet", "stueberl", "pos", "hub", "gourmet", "capture", "paypal"].includes(String(database.domain || ""))
         ) {
           errors.push("metadata.database.domain ist ungültig.");
+        } else if (database.mode === "scoped-v1" && (
+          (database.domain === "paypal" && key !== "addon.paypal")
+          || (key === "addon.paypal" && database.domain !== "paypal")
+          || (database.domain === "gourmet" && key !== "addon.gourmet")
+          || (key === "addon.gourmet" && database.domain !== "gourmet")
+        )) {
+          errors.push("Die PayPal- und Gourmet-Domänen sind ausschließlich ihrem jeweiligen Add-on zugeordnet.");
         } else if (database.mode === "scoped-v1" && (
           !allUniqueStrings(database.delegates)
           || database.delegates.length < 1
           || database.delegates.some((entry: string) => !/^[a-z][A-Za-z0-9]{0,99}$/.test(entry))
         )) {
           errors.push("metadata.database.delegates ist ungültig.");
+        }
+        if(isRecord(database)&&database.mode==='scoped-v1'&&database.schemaUpgrade!==undefined) {
+          const upgrade=database.schemaUpgrade;
+          if(!isRecord(upgrade)||upgrade.schema!=='bonni.app-schema-upgrade/v1'
+            ||typeof upgrade.file!=='string'||!/^database\/[A-Za-z0-9_/-]+\.json$/.test(upgrade.file)
+            ||upgrade.file.split('/').some((part:string)=>part==='.'||part==='..')
+            ||typeof upgrade.sha256!=='string'||!/^[a-f0-9]{64}$/.test(upgrade.sha256)
+            ||Object.keys(upgrade).some(field=>!['schema','file','sha256'].includes(field))) {
+            errors.push('metadata.database.schemaUpgrade ist ungültig.');
+          }
         }
       }
 

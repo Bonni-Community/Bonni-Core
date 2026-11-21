@@ -1,15 +1,16 @@
 import { Router } from "express";
-import { validate } from "../../../../core/core.js";
+import { validate } from "../../../../core/http/middleware/validate.js";
 import { readRouteParam } from "../../../../core/http/route-param.js";
 import { requireAuth } from "../../../security/identity/middleware/requireAuth.js";
 import * as service from "../services/notification.service.js";
-import { createNotificationSchema } from "../schemas/notification.schemas.js";
+import { createNotificationSchema, notificationQuerySchema } from "../schemas/notification.schemas.js";
 
 export const notificationRouter = Router();
 
 notificationRouter.get(
   "/",
   requireAuth,
+  validate(notificationQuerySchema),
   async (req, res, next) => {
     try {
       const accountId = typeof req.query.accountId === "string"

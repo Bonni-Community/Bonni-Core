@@ -9,6 +9,7 @@ import { prisma } from "../../../../core/database/prisma.js";
 import { getSystemRuntimeConfig } from "../../../runtime/runtime.config.js";
 import { resolvePostgreSqlTool } from "./postgres-tool.service.js";
 import { resolvePersistentStorageRoot } from "../../../../../scripts/storage/persistent-storage-root.mjs";
+import { BackupFolderError, findBackupLocation, listBackupLocations, resolveBackupFolder, type BackupLocation } from "../../../../../scripts/backup/backup-paths.mjs";
 import { acquirePersistentSnapshotLock } from "../../../../core/storage/persistent-snapshot-lock.js";
 
 export type SystemBackupComponentStatus = "pending" | "running" | "completed" | "failed" | "skipped";
@@ -20,6 +21,7 @@ export type SystemBackupManifest = {
   reason: string;
   coreVersion: string;
   createdAt: string;
+  directory?: string;
   finishedAt?: string;
   error?: string;
   errorCode?: string;
@@ -37,9 +39,9 @@ export type SystemBackupManifest = {
     sizeBytes: number;
     sha256: string;
   }>;
+  domainDatabases?: Array<{ domain: string; relativePath: string }>;
 };
 
-const BACKUP_ID_PATTERN = /^backup-[a-zA-Z0-9._-]+$/;
 let activeBackupId: string | null = null;
 
 function persistentStorageRoot() {
@@ -54,15 +56,6 @@ export function systemBackupsRoot() {
 
 export function systemRestoreRequestPath() {
   return path.join(persistentStorageRoot(), "system", "restore-request.json");
-}
-
-function backupDirectory(id: string) {
-  if (!BACKUP_ID_PATTERN.test(id)) throw new Error("INVALID_BACKUP_ID");
-  return path.join(systemBackupsRoot(), id);
-}
-
-function manifestPath(id: string) {
-  return path.join(backupDirectory(id), "manifest.json");
 }
 
 async function writeJson(file: string, value: unknown) {
@@ -150,8 +143,8 @@ async function buildFileManifest(root: string) {
   }));
 }
 
-function databaseProcessEnvironment() {
-  const connection = new URL(env.DATABASE_URL);
+function databaseProcessEnvironment(connectionString = env.DATABASE_URL) {
+  const connection = new URL(connectionString);
   return {
     ...process.env,
     PGHOST: connection.hostname,
@@ -160,6 +153,7 @@ function databaseProcessEnvironment() {
     PGPASSWORD: decodeURIComponent(connection.password),
     PGDATABASE: decodeURIComponent(connection.pathname.replace(/^\//, "")),
     PGCONNECT_TIMEOUT: "10",
+    ...(connection.searchParams.get("sslmode") ? { PGSSLMODE: connection.searchParams.get("sslmode")! } : {}),
   };
 }
 
@@ -217,7 +211,7 @@ function runCommand(command: string, args: string[], commandEnv: NodeJS.ProcessE
   });
 }
 
-async function dumpDatabase(target: string) {
+async function dumpDatabase(target: string, connectionString?: string, schema?: string) {
   const tool = resolvePostgreSqlTool("pg_dump");
   if (!tool.ok) throw backupToolError(tool.code, tool.message);
 
@@ -228,9 +222,10 @@ async function dumpDatabase(target: string) {
       "--format=custom",
       "--no-owner",
       "--no-privileges",
+      ...(schema ? ["--schema", schema] : []),
       "--file",
       temporary,
-    ], databaseProcessEnvironment());
+    ], databaseProcessEnvironment(connectionString));
     const stat = await fs.stat(temporary).catch(() => null);
     if (!stat?.isFile() || stat.size === 0) {
       throw backupToolError(
@@ -272,6 +267,9 @@ async function safeDatabaseRecord(data: Record<string, unknown>) {
 
 export async function createSystemBackup(options: {
   reason?: string;
+  directory?: unknown;
+  /** Host-only: isolated runtime domains, never supplied by a browser. */
+  domainDatabases?: Array<{ domain: string; url: string }>;
   onProgress?: (progress: {
     backupId: string;
     component: SystemBackupManifest["components"][number]["key"];
@@ -284,9 +282,9 @@ export async function createSystemBackup(options: {
 
   const id = backupId();
   activeBackupId = id;
-  const root = backupDirectory(id);
   const startedAt = new Date();
   let databaseRecordId: string | null = null;
+  let manifestFile: string | undefined;
   const manifest: SystemBackupManifest = {
     schemaVersion: 1,
     id,
@@ -300,11 +298,19 @@ export async function createSystemBackup(options: {
       { key: "storage", label: "Persistente Dateien", status: "pending", relativePath: "storage" },
     ],
     files: [],
+    ...(options.domainDatabases ? { domainDatabases: options.domainDatabases.map(d => ({ domain: d.domain,
+      relativePath: `database/domains/${d.domain}.dump` })) } : {}),
   };
 
   try {
-    await fs.mkdir(root, { recursive: true });
-    await writeJson(manifestPath(id), manifest);
+    const configuredRoot = systemBackupsRoot();
+    const folder = await resolveBackupFolder(configuredRoot, options.directory, { create: true });
+    if (folder.relativePath) manifest.directory = folder.relativePath;
+    const root = path.join(folder.absolutePath, id);
+    await fs.mkdir(root, { mode: 0o700 });
+    manifestFile = path.join(root, "manifest.json");
+    const excludedBackupRoots = [configuredRoot, folder.root];
+    await writeJson(manifestFile, manifest);
     const databaseRecord = await safeDatabaseRecord({ action: "create", status: "running", filePath: root, startedAt });
     databaseRecordId = databaseRecord?.id || null;
 
@@ -318,26 +324,36 @@ export async function createSystemBackup(options: {
     const databaseComponent = manifest.components[0];
     databaseComponent.status = "running";
     await options.onProgress?.({ backupId: id, component: databaseComponent.key, status: "running" });
-    await writeJson(manifestPath(id), manifest);
+    await writeJson(manifestFile, manifest);
     await dumpDatabase(path.join(root, databaseComponent.relativePath));
+    if (options.domainDatabases) {
+      const seen = new Set<string>();
+      for (const item of options.domainDatabases) {
+        if (!/^[a-z][a-z0-9_]{0,40}$/.test(item.domain) || seen.has(item.domain)) throw new Error("BACKUP_DOMAIN_INVALID");
+        seen.add(item.domain);
+        await dumpDatabase(path.join(root, "database", "domains", item.domain + ".dump"), item.url, item.domain);
+      }
+    }
     databaseComponent.status = "completed";
     await options.onProgress?.({ backupId: id, component: databaseComponent.key, status: "completed" });
 
     const configComponent = manifest.components[1];
     configComponent.status = "running";
     await options.onProgress?.({ backupId: id, component: configComponent.key, status: "running" });
-    await writeJson(manifestPath(id), manifest);
-    await copyDirectory(path.resolve(process.cwd(), "config"), path.join(root, configComponent.relativePath));
+    await writeJson(manifestFile, manifest);
+    const configRoot = path.resolve(process.cwd(), "config");
+    await copyDirectory(configRoot, path.join(root, configComponent.relativePath),
+      excludedBackupRoots.filter(excluded => isInside(excluded, configRoot)));
     configComponent.status = "completed";
     await options.onProgress?.({ backupId: id, component: configComponent.key, status: "completed" });
 
     const storageComponent = manifest.components[2];
     storageComponent.status = "running";
     await options.onProgress?.({ backupId: id, component: storageComponent.key, status: "running" });
-    await writeJson(manifestPath(id), manifest);
+    await writeJson(manifestFile, manifest);
     const storageRoot = persistentStorageRoot();
     await copyDirectory(storageRoot, path.join(root, storageComponent.relativePath), [
-      systemBackupsRoot(),
+      ...excludedBackupRoots,
       path.join(storageRoot, "system", "update-center", "downloads"),
       path.join(storageRoot, "system", "locks"),
     ]);
@@ -355,13 +371,16 @@ export async function createSystemBackup(options: {
     }
     manifest.status = "completed";
     manifest.finishedAt = new Date().toISOString();
-    await writeJson(manifestPath(id), manifest);
+    await writeJson(manifestFile, manifest);
     if (databaseRecordId) {
       await safeDatabaseRecord({ action: "finish", id: databaseRecordId, status: "completed", finishedAt: new Date() });
     }
 
     return { ok: true, backup: manifest };
   } catch (error) {
+    if (error instanceof BackupFolderError) {
+      return { ok: false, error: error.code, message: error.message };
+    }
     const message = error instanceof Error ? error.message : String(error);
     const errorCode = String((error as BackupToolError | null)?.code || "BACKUP_FAILED");
     const technicalMessage = (error as BackupToolError | null)?.technicalMessage;
@@ -379,7 +398,7 @@ export async function createSystemBackup(options: {
     manifest.error = message;
     manifest.errorCode = errorCode;
     manifest.finishedAt = new Date().toISOString();
-    await writeJson(manifestPath(id), manifest).catch(() => undefined);
+    if (manifestFile) await writeJson(manifestFile, manifest).catch(() => undefined);
     if (databaseRecordId) {
       await safeDatabaseRecord({ action: "finish", id: databaseRecordId, status: "failed", finishedAt: new Date() });
     }
@@ -397,21 +416,22 @@ export async function createSystemBackup(options: {
 }
 
 export async function listSystemBackups() {
-  await fs.mkdir(systemBackupsRoot(), { recursive: true });
-  const entries = await fs.readdir(systemBackupsRoot(), { withFileTypes: true });
+  const entries = await listBackupLocations(systemBackupsRoot());
+  const counts = new Map<string, number>();
+  for (const { id } of entries) counts.set(id, (counts.get(id) || 0) + 1);
   const backups = (await Promise.all(entries
-    .filter((entry) => entry.isDirectory() && BACKUP_ID_PATTERN.test(entry.name))
-    .map(async (entry) => {
+    .filter((entry) => counts.get(entry.id) === 1)
+    .map(async (entry): Promise<SystemBackupManifest | null> => {
       // The update page polls while its mandatory safety backup is being
       // created. A concurrently replaced, stale or damaged manifest must not
       // take the complete update-status endpoint down with HTTP 500. Backup
       // validation remains fail-closed; this tolerant read is only used for
       // the non-authoritative overview.
-      const value = await readJson<SystemBackupManifest>(manifestPath(entry.name)).catch(() => null);
+      const value = await readBackupManifest(entry.absolutePath).catch(() => null);
       if (
         !value
         || value.schemaVersion !== 1
-        || value.id !== entry.name
+        || value.id !== entry.id
         || !["running", "completed", "failed"].includes(String(value.status))
         || typeof value.reason !== "string"
         || typeof value.coreVersion !== "string"
@@ -420,21 +440,58 @@ export async function listSystemBackups() {
         || !Array.isArray(value.components)
         || !Array.isArray(value.files)
       ) return null;
-      return value;
+      return { ...value, directory: entry.directory || undefined };
     })))
     .filter((entry): entry is SystemBackupManifest => Boolean(entry));
 
   return backups.sort((left, right) => right.createdAt.localeCompare(left.createdAt));
 }
 
-export async function validateSystemBackup(id: string) {
-  const manifest = await readJson<SystemBackupManifest>(manifestPath(id));
-  if (!manifest) return { ok: false, error: "BACKUP_NOT_FOUND", id };
+export async function listSystemBackupFolder(directory: unknown, details = false) {
+  const folder = await resolveBackupFolder(systemBackupsRoot(), directory);
+  const listing = await fs.readdir(folder.absolutePath, { withFileTypes: true });
+  const entries: Array<{ name: string; directory: boolean; sizeBytes?: number; modifiedAt?: string }> = [];
+  for (const item of listing) {
+    if (!item.isDirectory() && !item.isFile()) continue;
+    const entry = { name: item.name, directory: item.isDirectory() };
+    if (!details) {
+      entries.push(entry);
+      continue;
+    }
+    const info = await fs.lstat(path.join(folder.absolutePath, item.name)).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === "ENOENT") return null;
+      throw error;
+    });
+    if (info?.isFile() || info?.isDirectory()) {
+      entries.push({ ...entry, directory: info.isDirectory(), sizeBytes: info.size, modifiedAt: info.mtime.toISOString() });
+    }
+  }
+  return {
+    ok: true,
+    directory: folder.relativePath,
+    entries: entries.sort((left, right) => left.name.localeCompare(right.name, "de")),
+  };
+}
+
+async function readBackupManifest(root: string) {
+  const file = path.join(root, "manifest.json");
+  const info = await fs.lstat(file).catch((error: NodeJS.ErrnoException) => {
+    if (error.code !== "ENOENT") throw error;
+    return null;
+  });
+  return info?.isFile() ? readJson<SystemBackupManifest>(file) : null;
+}
+
+async function validateLocatedBackup(id: string, location: BackupLocation | undefined) {
+  const manifest = location && await readBackupManifest(location.absolutePath);
+  if (!location || !manifest || manifest.id !== id) return { ok: false, error: "BACKUP_NOT_FOUND", id };
   if (manifest.status !== "completed") return { ok: false, error: "BACKUP_NOT_COMPLETE", id, backup: manifest };
 
-  const root = backupDirectory(id);
+  const root = location.absolutePath;
   const errors: Array<{ path: string; reason: string }> = [];
   const expectedPaths = new Set<string>();
+  if (!Array.isArray(manifest.files) || !manifest.files.length || !Array.isArray(manifest.components) ||
+    manifest.components.some(c => c.status !== "completed")) return { ok: false, error: "BACKUP_MANIFEST_INCOMPLETE", id, backup: manifest };
   for (const expected of manifest.files) {
     const normalizedPath = String(expected.path || "").replaceAll("\\", "/");
     if (!normalizedPath || expectedPaths.has(normalizedPath)) {
@@ -447,7 +504,11 @@ export async function validateSystemBackup(id: string) {
       errors.push({ path: expected.path, reason: "FILE_MISSING" });
       continue;
     }
-    const stat = await fs.stat(file);
+    const stat = await fs.lstat(file);
+    if (!stat.isFile() || path.relative(file, await fs.realpath(file))) {
+      errors.push({ path: expected.path, reason: "INVALID_BACKUP_FILE" });
+      continue;
+    }
     if (stat.size !== expected.sizeBytes) {
       errors.push({ path: expected.path, reason: "SIZE_MISMATCH" });
       continue;
@@ -464,6 +525,11 @@ export async function validateSystemBackup(id: string) {
   for (const actualPath of actualFiles) {
     if (!expectedPaths.has(actualPath)) errors.push({ path: actualPath, reason: "UNEXPECTED_FILE" });
   }
+  if (!expectedPaths.has("database/database.dump")) errors.push({ path: "database/database.dump", reason: "DATABASE_DUMP_MISSING" });
+  for (const domain of manifest.domainDatabases || []) {
+    if (!/^[a-z][a-z0-9_]{0,40}$/.test(domain.domain) || domain.relativePath !== `database/domains/${domain.domain}.dump` ||
+      !manifest.files.some(f => f.path === domain.relativePath && f.sizeBytes > 0)) errors.push({ path: domain.relativePath, reason: "DOMAIN_DUMP_MISSING" });
+  }
 
   return {
     ok: errors.length === 0,
@@ -475,23 +541,35 @@ export async function validateSystemBackup(id: string) {
   };
 }
 
+export async function validateSystemBackup(id: string) {
+  return validateLocatedBackup(id, await findBackupLocation(systemBackupsRoot(), id));
+}
+
 export async function requestSystemRestore(id: string, confirmation: string) {
   if (confirmation !== id) return { ok: false, error: "RESTORE_CONFIRMATION_REQUIRED", id };
   const validation = await validateSystemBackup(id);
   if (!validation.ok) return { ok: false, error: "BACKUP_VALIDATION_FAILED", validation };
+  const erasures = await readJson<{ entries: Array<{ completedAt: string }> }>(path.join(persistentStorageRoot(), "system", "erasure-ledger.json"));
+  if (erasures?.entries?.some(e => Date.parse(e.completedAt) >= Date.parse(validation.backup!.createdAt))) {
+    return { ok: false, error: "RESTORE_ERASURE_REPLAY_REQUIRED", message: "Diese Sicherung würde bereits gelöschte Benutzerdaten zurückbringen. Eine kontrollierte Wiederherstellung mit erneuter Löschung ist erforderlich." };
+  }
+  if (validation.backup?.domainDatabases?.length) return { ok: false, error: "RESTORE_ISOLATED_DOMAINS_REQUIRED",
+    message: "Diese Sicherung enthält getrennte Datenbanken. Sie muss über den dokumentierten Wiederherstellungsablauf für alle enthaltenen Datenbereiche zurückgespielt werden." };
 
   const safetyBackup = await createSystemBackup({ reason: `before-restore:${id}` });
   if (!safetyBackup.ok) return { ok: false, error: "SAFETY_BACKUP_FAILED", safetyBackup };
 
-  const finalValidation = await validateSystemBackup(id);
-  if (!finalValidation.ok) {
+  const location = await findBackupLocation(systemBackupsRoot(), id);
+  const finalValidation = await validateLocatedBackup(id, location);
+  if (!location || !finalValidation.ok) {
     return { ok: false, error: "BACKUP_CHANGED_DURING_PREPARATION", validation: finalValidation };
   }
 
   const request = {
     schemaVersion: 1,
     backupId: id,
-    backupPath: backupDirectory(id),
+    backupPath: location.absolutePath,
+    ...(location.directory ? { backupDirectory: location.directory } : {}),
     requestedAt: new Date().toISOString(),
     status: "pending-restart",
     safetyBackupId: safetyBackup.backup?.id,
@@ -504,6 +582,30 @@ export async function requestSystemRestore(id: string, confirmation: string) {
     restartRequired: true,
     message: "Die Wiederherstellung ist geprüft und wird beim nächsten kontrollierten Backend-Start ausgeführt.",
   };
+}
+
+/** Rotate only erasure safety backups, after a validated newer post-erasure
+ * snapshot exists. Open/failed cases pin their preceding safety snapshot. */
+export async function rotateErasureBackups(options: { retentionDays: number; verifiedPostBackupId: string; protectedIds: string[] }) {
+  if (!Number.isInteger(options.retentionDays) || options.retentionDays < 1) throw new Error("ERASURE_BACKUP_RETENTION_INVALID");
+  const proof = await validateSystemBackup(options.verifiedPostBackupId);
+  if (!proof.ok || !proof.backup?.reason.startsWith("after-erasure:")) throw new Error("ERASURE_POST_BACKUP_REQUIRED");
+  const cutoff = Date.now() - options.retentionDays * 86_400_000;
+  const release = await acquirePersistentSnapshotLock({ operation: "erasure-backup-rotation" });
+  const removed: string[] = [];
+  try {
+    for (const item of await listSystemBackups()) {
+      if (item.status !== "completed" || !/^(before|after)-erasure:/.test(item.reason) ||
+        item.id === options.verifiedPostBackupId || options.protectedIds.includes(item.id) ||
+        Date.parse(item.createdAt) >= cutoff || item.createdAt >= proof.backup.createdAt) continue;
+      const location = await findBackupLocation(systemBackupsRoot(), item.id);
+      if (location) {
+        await fs.rm(location.absolutePath, { recursive: true });
+        removed.push(item.id);
+      }
+    }
+  } finally { await release(); }
+  return { removed };
 }
 
 export async function getSystemBackupOverview() {

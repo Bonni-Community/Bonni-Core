@@ -6,6 +6,9 @@ import { setTimeout as delay } from "node:timers/promises";
 
 import { getRunSystemSystemRoot } from "../../../../system/boot/run-system/index.js";
 import { logger } from "../../../../core/logger/logger.js";
+import { privateText } from "../../../../../scripts/runtime/log-privacy.mjs";
+import { cleanPrivateLogFile } from "../../../../../scripts/runtime/log-privacy-files.mjs";
+import { createPrivateErrorStream } from "../../../../../scripts/runtime/log-private-stream.mjs";
 
 type EmergencyControlConfig = {
   enabled: boolean;
@@ -259,9 +262,21 @@ async function removePid(expected?: EmergencyPidReceipt | null) {
   return true;
 }
 
-async function appendLog(line: string) {
-  await ensureEmergencyDirectory();
-  await fs.appendFile(logFilePath(), line, "utf8").catch(() => undefined);
+let emergencyLogQueue: Promise<unknown> = Promise.resolve();
+function appendLog(line: string) {
+  const safe = privateText(line);
+  emergencyLogQueue = emergencyLogQueue.catch(() => undefined).then(async () => {
+    await ensureEmergencyDirectory();
+    cleanPrivateLogFile(logFilePath());
+    const handle = await fs.open(logFilePath(), "a", 0o600);
+    try {
+      const state = await handle.stat();
+      if (!state.isFile() || state.nlink !== 1) throw new Error("CORE_LOG_FILE_UNSAFE");
+      if (state.size > 8 * 1024 * 1024) await handle.truncate(0);
+      await handle.writeFile(safe, "utf8");
+    } finally { await handle.close(); }
+  }).catch(() => { logger.warn("CORE_LOG_WRITE_FAILED", { module: "server" }); });
+  return emergencyLogQueue;
 }
 
 async function fetchJson(url: string, timeoutMs = HEALTH_TIMEOUT_MS) {
@@ -487,10 +502,13 @@ async function startEmergencyBackendLocked(
   };
   const pidReceiptWritten = writePid(pidReceipt);
 
-  child.stdout.on("data", (chunk) => void appendLog(String(chunk)));
-  child.stderr.on("data", (chunk) => void appendLog(String(chunk)));
+  const diagnostic = createPrivateErrorStream((line) => { void appendLog(line); });
+  const diagnosticOut = diagnostic.channel(), diagnosticError = diagnostic.channel();
+  child.stdout.on("data", (chunk) => diagnosticOut.write(chunk));
+  child.stderr.on("data", (chunk) => diagnosticError.write(chunk));
+  child.once("close", () => { diagnosticOut.end(); diagnosticError.end(); });
   child.once("exit", (code, signal) => {
-    void appendLog(`\n[emergency-control] Prozess beendet: code=${code} signal=${signal}\n`);
+    diagnosticOut.write(JSON.stringify({ ok: code === 0, phase: code ? "failed" : "stopped", exitCode: code }) + "\n");
     const currentManagedProcess = managedProcess;
     if (
       currentManagedProcess

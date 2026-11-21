@@ -1,8 +1,13 @@
+import { MODULE_DIAGNOSTIC_MESSAGE, MODULE_DIAGNOSTIC_CAPABILITY, createModuleDiagnosticReporter } from "../diagnostics/moduleDiagnostics.js";
 import { Component, lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { MODULE_OUTBOX_REQUEST, MODULE_OUTBOX_CAPABILITY, handleModuleOutbox } from "./moduleOutbox.js";
 import { BONNI_CORE_VERSION } from "../version.js";
+import { MODULE_DIALOG_REQUEST, MODULE_DIALOG_CAPABILITY, createModuleDialogHandler } from "./moduleDialogs.js";
+import {MODULE_MEDIA_REQUEST,MODULE_MEDIA_CAPABILITY,registerMediaContext,mediaEntries,changeMedia} from './moduleMediaQueue.ts';
+import {openMediaCapture} from './moduleMediaCapture.tsx';
 
 import FeatureModuleUnavailable from "./FeatureModuleUnavailable.jsx";
+import { messengerTarget } from "../addons/messengerNavigation.js";
 import {
   fetchFeatureModule,
   featureModuleDisplayName,
@@ -13,6 +18,7 @@ import {
   featureModuleSandboxCapabilities,
   featureModuleTransport,
   isFeatureModuleActive,
+  verifyFeatureModuleEntry,
 } from "./featureModuleApi.js";
 import {
   createOpaqueRpcSessionId,
@@ -83,6 +89,7 @@ export function FeatureModuleFrame({
   transport,
   rpcContract,
   sandboxCapabilities,
+  moduleVersion,
 }) {
   const frameRef = useRef(null);
   const activeRequestsRef = useRef(new Map());
@@ -90,7 +97,8 @@ export function FeatureModuleFrame({
   const actionHandlersRef = useRef(null);
   const lastContextSignatureRef = useRef("");
   const opaqueRpc = transport === OPAQUE_RPC_TRANSPORT;
-  const rpcSessionId = useMemo(() => createOpaqueRpcSessionId(), [entry, moduleId]);
+  const accountId = String(user?.accountId || user?.id || '');
+  const rpcSessionId = useMemo(() => createOpaqueRpcSessionId(), [entry, moduleId, accountId]);
   const entryUrl = useMemo(() => (
     opaqueRpc
       ? withOpaqueRpcSession(entry, rpcSessionId, window.location.href)
@@ -128,7 +136,11 @@ export function FeatureModuleFrame({
       ? sanitizeOpaqueModuleContext({
           transport: OPAQUE_RPC_TRANSPORT,
           coreVersion: BONNI_CORE_VERSION,
+          chatDock: { version: 1, navigationVersion: 1 },
+          diagnostics: MODULE_DIAGNOSTIC_CAPABILITY,
+          dialogs: moduleId === "app.stueberlapp" ? MODULE_DIALOG_CAPABILITY : null,
           localOutbox: moduleId === "app.stueberlapp" ? MODULE_OUTBOX_CAPABILITY : null,
+          mediaQueue: MODULE_MEDIA_CAPABILITY,
           user: current.user,
           shell: current.shell,
           branding: current.branding,
@@ -167,6 +179,10 @@ export function FeatureModuleFrame({
 
   useEffect(() => {
     const activeRequests = activeRequestsRef.current;
+    const captures = new Map();
+    const mediaRequests = new Set();
+    const diagnosticReporter = createModuleDiagnosticReporter({ moduleId, moduleVersion, getContext: () => contextRef.current });
+    const handleDialog = createModuleDialogHandler({ moduleId, getContext: () => contextRef.current });
 
     function sendOpaqueResponse(requestId, result) {
       postToFrame({
@@ -187,6 +203,7 @@ export function FeatureModuleFrame({
           contract: rpcContract,
         });
       } catch (error) {
+        diagnosticReporter.report({operationId: globalThis.crypto?.randomUUID?.(), workflow:"app-request", phase:"request-rejected", code:error?.code, statusCode:Number(error?.status||400)});
         if (typeof data?.requestId === "string" && data.requestId.length <= 128) {
           sendOpaqueResponse(data.requestId, {
             ok: false,
@@ -214,10 +231,13 @@ export function FeatureModuleFrame({
         controller: new AbortController(),
       };
       activeRequests.set(request.requestId, requestState);
-      const result = await executeOpaqueModuleRpc(request, {
+      const trace = diagnosticReporter.start(request);
+      const tracedRequest = trace.tracked && trace.operationId ? {...request, headers:{...request.headers, "x-bonni-operation-id":trace.operationId}} : request;
+      const result = await executeOpaqueModuleRpc(tracedRequest, {
         token: contextRef.current?.token,
         signal: requestState.controller.signal,
       });
+      diagnosticReporter.finish(trace, result, requestState.controller.signal.aborted);
       const current = activeRequests.get(request.requestId);
       activeRequests.delete(request.requestId);
       if (current && !current.cancelled) sendOpaqueResponse(request.requestId, result);
@@ -226,6 +246,11 @@ export function FeatureModuleFrame({
     function handleModuleAction(data) {
       const action = data?.action;
       const handlers = actionHandlersRef.current || {};
+      if (action === "open-chat") {
+        window.dispatchEvent(new CustomEvent("bonni:open-chat", {
+          detail: messengerTarget(moduleId, rpcSessionId, data?.payload),
+        }));
+      }
       if (action === "logout") handlers.onLogout?.();
       if (action === "back") handlers.onBack?.();
       if (action === "open-control-center") handlers.onOpenControlCenter?.();
@@ -249,8 +274,38 @@ export function FeatureModuleFrame({
           sendContext({ force: true });
           return;
         }
+        if (event.data?.type === MODULE_DIAGNOSTIC_MESSAGE) {
+          diagnosticReporter.report(event.data.event);
+          return;
+        }
         if (event.data?.type === OPAQUE_RPC_REQUEST) {
           handleOpaqueRequest(event.data);
+          return;
+        }
+        if (event.data?.type === MODULE_DIALOG_REQUEST) {
+          const result = handleDialog(event.data);
+          if (typeof event.data.requestId === "string" && event.data.requestId.length <= 128) {
+            sendOpaqueResponse(event.data.requestId, result);
+          }
+          return;
+        }
+        if (event.data?.type === MODULE_MEDIA_REQUEST) {
+          const data=event.data,requestId=data.requestId,expectedToken=contextRef.current?.token,sourceFrame=event.source;
+          if(typeof requestId!=='string'||!/^[A-Za-z0-9][A-Za-z0-9._:-]{7,127}$/.test(requestId))return;
+          if(mediaRequests.has(requestId)){sendOpaqueResponse(requestId,{ok:false,status:409,payload:{message:'Diese Fotoanfrage läuft bereits.'}});return;}
+          mediaRequests.add(requestId);if(mediaRequests.size>256)mediaRequests.delete(mediaRequests.values().next().value);
+          const controller=new AbortController(),context={...contextRef.current,moduleId,rpcContract};
+          void(async()=>{try{
+            registerMediaContext(context);let payload;
+            if(data.media?.operation==='capture'){
+              if(captures.size)throw new Error('Es ist bereits eine Kamera geöffnet.');
+              captures.set(requestId,controller);payload=await openMediaCapture(context,data.media,controller.signal);
+            }else if(data.media?.operation==='list')payload=await mediaEntries(context);
+            else if(['retry','cancel'].includes(data.media?.operation)){await changeMedia(context,data.media.id,data.media.operation);payload={ok:true};}
+            else throw new Error('Unbekannte Fotoanfrage.');
+            return {ok:true,status:200,payload};
+          }catch(error){return {ok:false,status:400,payload:{code:'MEDIA_QUEUE_FAILED',message:error?.message||'Die Fotoablage ist nicht verfügbar.'}};}
+          finally{captures.delete(requestId);}})().then(result=>{if(contextRef.current?.token===expectedToken&&frameRef.current?.contentWindow===sourceFrame)sendOpaqueResponse(requestId,result);});
           return;
         }
         if (event.data?.type === MODULE_OUTBOX_REQUEST) {
@@ -268,6 +323,7 @@ export function FeatureModuleFrame({
           return;
         }
         if (event.data?.type === OPAQUE_RPC_CANCEL) {
+          captures.get(event.data?.requestId)?.abort();
           const requestState = activeRequests.get(event.data?.requestId);
           if (requestState) {
             requestState.cancelled = true;
@@ -285,20 +341,32 @@ export function FeatureModuleFrame({
       if (event.data?.type === "bonni:module-action") handleModuleAction(event.data);
     }
 
+    function receiveMessengerNavigation(event) {
+      const detail = event.detail;
+      if (detail?.moduleId !== moduleId || detail?.rpcSessionId !== rpcSessionId) return;
+      postToFrame({ type: "bonni:messenger-navigation", moduleId, rpcSessionId,
+        payload: { section: detail.section } });
+    }
+
     window.addEventListener("message", receiveMessage);
+    window.addEventListener("bonni:messenger-navigate", receiveMessengerNavigation);
     if (opaqueRpc) probeOpaqueFrame();
     else sendContext({ force: true });
     return () => {
       window.removeEventListener("message", receiveMessage);
+      window.removeEventListener("bonni:messenger-navigate", receiveMessengerNavigation);
+      diagnosticReporter.destroy();
       for (const requestState of activeRequests.values()) {
         requestState.cancelled = true;
         requestState.controller.abort();
       }
       activeRequests.clear();
+      for(const controller of captures.values())controller.abort();
     };
   }, [
     entryUrl.origin,
     moduleId,
+    moduleVersion,
     opaqueRpc,
     rpcContract,
     rpcSessionId,
@@ -314,6 +382,7 @@ export function FeatureModuleFrame({
 
   return (
     <iframe
+      key={opaqueRpc ? rpcSessionId : entryUrl.href}
       ref={frameRef}
       src={entryUrl.href}
       title={moduleId}
@@ -339,12 +408,14 @@ export default function FeatureModuleHost({
 
   useEffect(() => {
     let cancelled = false;
+    const controller = new AbortController();
 
     async function loadManifest() {
       setState({ loading: true, module: null, error: null });
 
       try {
         const module = await fetchFeatureModule(token, moduleId);
+        if (module && !cancelled) await verifyFeatureModuleEntry(module, { signal: controller.signal });
         if (!cancelled) {
           setState({ loading: false, module, error: null });
         }
@@ -359,6 +430,7 @@ export default function FeatureModuleHost({
 
     return () => {
       cancelled = true;
+      controller.abort();
     };
   }, [moduleId, token]);
 
@@ -453,6 +525,7 @@ export default function FeatureModuleHost({
           transport={transport}
           rpcContract={rpcContract}
           sandboxCapabilities={sandboxCapabilities}
+          moduleVersion={state.module?.version || state.module?.metadata?.version}
         />
       );
     }

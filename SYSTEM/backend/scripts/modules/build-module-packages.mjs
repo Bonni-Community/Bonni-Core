@@ -4,7 +4,7 @@ import { constants as fsConstants, promises as fs } from "node:fs";
 import path from "node:path";
 
 const projectRoot = path.resolve(process.argv[2] || process.env.BONNI_PROJECT_ROOT || "..");
-const moduleRoots = ["app", "addons", "plugins", "bridges"]
+const moduleRoots = ["app", "apps", "add-on", "addon", "addons", "plug-in", "plugin", "plugins", "bridge", "bridges"]
   .map((directory) => path.join(projectRoot, directory));
 const skippedDirectories = new Set([
   ".cache",

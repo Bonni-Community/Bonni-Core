@@ -15,8 +15,8 @@ export function modulePackageDisplayName(module) {
   return module?.displayName || module?.name || module?.label || manifest.name || manifest.label || modulePackageId(module) || "Modulpaket";
 }
 
-export async function fetchModulePackages(token) {
-  const data = await apiRequest(MODULE_PACKAGES_ENDPOINT, { token });
+export async function fetchModulePackages(token, { signal } = {}) {
+  const data = await apiRequest(MODULE_PACKAGES_ENDPOINT, { token, signal });
   return Array.isArray(data?.packages) ? data.packages : Array.isArray(data?.modules) ? data.modules : [];
 }
 
@@ -39,6 +39,21 @@ export function featureModuleRuntimeEntry(module) {
 export function featureModuleIntegration(module) {
   return String(featureModuleFrontend(module)?.integration || "module").trim().toLowerCase();
 }
+
+export async function verifyFeatureModuleEntry(module, { signal } = {}) {
+  if (!isFeatureModuleActive(module) || featureModuleIntegration(module) !== "iframe") return;
+  const entry = featureModuleRuntimeEntry(module);
+  if (!entry) return;
+  const url = new URL(entry, window.location.href);
+  if (url.origin !== window.location.origin) return;
+  // Probe the exact versioned entry before hiding the Core shell behind an
+  // iframe. A failed HTTP navigation otherwise still fires iframe onLoad.
+  const response = await fetch(url.href, { method: "HEAD", cache: "no-store", credentials: "omit", signal });
+  if (!response.ok || !/\btext\/html\b/i.test(response.headers.get("content-type") || "")) {
+    throw new Error(`Die Oberfläche von ${featureModuleDisplayName(module)} ist nicht verfügbar (HTTP ${response.status}). Bitte das Serverprotokoll prüfen.`);
+  }
+}
+
 export function featureModuleTransport(module) {
   return String(featureModuleFrontend(module)?.transport || "").trim().toLowerCase();
 }

@@ -1,6 +1,6 @@
 import type { Request, Response, NextFunction } from "express";
 import { logError } from "../../logger/errorLogger.js";
-import { safeLogHeader, safeLogPath } from "../../logger/http-log-context.js";
+import { safeLogPath } from "../../logger/http-log-context.js";
 
 type HttpError = Error & {
   statusCode?: number;
@@ -19,18 +19,19 @@ export function errorHandler(error: unknown, req: Request, res: Response, _next:
   };
   const parserType = (error as { type?: string })?.type;
   const parserMessage = parserType ? parserMessages[parserType] : undefined;
+  const err = error as HttpError;
+  const appSchemaIncomplete = /^\/api\/apps\/[a-z][a-z0-9-]*(?:\/|\?|$)/.test(req.originalUrl)
+    && ["P2021", "P2022"].includes(String(err?.code || ""));
 
   logError(parserMessage ? new Error(parserMessage) : error, {
     module: "middleware",
     method: req.method,
-    path: safeLogPath(req.originalUrl),
-    terminalId: safeLogHeader(req.header("x-terminal-id")),
-    localNodeId: safeLogHeader(req.header("x-local-node-id"))
+    path: safeLogPath(req.route?.path),
+    code: typeof err?.code === "string" && /^[A-Z][A-Z0-9_]{2,79}$/.test(err.code) ? err.code : undefined,
   });
 
-  const err = error as HttpError;
   const candidateStatus =
-    typeof err?.statusCode === "number"
+    appSchemaIncomplete ? 503 : typeof err?.statusCode === "number"
       ? err.statusCode
       : typeof err?.status === "number"
       ? err.status
@@ -41,11 +42,13 @@ export function errorHandler(error: unknown, req: Request, res: Response, _next:
 
   res.status(statusCode).json({
     error:
-      statusCode >= 500
+      appSchemaIncomplete ? "APP_DATABASE_SCHEMA_INCOMPLETE" : statusCode >= 500
         ? "INTERNAL_SERVER_ERROR"
         : parserMessage ? "REQUEST_BODY_INVALID" : err?.code || err?.message || "REQUEST_ERROR",
     message:
-      statusCode >= 500
+      appSchemaIncomplete
+        ? "Die App-Datenbank enthält noch nicht alle benötigten Tabellen oder Spalten. Bitte den aktuellen Server-Protokollauszug prüfen (APP_DATABASE_SCHEMA_INCOMPLETE)."
+        : statusCode >= 500
         ? "Unexpected server error"
         : parserMessage || err?.message || "Request failed",
     details: statusCode >= 500 || parserMessage ? undefined : err?.details,

@@ -17,6 +17,7 @@ import {
 import { resolveBootstrapAdminPassword } from "../../platform/auth/bootstrap-admin-password.js";
 import { BOOTSTRAP_ADMIN_LOGIN_NAME } from "../../platform/auth/system-account-policy.js";
 import { createAccountId, createMemberId } from "../../platform/security/crypto/id.js";
+import { HUB_PRODUCT_PERMISSIONS } from "../../core/hub/hub-products-contract.js";
 
 // Seed policy: only technical/system data.
 // Business data like products, product categories, packaging nodes and packaging attributes
@@ -120,7 +121,8 @@ async function seedAuthProvider(database: SeedDatabase) {
 }
 
 async function seedPermissions(database: SeedDatabase) {
-  for (const permissionKey of permissions) {
+  // Register canonical service rights without silently granting them to roles.
+  for (const permissionKey of [...permissions, ...Object.values(HUB_PRODUCT_PERMISSIONS)]) {
     await database.permission.upsert({
       where: {
         key: permissionKey,

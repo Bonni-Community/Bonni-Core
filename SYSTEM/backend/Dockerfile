@@ -74,6 +74,7 @@ WORKDIR /app/SYSTEM/frontend
 COPY SYSTEM/frontend/package*.json ./
 RUN npm ci
 COPY SYSTEM/frontend ./
+COPY SYSTEM/backend/scripts/runtime/operation-catalog.json /app/SYSTEM/backend/scripts/runtime/operation-catalog.json
 RUN npm run build
 COPY SYSTEM/backend/scripts/licenses /app/license-scripts
 RUN node /app/license-scripts/build-core-license-component.mjs \
@@ -122,6 +123,8 @@ ENV NODE_ENV=production
 ENV RUN_SYSTEM_ROOT=/app/run_system
 ENV BONNI_PROJECT_ROOT=/app
 
+COPY SYSTEM/backend/scripts/backup/backup-paths.mjs /app/backend/scripts/backup/backup-paths.mjs
+COPY SYSTEM/backend/scripts/backup/backup-paths.d.mts /app/backend/scripts/backup/backup-paths.d.mts
 RUN . /opt/bonni-engines/environment.sh && npm run build
 RUN node scripts/licenses/build-core-license-component.mjs \
       --package-root /app/backend \

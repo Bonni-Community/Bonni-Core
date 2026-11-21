@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 
 import { coreModules, mergeModuleRegistry } from "../../system/registry/Module.registry.js";
 import { getModulePage } from "../../system/registry/Route.registry.js";
+import { hasSystemAdministratorAccess } from "../../system/auth/accessPolicy.js";
 import { fetchSystemModules, syncSystemModules } from "../../system/api/systemModulesApi.js";
 import { fetchModulePackages } from "../../system/feature-modules/featureModuleApi.js";
 import { fetchControlCenterOverview } from "../../system/api/controlCenterOverviewApi.js";
@@ -13,12 +14,22 @@ import ControlCenterStyle from "./layout/ControlCenterStyle.jsx";
 import { buildControlCenterNavigation } from "./layout/controlCenterNavigation.js";
 import NetworkAddonPage from "./network/NetworkAddonPage.jsx";
 import {
+  openBonniLiveTerminalWindow,
+  openBonniSystemMonitorWindow,
+  openBonniTerminalWindow,
+} from "./terminal/terminalWindow.js";
+import {
   NETWORK_NAVIGATION_KEY,
   findInstalledNetworkAddon,
 } from "./network/networkAddonNavigation.js";
 import "./ControlCenter.css";
 
 const NETWORK_ADDON_REFRESH_INTERVAL_MS = 5_000;
+const quickWindows = {
+  terminal: openBonniTerminalWindow,
+  "live-terminal": openBonniLiveTerminalWindow,
+  "system-monitor": openBonniSystemMonitorWindow,
+};
 
 function getInitialModuleKey() {
   const hash = window.location.hash || "";
@@ -44,6 +55,7 @@ export default function ControlCenter({
   const [networkAddonChecked, setNetworkAddonChecked] = useState(false);
   const [activeModuleKey, setActiveModuleKey] = useState(getInitialModuleKey());
   const [activeNavigationKey, setActiveNavigationKey] = useState(getInitialModuleKey());
+  const [diagnosticsNavigation, setDiagnosticsNavigation] = useState(0);
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState("");
   const [overview, setOverview] = useState(null);
@@ -148,13 +160,21 @@ export default function ControlCenter({
     setMessage("");
     const suffix = tab === "log" ? "" : `?tab=${encodeURIComponent(tab)}`;
     window.history.replaceState(null, "", `/control-center/diagnostics${suffix}`);
+    setDiagnosticsNavigation(previous => previous + 1);
   }
 
   function handleNavigate(item) {
     if (!item) return;
 
-    if (item.key === "terminal") {
-      openDiagnostics("terminal");
+    if (Object.hasOwn(quickWindows, item.key)) {
+      setMessage(quickWindows[item.key]()
+        ? ""
+        : "Der Browser hat das Fenster blockiert. Erlaube Pop-ups für Bonni Core und klicke erneut auf das Symbol.");
+      return;
+    }
+
+    if (item.key === "diagnostics") {
+      openDiagnostics();
       return;
     }
 
@@ -281,7 +301,12 @@ export default function ControlCenter({
         )
       ) : ActivePage ? (
         <ActivePage
+          key={activeModuleKey === "diagnostics" ? diagnosticsNavigation : undefined}
           token={token}
+          erasureReviewerAccountId={activeModuleKey === "user"
+            && ["MEMBER", "ADMIN"].includes(String(user?.type || shell?.identity?.type || "").toUpperCase())
+            && hasSystemAdministratorAccess(user, shell)
+            ? (user?.accountId || shell?.identity?.accountId || user?.id || null) : null}
           module={activeModule}
           onBack={backToLauncher}
           onSyncRegistry={handleSyncRegistry}

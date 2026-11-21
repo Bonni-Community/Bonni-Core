@@ -70,7 +70,8 @@
     "modules:verify": "node --import tsx scripts/modules/verify-module-packages.ts",
     "modules:integrate:prepare": "npm run database:bootstrap && npm run prisma:generate",
     "modules:integrate:finalize": "npm run modules:sync-installed-manifests && npm run modules:verify && npm run modules:sync-legal-payloads",
-    "modules:integrate": "npm run modules:integrate:prepare && npm run modules:integrate:finalize"
+    "modules:integrate": "npm run modules:integrate:prepare && npm run modules:integrate:finalize",
+    "gourmet:basis:init": "node scripts/gourmet/initialize-basis.mjs"
   },
   "dependencies": {
     "@prisma/adapter-pg": "^6.19.3",

@@ -1,3 +1,4 @@
+import {isAppArchiveFilename} from './app-filename.mjs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import {randomUUID} from 'node:crypto';
@@ -57,7 +58,7 @@ export function createAppInstaller({productRoot,systemRoot,backendRoot,stateRoot
     await init();const local=[];let localError=null;
     // Scan the inbox first. A failed network request must never hide local packages.
     try {
-      const files=(await fs.readdir(inbox,{withFileTypes:true})).filter(e=>e.isFile()&&/^[A-Za-z0-9._+-]+-App-v[A-Za-z0-9._+-]+\.zip$/.test(e.name));
+      const files=(await fs.readdir(inbox,{withFileTypes:true})).filter(e=>e.isFile()&&isAppArchiveFilename(e.name));
       if(files.length>40)fail('APP_INBOX_TOO_MANY_PACKAGES');
       for(const entry of files) {
         const work=await fs.mkdtemp(path.join(home,'scan-'));
@@ -115,7 +116,7 @@ export function createAppInstaller({productRoot,systemRoot,backendRoot,stateRoot
     try {
       let bytes;
       if(request.source==='offline') {
-        if(!/^[A-Za-z0-9._+-]+-App-v[A-Za-z0-9._+-]+\.zip$/.test(request.filename||''))fail('APP_FILENAME_INVALID');
+        if(!isAppArchiveFilename(request.filename||''))fail('APP_FILENAME_INVALID');
         bytes=await readFile(path.join(inbox,request.filename),512*1024*1024);
       } else {
         const config=await settings();

@@ -2,6 +2,7 @@ export {
   disconnectDatabaseTarget,
   disconnectPrismaClients,
   getDataDomainPrismaClient,
+  getDataDomainJsonNulls,
   getDatabaseTargetPrismaClient,
   getLocalPrismaClient,
   getPrismaClient,

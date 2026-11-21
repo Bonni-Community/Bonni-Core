@@ -1,3 +1,4 @@
+import ErasureCycleSettings from "../../../core/modules/security/identity/components/ErasureCycleSettings.jsx";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 import {
@@ -672,7 +673,7 @@ function getNewMemberValidationTab(message) {
   return "uebersicht";
 }
 
-export default function UserPage({ token }) {
+export default function UserPage({ token, erasureReviewerAccountId = null }) {
   const [data, setData] = useState(EMPTY_DATA);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -930,6 +931,8 @@ export default function UserPage({ token }) {
 
         {error ? <div className="cc-member-error" role="status">{error}</div> : null}
 
+        {erasureReviewerAccountId ? <ErasureCycleSettings token={token} actorAccountId={erasureReviewerAccountId}/> : null}
+
         <div className="cc-member-table-wrap">
           <table className="cc-member-table cc-member-table--member-account cc-member-table--login-first">
             <thead>
@@ -1025,6 +1028,7 @@ export default function UserPage({ token }) {
       {selectedMember ? (
         <MemberActionWindow
           member={selectedMember}
+          erasureReviewerAccountId={erasureReviewerAccountId}
           activeTab={actionTab}
           availableSurfaceRoles={availableSurfaceRoles}
           moduleCatalog={moduleCatalog}

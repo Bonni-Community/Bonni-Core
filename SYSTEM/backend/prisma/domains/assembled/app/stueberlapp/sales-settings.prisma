@@ -32,7 +32,6 @@ model StueberlSalesConfiguration {
   mode                    StueberlSalesMode @default(STOCKED_VARIANTS)
   aggregateDrinkProductId String?
   aggregateFoodProductId  String?
-  kontorIntegrationEnabled Boolean          @default(false)
   revision                Int               @default(1)
   updatedByAccountId      String?
   createdAt               DateTime          @default(now())

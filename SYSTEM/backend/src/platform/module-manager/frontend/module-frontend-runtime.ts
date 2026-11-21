@@ -21,12 +21,24 @@ function isHashedBuildAssetRequest(requestPath: string) {
   );
 }
 
-function setFrontendResourceHeaders(res: express.Response) {
+function setFrontendResourceHeaders(res: express.Response, opaqueExtension = false, localProcessing = false) {
   // Das Modul-iframe besitzt absichtlich eine undurchsichtige Origin. Seine
   // unveraenderlichen Build-Dateien muessen deshalb explizit als oeffentliche
   // Ressourcen markiert werden. API-, Auth- und Nutzdaten sind davon nicht
   // betroffen und bleiben durch Core geschuetzt.
   res.setHeader("Cross-Origin-Resource-Policy", "cross-origin");
+  // Gourmet is nested inside the opaque Stüberl frame. CSP 'self' cannot
+  // describe that opaque ancestor. Keep the remaining policy and all API
+  // guards; only this declared extension's static UI needs the exception.
+  if (opaqueExtension || localProcessing) {
+    const policy = res.getHeader("Content-Security-Policy");
+    if (typeof policy === "string") {
+      res.setHeader("Content-Security-Policy", policy.split(";")
+        .filter(directive => !/^\s*(?:worker-src|connect-src)(?:\s|$)/i.test(directive) && !(opaqueExtension && /^\s*frame-ancestors(?:\s|$)/i.test(directive)))
+        .map(directive=>/^\s*script-src\s/i.test(directive)?directive+" 'wasm-unsafe-eval'":directive)
+        .concat(["worker-src 'self' blob:","connect-src 'self' blob:"]).join(";"));
+    }
+  }
 }
 
 function safeMountPath(value: unknown, moduleKey: string) {
@@ -81,6 +93,10 @@ export async function registerModuleFrontends(app: Express) {
   for (const manifest of manifests) {
     const frontend = manifest?.frontend;
     const sourcePath = manifest?.sourcePath;
+    const extensionTarget = manifest.metadata?.extensionTarget as Record<string, unknown> | undefined;
+    const opaqueExtension = manifest.key === "addon.gourmet" && manifest.kind === "addon"
+      && extensionTarget?.moduleKey === "app.stueberlapp"
+      && frontend?.transport === "opaque-rpc-v1";
 
     if (!frontend || !sourcePath || frontend.integration !== "iframe") continue;
 
@@ -91,8 +107,9 @@ export async function registerModuleFrontends(app: Express) {
     const publicRoot = resolvePublicRoot(packageRoot, frontend.publicRoot);
     if (!publicRoot) continue;
 
+    const assetsOnly = !frontend.entry && !frontend.runtimeEntry && !frontend.route;
     const indexFile = path.join(publicRoot, "index.html");
-    if (!existsSync(indexFile)) {
+    if (!assetsOnly && !existsSync(indexFile)) {
       console.warn("[module-manager] Frontend build missing", {
         module: manifest.key,
         expected: publicRoot,
@@ -102,7 +119,7 @@ export async function registerModuleFrontends(app: Express) {
     const mountPath = safeMountPath(frontend.mountPath, manifest.key);
     if (!/^\/api(?:\/|$)/i.test(mountPath)) registerPublicModuleAssetMount(app, mountPath);
     const serveStaticFrontend = express.static(publicRoot, {
-      index: "index.html",
+      index: assetsOnly ? false : "index.html",
       // App-Builds werden separat aktualisiert. Nach einer frueheren
       // JSON-Fehlantwort darf der Browser diese URL nicht mit 304 weiter aus
       // seinem fehlerhaften Cache bedienen.
@@ -111,7 +128,7 @@ export async function registerModuleFrontends(app: Express) {
       cacheControl: false,
       setHeaders(response) {
         response.setHeader("Cache-Control", "no-store");
-        setFrontendResourceHeaders(response);
+        setFrontendResourceHeaders(response, opaqueExtension, frontend.localProcessing === true);
       },
     });
 
@@ -133,7 +150,7 @@ export async function registerModuleFrontends(app: Express) {
           return;
         }
 
-        if (!existsSync(indexFile)) {
+        if (!assetsOnly && !existsSync(indexFile)) {
           res.status(503).json({
             error: "MODULE_FRONTEND_BUILD_MISSING",
             message: `Frontend build missing for ${manifest.key}`,
@@ -141,7 +158,7 @@ export async function registerModuleFrontends(app: Express) {
           return;
         }
 
-        setFrontendResourceHeaders(res);
+        setFrontendResourceHeaders(res, opaqueExtension, frontend.localProcessing === true);
         serveStaticFrontend(req, res, next);
       } catch (error) {
         next(error);
@@ -160,7 +177,7 @@ export async function registerModuleFrontends(app: Express) {
             next();
             return;
           }
-          if (!existsSync(indexFile)) {
+          if (!assetsOnly && !existsSync(indexFile)) {
             res.status(503).json({
               error: "MODULE_FRONTEND_BUILD_MISSING",
               message: `Frontend build missing for ${manifest.key}`,

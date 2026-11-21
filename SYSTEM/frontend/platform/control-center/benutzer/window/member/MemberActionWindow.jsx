@@ -356,6 +356,7 @@ function buildProfilePayload(member, moduleCatalog) {
 
 export default function MemberActionWindow({
   member,
+  erasureReviewerAccountId = null,
   activeTab,
   token,
   moduleCatalog: availableModuleCatalog = [],
@@ -694,6 +695,7 @@ export default function MemberActionWindow({
               {tab === "zugang" ? (
                 <AccessTab
                   member={draftMember}
+                  erasureReviewerAccountId={erasureReviewerAccountId}
                   token={token}
                   onAccountChange={handleAccountChange}
                   onDeleted={handleMemberDeleted}

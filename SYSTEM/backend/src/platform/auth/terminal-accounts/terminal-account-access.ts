@@ -1,5 +1,7 @@
 import type { ModuleManifestSummary } from "../../module-manager/types.js";
 import { describeTerminalAccountIdentity } from "./terminal-account-declaration.js";
+import { HUB_PRODUCT_OPERATION_PERMISSIONS } from "../../../core/hub/hub-products-contract.js";
+import { validateHubManifest } from "../../../core/hub/hub-products-registry.js";
 
 type AccountRole = {
   role: { key: string; permissions: Array<{ permission: { key: string } }> };
@@ -13,18 +15,27 @@ export function resolveTerminalAccountAccess(
   accountRoles: readonly AccountRole[],
   manifests: readonly ModuleManifestSummary[],
 ) {
-  const grants: Array<{ roleKey: string; permissionKey: string; moduleKey: string; workspace: string }> = [];
+  const grants: Array<{ roleKey: string; permissionKey: string; moduleKey: string; workspace: string; permissions: string[] }> = [];
   for (const manifest of manifests) {
     if (manifest.kind !== "app") continue;
     for (const profile of manifest.metadata?.accessProfiles || []) {
       if (profile.usage !== "technical" || profile.accountType !== "TERMINAL") continue;
       const declared = describeTerminalAccountIdentity(manifest.key, profile.key);
       if (profile.permission !== declared.permissionKey) continue;
-      const assigned = accountRoles.some(({ role }) => (
+      const assigned = accountRoles.find(({ role }) => (
         role.key === declared.roleKey
         && role.permissions.some(({ permission }) => permission.key === declared.permissionKey)
       ));
-      if (assigned) grants.push({ ...declared, moduleKey: manifest.key, workspace: profile.workspace });
+      if (assigned) {
+        // Keep explicit Hub grants from this exact technical role. App access
+        // itself, other roles and wildcards never imply a product permission.
+        const operations = validateHubManifest(manifest).length === 0 ? manifest.metadata?.hubProducts?.operations || [] : [];
+        const requested = new Set(operations.map(operation => HUB_PRODUCT_OPERATION_PERMISSIONS[operation]));
+        const productPermissions = assigned.role.permissions.map(({ permission }) => permission.key)
+          .filter(key => requested.has(key as typeof HUB_PRODUCT_OPERATION_PERMISSIONS[keyof typeof HUB_PRODUCT_OPERATION_PERMISSIONS]));
+        grants.push({ ...declared, moduleKey: manifest.key, workspace: profile.workspace,
+          permissions: [...new Set([declared.permissionKey, ...productPermissions])] });
+      }
     }
   }
   // Never combine surfaces from an old or externally changed multi-profile
@@ -33,7 +44,7 @@ export function resolveTerminalAccountAccess(
   const effectiveGrants = uniqueGrants.length === 1 ? uniqueGrants : [];
   return {
     roles: effectiveGrants.map((grant) => grant.roleKey),
-    permissions: effectiveGrants.map((grant) => grant.permissionKey),
+    permissions: effectiveGrants.flatMap((grant) => grant.permissions),
     allowedApps: effectiveGrants.map((grant) => grant.moduleKey),
     allowedWorkspaces: effectiveGrants.map((grant) => grant.workspace),
   };

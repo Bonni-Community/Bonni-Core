@@ -1,4 +1,6 @@
 import {startAppUpdateChecker,stopAppUpdateChecker} from "../../platform/module-manager/distribution/app-distribution.routes.js";
+import { startErasureCycleWorker } from "../../platform/auth/users/erasure-cycle.service.js";
+import { startLoginDiagnosticsCleanup } from "../../platform/auth/login-diagnostics.js";
 import type { Server } from "node:http";
 
 import { createLocalSystemApp, createPlatformApp } from "../routes/create-system-app.js";
@@ -16,6 +18,7 @@ import {
   stopEmergencyBackend,
 } from "../../platform/security/control/emergency-backend/index.js";
 import { startCoreUpdateScheduler } from "../routes/control-api/update-center/index.js";
+import { startSystemResourceHistory, stopSystemResourceHistory } from "../routes/control-api/monitoring/resource.service.js";
 import { startWebBridgeWorker, stopWebBridgeWorker } from "../../core/web-bridge/service.js";
 import { seedSystemDatabase } from "../database/seed-system.js";
 import { applyHttpServerPolicy } from "./http-server-policy.js";
@@ -80,6 +83,7 @@ async function shutdown(signal: ShutdownTrigger, requestId?: string) {
   }
 
   shuttingDown = true;
+  stopSystemResourceHistory();
   await stopAppUpdateChecker();
   await stopWebBridgeWorker();
 
@@ -220,6 +224,7 @@ const localSystemApp = await createLocalSystemApp();
 
 registerServer(
   localSystemApp.listen(env.LOCAL_AUTH_PORT, env.LOCAL_AUTH_BIND, () => {
+    if (!shuttingDown) startSystemResourceHistory();
     const metadata = {
       surface: "local-system",
       bind: env.LOCAL_AUTH_BIND,
@@ -293,6 +298,8 @@ try {
     }
 
     if (runtime.slotRole === "active") {
+      startLoginDiagnosticsCleanup();
+      startErasureCycleWorker();
       startWebBridgeWorker();
       void startAppUpdateChecker().catch(error=>logger.warn("App-Updateprüfung konnte nicht gestartet werden", {module:"app-update",error:errorDetails(error)}));
       const updateScheduler = startCoreUpdateScheduler();

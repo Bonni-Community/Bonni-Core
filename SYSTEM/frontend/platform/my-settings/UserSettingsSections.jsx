@@ -7,6 +7,8 @@ import {
   updateOwnProfile,
 } from "./userSettingsApi.js";
 import "./UserSettingsSections.css";
+import SystemErasurePanel from "../../core/modules/security/identity/components/SystemErasurePanel.jsx";
+import { isBootstrapAdminLoginName } from "../../system/auth/systemAccountPolicy.js";
 
 export const USER_SETTINGS_SECTIONS = Object.freeze([
   Object.freeze({
@@ -39,6 +41,7 @@ export const USER_SETTINGS_SECTIONS = Object.freeze([
       Object.freeze({ key: "kontor", label: "KontorApp" }),
       Object.freeze({ key: "meet", label: "MeetApp" }),
       Object.freeze({ key: "confirmations", label: "Bestätigung" }),
+      Object.freeze({ key: "erasure", label: "Löschantrag" }),
     ]),
   }),
   Object.freeze({
@@ -425,6 +428,12 @@ export default function UserSettingsSection({
     if (section === "profile" && tab === "rights") return <RightsPanel user={user} shell={shell} />;
     if (section === "profile" && tab === "logs") return <HistoryPanel token={token} />;
     if (section === "bank") return <LockedBankPanel kind={tab === "paypal" ? "paypal" : "bank"} />;
+    if (section === "privacy" && tab === "erasure") {
+      const type = String(user?.type || shell?.identity?.type || "").toUpperCase();
+      if (isBootstrapAdminLoginName(user?.loginName || shell?.identity?.loginName)) return <p>Der feste Systembenutzer admin ist von der Kontolöschung ausgenommen.</p>;
+      if (!["MEMBER", "ADMIN"].includes(type)) return <p>Der Löschantrag ist für persönliche Benutzerkonten vorgesehen.</p>;
+      return <SystemErasurePanel token={token} actorAccountId={user?.accountId || shell?.identity?.accountId || user?.id}/>;
+    }
     if (section === "privacy") return <PrivacyPanel tab={tab} user={user} shell={shell} />;
     if (section === "security" && tab === "password") {
       return <PasswordPanel token={token} recoveryPanel={recoveryPanel} onSessionRevoked={onSessionRevoked} onSessionInvalidated={onSessionInvalidated} />;

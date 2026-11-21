@@ -14,7 +14,7 @@ const SAFE_FORM_NAME = /^[A-Za-z0-9][A-Za-z0-9._:[\]-]{0,199}$/;
 const SAFE_HEADER_NAME = /^[a-z][a-z0-9-]{0,99}$/;
 const SAFE_CONTENT_TYPE = /^[a-z0-9][a-z0-9!#$&^_.+-]{0,126}\/[a-z0-9][a-z0-9!#$&^_.+-]{0,126}$/;
 const DEFAULT_MAX_BODY_BYTES = 256 * 1024;
-const MAX_CONTRACT_BODY_BYTES = 32 * 1024 * 1024;
+const MAX_CONTRACT_BODY_BYTES = 48 * 1024 * 1024;
 const MAX_QUERY_ENTRIES = 100;
 const MAX_FORM_ENTRIES = 200;
 const CREDENTIAL_KEYS = new Set([
@@ -536,6 +536,7 @@ export function validateOpaqueRpcRequest(data, {
     invalid("RPC_REQUEST_ID_INVALID", "Ungültige RPC-Anfrage-ID.");
   }
 
+  if (data.diagnosticOperationId !== undefined && (typeof data.diagnosticOperationId !== "string" || !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(data.diagnosticOperationId))) invalid("RPC_DIAGNOSTIC_OPERATION_INVALID", "Ungültige Diagnose-Vorgangs-ID.");
   const contract = normalizeOpaqueRpcContract(rawContract, { moduleId });
   const method = normalizeMethod(data.method);
   const parsed = sanitizeRequestUrl(data.path);
@@ -547,6 +548,7 @@ export function validateOpaqueRpcRequest(data, {
     headers: sanitizeHeaders(data.headers, route),
     body: sanitizeBody(data.body, route),
     responseType: route.responseType,
+    ...(data.diagnosticOperationId ? {diagnosticOperationId:data.diagnosticOperationId} : {}),
   };
 }
 

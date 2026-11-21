@@ -10,7 +10,7 @@ import type {
 export const MODULE_RPC_CONTRACT_SCHEMA = "bonni.module-rpc/v1";
 export const MAX_MODULE_RPC_CONTRACT_BYTES = 256 * 1024;
 
-const MAX_BODY_BYTES = 32 * 1024 * 1024;
+const MAX_BODY_BYTES = 48 * 1024 * 1024;
 const MAX_ROUTES = 1024;
 const MAX_JSON_DEPTH = 32;
 const MAX_JSON_NODES = 50_000;

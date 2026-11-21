@@ -1,3 +1,4 @@
+import { prepareBrowserDevice, registerBrowserLogin, rememberBrowserDevice } from '../members/member-devices-runtime.js';
 import { createHash, randomUUID } from "node:crypto";
 import { Router } from "express";
 import { nfcService } from "../../../core/modules/security/nfc/index.js";
@@ -14,6 +15,7 @@ import type {
 } from "../../module-manager/types.js";
 import { ensureLocalBootstrapAdminAccess } from "../bootstrap-admin-access.js";
 import { verifyPasswordRuntime } from "../password-runtime.js";
+import { recordLoginDiagnostic } from "../login-diagnostics.js";
 import { isForbiddenInteractiveLoginName } from "../system-account-policy.js";
 import { scopeTerminalAccount } from "../terminal-accounts/terminal-account-access.js";
 import { coreTokenService } from "../token/core-token.service.js";
@@ -632,6 +634,7 @@ async function completeInteractiveLogin(
     throw new LoginError("TWO_FACTOR_CREDENTIAL_REVISION_MISMATCH", "Der Sicherheitsstand des Kontos hat sich geändert", 409);
   }
   const shell = await createShell(authenticatedAccount);
+  const browserDevice = ["MEMBER", "ADMIN"].includes(String(authenticatedAccount.type)) ? prepareBrowserDevice(req) : null;
   const token = await prisma.$transaction(async (transaction) => {
     const unchanged = await transaction.account.updateMany({
       where: {
@@ -649,6 +652,7 @@ async function completeInteractiveLogin(
         409,
       );
     }
+    const terminalId = browserDevice ? await registerBrowserLogin(transaction, authenticatedAccount.id, browserDevice) : null;
     const sessionId = randomUUID();
     const nextToken = coreTokenService.issueToken({
       accountId: authenticatedAccount.id,
@@ -662,6 +666,7 @@ async function completeInteractiveLogin(
         id: sessionId,
         accountId: authenticatedAccount.id,
         tokenHash: sessionTokenHash(nextToken),
+        terminalId,
         ipAddress: req.ip || null,
         userAgent: req.headers?.["user-agent"] || null,
         credentialRevision: authenticatedAccount.credentialRevision,
@@ -673,6 +678,8 @@ async function completeInteractiveLogin(
     return nextToken;
   });
 
+  if (browserDevice) rememberBrowserDevice(req, browserDevice);
+  await recordLoginDiagnostic("LOGIN_SUCCESS", authenticatedAccount.id);
   return {
     ok: true,
     token,
@@ -754,14 +761,17 @@ router.post("/login", async (req, res) => {
 
     const account = await findAccountForLogin(loginName);
     if (!account || (nfcLocator && account.id !== nfcLocator.accountId)) {
+      await recordLoginDiagnostic("ACCOUNT_NOT_FOUND");
       throw new LoginError("ACCOUNT_NOT_FOUND", "Benutzer existiert nicht", 401);
     }
 
     if (!account.isActive) {
+      await recordLoginDiagnostic("ACCOUNT_DISABLED", account.id);
       throw new LoginError("ACCOUNT_DISABLED", "Benutzer deaktiviert", 403);
     }
 
     if (account.type === AccountType.SERVICE) {
+      await recordLoginDiagnostic("SERVICE_ACCOUNT_INTERACTIVE_LOGIN_FORBIDDEN", account.id);
       throw new LoginError(
         "SERVICE_ACCOUNT_INTERACTIVE_LOGIN_FORBIDDEN",
         "Technische Dienstkonten dürfen sich nicht interaktiv anmelden",
@@ -770,15 +780,18 @@ router.post("/login", async (req, res) => {
     }
 
     if (!account.passwordHash) {
+      await recordLoginDiagnostic("PASSWORD_NOT_CONFIGURED", account.id);
       throw new LoginError("INVALID_PASSWORD", "Passwort falsch", 401);
     }
 
     const validPassword = await verifyPasswordRuntime(password, account.passwordHash);
     if (!validPassword) {
+      await recordLoginDiagnostic("INVALID_PASSWORD", account.id);
       throw new LoginError("INVALID_PASSWORD", "Passwort falsch", 401);
     }
 
     if (account.passwordRecoveryLockedAt) {
+      await recordLoginDiagnostic("PASSWORD_RECOVERY_LOCKED", account.id);
       throw new LoginError(
         "PASSWORD_RECOVERY_LOCKED",
         "Das Konto ist bis zum Abschluss der Wiederherstellung gesperrt",

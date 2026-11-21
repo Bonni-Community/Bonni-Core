@@ -1,3 +1,4 @@
+import {isAppArchiveFilename} from './app-filename.mjs';
 import {fail,sha256,versionParts} from './app-package.mjs';
 export function repository(value) {
   if(!/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?\/[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/.test(value||'')||value.endsWith('.'))fail('APP_REPOSITORY_INVALID');
@@ -33,7 +34,7 @@ export async function githubBytes(address,{limit=1024*1024,token,fetchImpl=fetch
 }
 export function validateCatalog(entry,repo) {
   if(!entry||entry.schema!=='bonni.app-catalog-entry/v1'||entry.repository!==repository(repo)
-    ||!/^APP:[A-Z][A-Z0-9._-]{1,63}$/.test('APP:'+entry.appId)||!/^[A-Za-z0-9._+-]+-App-v[A-Za-z0-9._+-]+\.zip$/.test(entry.filename||'')
+    ||!/^APP:[A-Z][A-Z0-9._-]{1,63}$/.test('APP:'+entry.appId)||!isAppArchiveFilename(entry.filename||'')
     ||!Number.isSafeInteger(entry.sizeBytes)||entry.sizeBytes<1||entry.sizeBytes>512*1024*1024
     ||!Number.isSafeInteger(entry.releaseSequence)||entry.releaseSequence<1||!/^[a-f0-9]{64}$/.test(entry.sha256||'')
     ||!/^[A-Za-z0-9._+-]+$/.test(entry.filename)||!/^[A-Za-z0-9._+-]+$/.test(entry.releaseTag))fail('APP_CATALOG_INVALID');

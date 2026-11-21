@@ -1,0 +1,222 @@
+.bonni-system-monitor {
+  min-height: 0;
+  overflow: auto;
+  padding: 18px clamp(12px, 3vw, 26px) 28px;
+}
+
+.bonni-system-monitor__status {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  color: #b9c3d0;
+}
+
+.bonni-system-monitor__status strong {
+  padding: 3px 9px;
+  border-radius: 999px;
+  color: #ffd27d;
+  background: #3b3528;
+  font-size: .82rem;
+}
+
+.bonni-system-monitor__status strong[data-live="true"] {
+  color: #a8e8c5;
+  background: #263d34;
+}
+
+.bonni-system-monitor__status time {
+  margin-inline-start: auto;
+  font-size: .8rem;
+}
+
+.bonni-monitor-section {
+  margin-top: 16px;
+}
+
+.bonni-monitor-section h2 {
+  margin: 0 0 9px;
+  font-size: 1.05rem;
+}
+
+.bonni-resource-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 275px), 1fr));
+  gap: 12px;
+}
+
+.bonni-resource-card {
+  min-width: 0;
+  padding: 15px;
+  border: 1px solid #363e49;
+  border-radius: 10px;
+  background: #20252e;
+  overflow-wrap: anywhere;
+}
+
+.bonni-resource-card header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.bonni-resource-card h3,
+.bonni-resource-card p,
+.bonni-resource-card dd {
+  margin: 0;
+}
+
+.bonni-resource-card h3 {
+  font-size: .98rem;
+}
+
+.bonni-resource-card header strong {
+  flex: none;
+  font-variant-numeric: tabular-nums;
+}
+
+.bonni-resource-card p,
+.bonni-resource-capacity {
+  margin-top: 9px;
+  color: #b9c3d0;
+  font-size: .82rem;
+}
+
+.bonni-resource-bar {
+  overflow: hidden;
+  height: 9px;
+  border-radius: 999px;
+  background: #373e4a;
+}
+
+.bonni-resource-bar span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: #65c8ce;
+}
+
+.bonni-resource-bar[data-state="warning"] span {
+  background: #ffd27d;
+}
+
+.bonni-resource-bar[data-state="critical"] span {
+  background: #ff9097;
+}
+
+.bonni-resource-capacity {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 18px;
+  margin-bottom: 0;
+}
+
+.bonni-resource-capacity dd {
+  color: #e8edf2;
+  font-weight: 650;
+}
+
+.bonni-monitor-details {
+  display: grid;
+  grid-template-columns: minmax(0, 1.75fr) minmax(0, 1fr);
+  gap: 12px;
+  align-items: start;
+  margin-top: 16px;
+}
+
+.bonni-monitor-details h2 {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.bonni-monitor-history header {
+  flex-wrap: wrap;
+}
+
+.bonni-monitor-history header small,
+.bonni-monitor-history__plot {
+  color: #b9c3d0;
+  font-size: .72rem;
+}
+
+.bonni-monitor-history [data-series="cpu"] { --bonni-series-color: #65c8ce; }
+.bonni-monitor-history [data-series="memory"] { --bonni-series-color: #ffd27d; }
+
+.bonni-monitor-history__legend {
+  display: flex;
+  gap: 14px;
+  margin-bottom: 10px;
+  font-size: .76rem;
+}
+
+.bonni-monitor-history__legend span {
+  color: var(--bonni-series-color);
+}
+
+.bonni-monitor-history__legend span::before {
+  content: "";
+  display: inline-block;
+  width: 13px;
+  height: 2px;
+  margin-inline-end: 5px;
+  vertical-align: middle;
+  background: currentColor;
+}
+
+.bonni-monitor-history__plot {
+  display: grid;
+  grid-template-columns: 38px minmax(0, 1fr);
+  gap: 6px;
+}
+
+.bonni-monitor-history__percent {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  text-align: right;
+}
+
+.bonni-monitor-history__plot svg {
+  display: block;
+  width: 100%;
+  height: 94px;
+  overflow: visible;
+}
+
+.bonni-monitor-history__plot svg line {
+  stroke: #424b59;
+  vector-effect: non-scaling-stroke;
+}
+
+.bonni-monitor-history__plot svg path {
+  fill: none;
+  stroke: var(--bonni-series-color);
+  stroke-width: 1.65;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.bonni-monitor-history__plot svg circle {
+  fill: var(--bonni-series-color);
+}
+
+.bonni-monitor-history__minutes {
+  grid-column: 2;
+  display: flex;
+  justify-content: space-between;
+  gap: 3px;
+}
+
+.bonni-monitor-network__adapter {
+  margin-top: 11px;
+  padding-top: 8px;
+  border-top: 1px solid #363e49;
+}
+
+@media (max-width: 700px) {
+  .bonni-monitor-details {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

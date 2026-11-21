@@ -1,3 +1,4 @@
+import { mergeRuntimeModuleItems } from "./runtime-module-items.js";
 import { getSystemStatus } from "../../routes/control-api/system.service.js";
 import {
   activateModulePackage,
@@ -21,34 +22,6 @@ function asArray(value: any): any[] {
   return Array.isArray(value) ? value : [];
 }
 
-function itemKey(item: any) {
-  return item?.key || item?.id || "";
-}
-
-function itemLabel(item: any) {
-  return item?.label || item?.name || item?.displayName || itemKey(item) || "Module";
-}
-
-function normalizeItem(item: any) {
-  const status = String(item?.status || item?.installStatus || "discovered").toLowerCase();
-  const installed = Boolean(item?.installed || ["installed", "enabled", "disabled", "update_available", "error"].includes(status));
-  const enabled = Boolean(item?.enabled || status === "enabled");
-
-  return {
-    ...item,
-    key: itemKey(item),
-    label: itemLabel(item),
-    name: itemLabel(item),
-    kind: String(item?.kind || "app").toLowerCase(),
-    status,
-    installStatus: status,
-    installed,
-    enabled,
-    manageable: true,
-    route: `/system/modules?selected=${encodeURIComponent(itemKey(item))}`,
-  };
-}
-
 async function runtimeModuleSnapshot() {
   const packagesResult = await safeCall("module-manager.packages", () => listModulePackages());
   const runtimeResult = await safeCall("module-manager.runtime", () => listRegisteredModules());
@@ -58,17 +31,7 @@ async function runtimeModuleSnapshot() {
   const runtime = asArray((runtimeResult as any).value);
   const installed = asArray((installedResult as any).value);
 
-  const byKey = new Map<string, any>();
-  for (const item of [...packages, ...installed, ...runtime]) {
-    const key = itemKey(item);
-    if (!key) continue;
-    byKey.set(key, { ...(byKey.get(key) || {}), ...item });
-  }
-
-  const items = Array.from(byKey.values()).map(normalizeItem).sort((left, right) => (
-    String(left.kind).localeCompare(String(right.kind), "de") ||
-    String(left.label).localeCompare(String(right.label), "de")
-  ));
+  const items = mergeRuntimeModuleItems(packages, installed, runtime);
 
   const counts = items.reduce((acc, item) => {
     acc.total += 1;

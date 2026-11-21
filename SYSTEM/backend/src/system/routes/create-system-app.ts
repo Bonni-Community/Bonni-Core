@@ -1,7 +1,7 @@
+import { erasureStatusRouter } from "../../platform/auth/users/erasure-status.routes.js";
 import express, { type Express, type NextFunction, type Request, type Response } from "express";
 import helmet from "helmet";
-import path from "node:path";
-import { existsSync } from "node:fs";
+import { registerClosedSystemFrontend } from "./system-frontend.js";
 
 import {
   registerCoreRoutes,
@@ -69,6 +69,7 @@ function createBaseExpressApp(surface: "platform" | "local" = "platform"): Expre
   app.use(createAuthIpGuard());
   app.use(boundedAuthJson);
   app.use(createAuthSubjectGuard());
+  app.use("/api/privacy/erasure/status", express.json({ limit: "1kb", inflate: false }));
   app.use(express.json({ limit: resolveExpressJsonLimit(process.env.EXPRESS_JSON_LIMIT) }));
   app.use((req, res, next) => {
     res.locals.timecapsuleSurface = surface;
@@ -80,26 +81,6 @@ function createBaseExpressApp(surface: "platform" | "local" = "platform"): Expre
   return app;
 }
 
-
-function sendIndexIfExists(res: Response, indexFile: string, next: NextFunction) {
-  if (!existsSync(indexFile)) {
-    next();
-    return;
-  }
-
-  res.sendFile(indexFile);
-}
-
-function registerClosedSystemFrontend(app: Express) {
-  const frontendRoot = process.env.FRONTEND_DIST_ROOT ?? path.resolve(process.cwd(), "public");
-  const systemFrontend = path.join(frontendRoot, "system");
-  if (existsSync(systemFrontend)) {
-    app.use(express.static(systemFrontend, { index: false }));
-    app.get(/^\/(?!api(?:\/|$)).*$/, (_req, res, next) => {
-      sendIndexIfExists(res, path.join(systemFrontend, "index.html"), next);
-    });
-  }
-}
 
 function registerErrorHandling(app: Express) {
   app.use(notFound);
@@ -125,6 +106,7 @@ export async function createPlatformApp(): Promise<Express> {
   // because all normal application routers can be loaded successfully.
   app.use(updateProbeGuard);
 
+  app.use("/api/privacy/erasure", erasureStatusRouter);
   registerCoreAuth(app);
   registerCoreRoutes(app);
 

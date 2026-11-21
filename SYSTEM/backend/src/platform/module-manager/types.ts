@@ -52,7 +52,8 @@ export type ModuleDatabaseDomain =
   | "kontor"
   | "meet"
   | "stueberl"
-  | "pos";
+  | "pos"
+  | "hub";
 
 export type ModuleDatabaseDeclaration =
   | {
@@ -65,6 +66,11 @@ export type ModuleDatabaseDeclaration =
       delegates: string[];
       appDelegates?: string[];
       coreDelegates?: string[];
+      schemaUpgrade?: {
+        schema: "bonni.app-schema-upgrade/v1";
+        file: string;
+        sha256: string;
+      };
     };
 
 export type ModuleRpcBodyPolicy = {
@@ -106,6 +112,7 @@ export type ModuleManifestFrontend = {
   rpcContract?: string | ModuleRpcContract;
   rpcContractPath?: string;
   publicRoot?: string;
+  localProcessing?: boolean;
   mountPath?: string;
   publicEntry?: string;
   memberEntry?: string;
@@ -148,6 +155,7 @@ export type ModuleManifest = {
   legal?: ModuleLegalPayloadDeclaration;
   metadata?: Record<string, unknown> & {
     database?: ModuleDatabaseDeclaration;
+    hubProducts?: import("../../core/hub/hub-products-contract.js").HubProductsDeclaration;
     accessProfiles?: ModuleAccessProfile[];
     nfcAccessProfiles?: string[];
     autoAssignMemberAccess?: boolean;

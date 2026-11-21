@@ -1,8 +1,9 @@
 import type { Request, Response } from "express";
 
-export function notFound(req: Request, res: Response) {
+export function notFound(_req: Request, res: Response) {
+  res.setHeader("Cache-Control", "no-store");
   res.status(404).json({
     error: "NOT_FOUND",
-    message: `Route not found: ${req.method} ${req.originalUrl}`
+    message: "Route not found"
   });
 }
