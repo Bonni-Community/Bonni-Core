@@ -1206,7 +1206,7 @@ jobs:
               healthcheck:
                 test: ["CMD", "node", "/app/backend/scripts/deployment/controller.mjs", "--health"]
                 interval: 10s
-                timeout: 10s
+                timeout: ${platform === "linux/arm/v7" ? "30s" : "10s"}
                 retries: 60
                 start_period: 90s
               stop_grace_period: 10m
@@ -1413,12 +1413,25 @@ jobs:
               if len(lines)!=len(inner):
                   raise ValueError()
               found={name:[] for name in SERVICES}
-              for line in lines:
+              backends = {name:[] for name in ('backend-active','backend-emergency')}
+              for container,line in zip(inner,lines):
                   cols=line.split()
                   if len(cols)==3 and cols[0] in found:
                       found[cols[0]].append(enum(cols[1],STATES)+'/'+enum(cols[2],HEALTH+('none',)))
+                      if cols[0] in backends:
+                          backends[cols[0]].append(container)
               for name,states in found.items():
                   tell(name+': '+(', '.join(states) if states else 'fehlt')+'; laufend und healthy='+str(states.count('running/healthy')))
+              if '-armv7' in project:
+                  for name,containers in backends.items():
+                      if len(containers)!=1:
+                          continue
+                      try:
+                          h=json.loads(call(['inspect','--format','{{json .State.Health}}',containers[0]]))
+                          for entry in (h.get('Log') or [])[-5:]:
+                              tell(name+'-Prüfung: '+history(entry))
+                      except Exception:
+                          tell(name+'-Prüfverlauf nicht verfügbar.')
           
           def main(args):
               if len(args)==3 and args[0]=='--snapshot':
