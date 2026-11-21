@@ -1291,7 +1291,170 @@ jobs:
           PLATFORMS: ${{ inputs.platforms }}
         run: |
           set -euo pipefail
-          node release/PAYLOAD/SYSTEM/backend/scripts/deployment/smoke.mjs online
+          cat > "$RUNNER_TEMP/bonni-smoke-diagnostics.py" <<'BONNI_SMOKE_DIAG'
+          """Host-only diagnostics for the signed Bonni smoke test. Never print raw Docker data."""
+          import datetime
+          import json
+          import os
+          import re
+          import shutil
+          import subprocess
+          import sys
+          import tempfile
+          import time
+          from pathlib import Path
+          
+          SERVICES = ('db', 'backend-active', 'backend-emergency', 'runtime-proxy', 'update-runner')
+          HEALTH = ('healthy', 'unhealthy', 'starting')
+          STATES = ('running', 'paused', 'restarting', 'removing', 'created', 'exited', 'dead')
+          PREFIX = '[Bonni-Startdiagnose]'
+          SOCKET_PROBE = """
+          import fs from 'node:fs/promises';
+          import {controllerStartupReady} from '/app/backend/scripts/deployment/controller-readiness.mjs';
+          let phase='unknown',project='';
+          try {
+            const s=JSON.parse(await fs.readFile(process.env.BONNI_HOST_PROJECT_ROOT+'/.bonni-deployment.json','utf8'));
+            if(['ready','initializing'].includes(s.phase))phase=s.phase;
+            if(/^bonni-[a-f0-9]{12}$/.test(s.project))project=s.project;
+          }catch{}
+          console.log(JSON.stringify({phase,project,ready:await controllerStartupReady()}));
+          """
+          # The signed smoke test invokes 'compose logs' in its error handler, before cleanup.
+          # All commands, including the original logs request, ultimately exec the real CLI.
+          SHIM = """#!/bin/sh
+          if [ "$1" = compose ] && [ "$2" = -p ] && [ "$4" = -f ] && [ "$6" = logs ]; then
+            "$BONNI_DIAG_PYTHON" -I "$BONNI_DIAG_TOOL" --snapshot "$3" "$5" || :
+          fi
+          exec "$BONNI_DIAG_DOCKER" "$@"
+          """
+          
+          def tell(message):
+              print(PREFIX, message, flush=True)
+          
+          def enum(value, allowed):
+              return value if value in allowed else 'unbekannt'
+          
+          def duration_ms(start, end):
+              try:
+                  def dt(s):
+                      return datetime.datetime.fromisoformat(s.replace('Z', '+00:00'))
+                  n = round((dt(end)-dt(start)).total_seconds()*1000)
+                  return str(n) if 0 <= n <= 86400000 else '?'
+              except (TypeError, AttributeError, OverflowError, ValueError):
+                  return '?'
+          
+          def history(entry):
+              code = entry.get('ExitCode')
+              code = str(code) if type(code) is int and -1 <= code <= 255 else '?'
+              output = entry.get('Output')
+              timed = isinstance(output, str) and output.lstrip().lower().startswith('health check exceeded timeout')
+              return ('Exit='+code+' Dauer_ms='+duration_ms(entry.get('Start'),entry.get('End'))+
+                      ' Docker-Timeout='+('gemeldet' if timed else 'nicht belegt'))
+          
+          def project_scope(project, file, env):
+              m = re.fullmatch(r'bonni-ci-([0-9]+)-([0-9]+)-(armv7|arm64|amd64)', project)
+              mode = env.get('BONNI_DIAG_MODE')
+              return bool(m and mode in ('online','offline') and
+                  (m[1],m[2]) == (env.get('GITHUB_RUN_ID'),env.get('GITHUB_RUN_ATTEMPT')) and
+                  file == 'smoke/'+m[3]+('-offline' if mode=='offline' else '')+'.yml')
+          
+          def ids(raw):
+              items=raw.split()
+              if len(items)>64 or any(not re.fullmatch('[a-f0-9]{64}', x) for x in items):
+                  raise ValueError()
+              return items
+          
+          def snapshot(project, file, env, call):
+              if not project_scope(project,file,env):
+                  return
+              tell('Momentaufnahme vor dem Aufräumen: '+file+' (kein Ersatz für die Freigabeprüfung)')
+              def containers(proj=None, service=None, workdir=None):
+                  args=['ps','-a','-q','--no-trunc']
+                  if proj:
+                      args+=['--filter','label=com.docker.compose.project='+proj]
+                  if workdir:
+                      args+=['--filter','label=com.docker.compose.project.working_dir='+workdir]
+                  if service:
+                      args+=['--filter','label=com.docker.compose.service='+service]
+                  return ids(call(args))
+              outer=containers(project,'bonni-core')
+              if len(outer)!=1:
+                  tell('Äußerer Controller nicht eindeutig auffindbar; keine anderen Projekte geprüft.')
+                  return
+              c=outer[0]
+              try:
+                  # Only health data is fetched. Raw probe output never goes to stdout or stderr.
+                  h=json.loads(call(['inspect','--format','{{json .State.Health}}',c]))
+                  tell('Äußerer Controller: '+enum(h.get('Status'),HEALTH))
+                  for entry in (h.get('Log') or [])[-5:]:
+                      tell('Controller-Prüfung: '+history(entry))
+                  if not h.get('Log'):
+                      tell('Docker hat keine einzelnen Controller-Prüfungen gespeichert.')
+              except Exception:
+                  tell('Controller-Prüfverlauf nicht verfügbar.')
+              try:
+                  data=json.loads(call(['exec',c,'node','--input-type=module','-e',SOCKET_PROBE]))
+                  project_id=data.get('project')
+                  ready='bereit' if data.get('ready') is True else ('nicht bereit' if data.get('ready') is False else 'unbekannt')
+                  tell('Controller jetzt: Installationsphase='+enum(data.get('phase'),('initializing','ready'))+
+                       ' Bereitschaftssocket='+ready)
+                  if not isinstance(project_id,str) or not re.fullmatch('bonni-[a-f0-9]{12}',project_id):
+                      raise ValueError()
+              except Exception:
+                  project_id=None
+                  tell('Controller-Identität/Socketauskunft nicht verfügbar; Dienstabgleich über das CI-Arbeitsverzeichnis.')
+              workdir='/tmp/bonni-deployment-ci-'+project.removeprefix('bonni-ci-')+'/SYSTEM/backend'
+              inner=containers(project_id,workdir=workdir)
+              if not inner and project_id is None:
+                  tell('Keine zuordenbaren Container; Dienstzustände unbekannt.')
+                  return
+              fmt='{{index .Config.Labels "com.docker.compose.service"}} {{.State.Status}} {{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}'
+              lines=call(['inspect','--format',fmt,*inner]).splitlines() if inner else []
+              if len(lines)!=len(inner):
+                  raise ValueError()
+              found={name:[] for name in SERVICES}
+              for line in lines:
+                  cols=line.split()
+                  if len(cols)==3 and cols[0] in found:
+                      found[cols[0]].append(enum(cols[1],STATES)+'/'+enum(cols[2],HEALTH+('none',)))
+              for name,states in found.items():
+                  tell(name+': '+(', '.join(states) if states else 'fehlt')+'; laufend und healthy='+str(states.count('running/healthy')))
+          
+          def main(args):
+              if len(args)==3 and args[0]=='--snapshot':
+                  end=time.monotonic()+22
+                  def call(argv):
+                      remaining=end-time.monotonic()
+                      if remaining<=0:
+                          raise TimeoutError()
+                      return subprocess.run([os.environ['BONNI_DIAG_DOCKER'],*argv],check=True,
+                          stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,timeout=min(10,remaining),
+                          encoding='utf8',errors='replace').stdout
+                  try:
+                      snapshot(args[1],args[2],os.environ,call)
+                  except Exception:
+                      tell('Diagnose unvollständig; der ursprüngliche Testfehler bleibt maßgeblich.')
+                  return 0
+              if len(args)!=2 or args[0]!='--run' or args[1] not in ('online','offline'):
+                  return 2
+              docker=shutil.which('docker')
+              if not docker:
+                  tell('Docker-CLI nicht gefunden.')
+                  return 1
+              with tempfile.TemporaryDirectory(prefix='bonni-smoke-diag-') as d:
+                  shim=Path(d,'docker')
+                  shim.write_text(SHIM,encoding='utf8')
+                  shim.chmod(0o700)
+                  env={**os.environ,'PATH':d+os.pathsep+os.environ['PATH'],'BONNI_DIAG_MODE':args[1],
+                       'BONNI_DIAG_PYTHON':sys.executable,'BONNI_DIAG_TOOL':str(Path(__file__).resolve()),
+                       'BONNI_DIAG_DOCKER':str(Path(docker).absolute())}
+                  status=subprocess.run(['node','release/PAYLOAD/SYSTEM/backend/scripts/deployment/smoke.mjs',args[1]],env=env).returncode
+                  return status if status>=0 else 128-status
+          
+          if __name__=='__main__':
+              sys.exit(main(sys.argv[1:]))
+          BONNI_SMOKE_DIAG
+          python3 -I "$RUNNER_TEMP/bonni-smoke-diagnostics.py" --run online
 
       - name: Check ARMv7 ELF files for 32K page alignment
         if: contains(inputs.platforms, 'linux/arm/v7')
@@ -1480,7 +1643,7 @@ jobs:
           }
           
           BONNI_OFFLINE_LOAD
-          node release/PAYLOAD/SYSTEM/backend/scripts/deployment/smoke.mjs offline
+          python3 -I "$RUNNER_TEMP/bonni-smoke-diagnostics.py" --run offline
 
       - name: Bundle downloads into separate architecture folders
         run: |
