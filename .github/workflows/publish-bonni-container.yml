@@ -585,12 +585,95 @@ jobs:
           import fs from 'node:fs/promises';
           import path from 'node:path';
           import {pathToFileURL} from 'node:url';
+          async function checkContainerBuildInputs(systemRoot, repair = false) {
+            const root = path.resolve(systemRoot);
+            const fail = (key, detail) => {throw Error('CONTAINER_RULE_' + key + ': ' + detail);};
+            async function read(rel, key, optional = false) {
+              const pieces = rel.split('/');
+              let current = root;
+              for (let i = 0; i < pieces.length; i++) {
+                current = path.join(current, pieces[i]);
+                const stat = await fs.lstat(current).catch(e => {if (e.code === 'ENOENT') return null; throw e;});
+                if (!stat && optional) return null;
+                if (!stat || stat.isSymbolicLink() || (i < pieces.length - 1 ? !stat.isDirectory() :
+                  !stat.isFile() || stat.nlink !== 1 || stat.size > 4 * 1024 * 1024))
+                  fail(key, 'SYSTEM/' + rel + ' fehlt oder ist keine reguläre Quelldatei.');
+              }
+              return fs.readFile(current, 'utf8');
+            }
+            async function uses(paths, literal) {
+              for (const rel of paths) if ((await read(rel,'BUILD_INPUT_SOURCE',true))?.includes(literal)) return true;
+              return false;
+            }
+            const catalog = 'backend/scripts/runtime/operation-catalog.json';
+            const backup = 'backend/scripts/backup/backup-paths.';
+            const rules = [];
+            if (await uses(['frontend/system/diagnostics/journalModel.js','frontend/system/diagnostics/moduleDiagnostics.js'], 'backend/scripts/runtime/operation-catalog.json')) {
+              const bytes = await read(catalog,'CATALOG_SOURCE');
+              let value;
+              try {value = JSON.parse(bytes);} catch {}
+              if (value?.schema !== 'bonni.diagnostic-catalog/v1' || !Array.isArray(value.codes) ||
+                  !['categories','modules','stages','workflows'].every(k => value[k] && typeof value[k] === 'object' && !Array.isArray(value[k])))
+                fail('CATALOG_INVALID','SYSTEM/' + catalog + ': ungültiger Diagnosekatalog.');
+              rules.push({stage:'frontend-build',work:'/app/SYSTEM/frontend',anchor:'COPY SYSTEM/frontend ./',
+                files:[[catalog,'/app/SYSTEM/' + catalog]]});
+            }
+            if (await uses(['backend/src/system/routes/control-api/backup/backup.service.ts',
+              'backend/src/system/routes/control-api/backup/backup-workspace.service.ts'], 'scripts/backup/backup-paths.mjs')) {
+              for (const ext of ['mjs','d.mts']) {
+                if (!(await read(backup+ext,ext === 'mjs' ? 'BACKUP_MODULE' : 'BACKUP_TYPES')).trim())
+                  fail(ext === 'mjs' ? 'BACKUP_MODULE' : 'BACKUP_TYPES','SYSTEM/'+backup+ext+' ist leer.');
+              }
+              rules.push({stage:'backend-build',work:'/app/backend',anchor:'COPY SYSTEM/backend/src ./src',
+                files:['mjs','d.mts'].map(ext=>[backup+ext,'/app/backend/scripts/backup/backup-paths.'+ext])});
+            }
+            if (!rules.length) return [];
+            const docker = 'backend/Dockerfile', ignore = 'backend/Dockerfile.dockerignore';
+            const original = await read(docker,'BUILD_INPUT_LAYOUT'), filter = await read(ignore,'BUILD_INPUT_CONTEXT');
+            const eol = original.includes('\r\n') ? '\r\n' : '\n';
+            const lines = original.split(/\r?\n/);
+            const exceptions = [];
+            for (const {stage,work,anchor,files} of rules) {
+              const indices = lines.map((s,i) => /^\s*FROM\s+/i.test(s) && s.trim().split(/\s+/).at(-2)?.toLowerCase()==='as' && s.trim().split(/\s+/).at(-1).toLowerCase()===stage ? i : -1).filter(i => i>=0);
+              const bad = () => fail('BUILD_INPUT_LAYOUT', 'backend/Dockerfile: Baustufe '+stage+' vor npm run build prüfen.');
+              if (indices.length!==1) bad();
+              const start = indices[0]+1, end = lines.findIndex((s,i)=>i>=start && /^\s*FROM\s+/i.test(s));
+              const body = lines.slice(start,end<0?undefined:end).map(s=>s.trim());
+              const builds = body.map((s,i)=>/^RUN\s+(?:\. \/opt\/bonni-engines\/environment\.sh && )?npm run build$/.test(s)?i:-1).filter(i=>i>=0);
+              if (builds.length!==1) bad();
+              const pos = builds[0], prior = body.slice(0,pos);
+              if (!prior.includes(anchor) || prior.filter(s=>/^WORKDIR\s+/i.test(s)).at(-1)!=='WORKDIR '+work) bad();
+              const missing = [];
+              for (const [src,dest] of files) {
+                const copy = 'COPY SYSTEM/'+src+' '+dest;
+                if (!prior.includes(copy)) missing.push(copy);
+                exceptions.push('!SYSTEM/'+src);
+              }
+              if (!repair && missing.length) bad();
+              lines.splice(start+pos,0,...missing);
+            }
+            // Only the exact public build inputs may be re-included, never all backend
+            // scripts. The only permitted later patterns are the signer's test exclusions.
+            const allowAfter = new Set([...exceptions,'SYSTEM/backend/tests','SYSTEM/backend/tests/**','SYSTEM/frontend/tests','SYSTEM/frontend/tests/**']);
+            const patterns = filter.split(/\r?\n/).map(s=>s.trim()).filter(s=>s&&!s.startsWith('#'));
+            const allowed = exceptions.every(ex=>{
+              const idx=patterns.lastIndexOf(ex); return idx>=0&&patterns.slice(idx+1).every(s=>allowAfter.has(s));
+            });
+            if (!allowed && !repair) fail('BUILD_INPUT_CONTEXT','backend/Dockerfile.dockerignore: benötigte Bauquellen nicht freigegeben.');
+            if (repair) {
+              if (!allowed) await fs.writeFile(path.join(root,ignore),filter.trimEnd()+eol+exceptions.join(eol)+eol);
+              const next=lines.join(eol);
+              if (next!==original) await fs.writeFile(path.join(root,docker),next);
+            }
+            return rules.map(r=>r.stage);
+          }
           async function checkContainerSourceRules({systemRoot,platforms}) {
             const supported=['linux/amd64','linux/arm64','linux/arm/v7'];
             const fail=(rule,detail)=>{throw Error('CONTAINER_RULE_'+rule+': '+detail);};
             if(!Array.isArray(platforms)||!platforms.length||new Set(platforms).size!==platforms.length
               ||platforms.some(p=>!supported.includes(p)))fail('PLATFORM','Ungültige Architektur-Auswahl.');
             const root=path.resolve(systemRoot);
+            const verifiedStages=await checkContainerBuildInputs(root);
             for(const component of ['backend','frontend']) {
               let pkg,lock;
               try {
@@ -648,7 +731,7 @@ jobs:
               }
             }
             return {schema:'bonni.container-rule-preflight/v1',status:'passed',
-              rules:['CR-005','CR-010','CR-011',...(platforms.includes('linux/arm64')?['CR-006']:[]),
+              rules:['CR-005','CR-010','CR-011',...verifiedStages.map(s=>'BUILD-INPUT:'+s),...(platforms.includes('linux/arm64')?['CR-006']:[]),
                 ...(platforms.includes('linux/arm/v7')?['CR-027']:[])],platforms,
               scope:'Quelldateien und synthetische Prozessformen; kein Laufzeit- oder Hardwaretest'};
           }
