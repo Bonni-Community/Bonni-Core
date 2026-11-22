@@ -365,7 +365,7 @@ jobs:
             const qualification = platforms.includes("linux/arm/v7")
               ? "\n\nARMv7: Start/Neustart unter Emulation und ELF-32K-Vorprüfung bestanden. Hardwaretest noch erforderlich." : "";
             const body = cleaned + "\n\n" + start + "\nGeprüfter Container: `" + env.IMAGE + "@" + env.DIGEST
-              + "`.\n\nInstallation mit Internet: Online-YML verwenden. Ohne Internet: Offline-ZIP entpacken, beide TAR-Images laden und die enthaltene Offline-YML verwenden. Prüfsummen liegen jeweils bei; eine eigene Anleitung wird beigelegt, sofern hinterlegt.\n\n" + downloads + qualification
+              + "`.\n\nGeführte NAS-Installation: Das passende Offline-ZIP entpacken, INSTALLATION.txt lesen und `bash bonnicore-install.sh` im passenden Paketordner ausführen. Der Installer erkennt die NAS-Software und richtet Bonni Core samt Datenbank und Update-Dienst ein. Apps werden nicht installiert. Alternativ steht die Online-YML für eine manuelle Installation zur Verfügung. Prüfsummen liegen jeweils bei.\n\n" + downloads + qualification
               + "\n\nAutomatische Updates: Signierte Core-Updatepakete und Update-Manifeste für " + platforms.map(containerArchitecture).join(", ") + " sind separat verfügbar, vollständig geprüft und veröffentlicht. Bonni Core ruft diese Dateien über seinen Update-Dienst ab."
               + "\n\nPassender Quellcode: [SYSTEM](" + code + ").\n" + end
               + "\n\n<!-- bonni-container-built:" + env.DIGEST + " -->\n" + resultPrefix + JSON.stringify(result) + " -->\n";
@@ -1662,7 +1662,11 @@ jobs:
         run: |
           set -euo pipefail
           python3 - <<'BONNI_BUNDLES'
-          import hashlib, json, os, pathlib, re, shutil, zipfile
+          import hashlib, json, os, pathlib, re, shutil, subprocess, zipfile
+          installer_text = "#!/usr/bin/env bash\n# Geführte Neuinstallation aus einem offiziellen Bonni-Core-Container-ZIP.\nset +x\nset -euo pipefail\numask 077\nexport LC_ALL=C\n\nfail() { printf '[Bonni] %s\\n' \"$*\" >&2; exit 1; }\nsay() { printf '[Bonni] %s\\n' \"$*\"; }\n\nroot=''\ncheck=false\nwhile (($#)); do\n  case \"$1\" in\n    --ordner) (($# >= 2)) && [[ -n \"$2\" ]] || fail 'Nach --ordner fehlt der Datenpfad.'; root=$2; shift 2 ;;\n    --pruefen) check=true; shift ;;\n    -h|--help) printf '%s\\n' 'bash bonnicore-install.sh [--ordner /absoluter/datenpfad] [--pruefen]' 'Nur für Bonni-Core-Neuinstallationen; keine Apps. Prüfen ändert keine Dateien und startet nichts.'; exit 0 ;;\n    *) fail \"Unbekannte Option: $1\" ;;\n  esac\ndone\n\ncase \"$(uname -s)\" in Linux) ;; *) fail 'Dieser Installer benötigt Linux und Docker Compose.' ;; esac\nos='Linux (NAS-Software nicht erkannt)'\nsuggestion='/var/lib/bonni-core'\nunraid_appdata='/mnt/user/appdata'\nunraid_default=\"$unraid_appdata/bonni-core/bonni-daten\"\nif [[ -f /etc/unraid-version ]]; then os='Unraid'; suggestion=$unraid_default\nelif [[ -f /etc/synoinfo.conf || -f /etc.defaults/synoinfo.conf ]]; then os='Synology DSM'; suggestion=''\nelif [[ -f /etc/config/uLinux.conf ]]; then os='QNAP QTS / QuTS hero'; suggestion=''\nelif [[ -f /etc/version ]] && grep -qi '^TrueNAS' /etc/version; then os='TrueNAS'; suggestion=''\nfi\nsay \"Erkannt: $os.\"\n\nhere=$(cd -P -- \"$(dirname -- \"${BASH_SOURCE[0]}\")\" && pwd)\ncd -- \"$here\"\nshopt -s nullglob\ntemplates=(Bonni-Core-v*-Offline.yml)\n((${#templates[@]} == 1)) || fail 'Genau eine Offline-Compose-Datei muss neben bonnicore-install.sh liegen.'\ntemplate=${templates[0]}\npattern='^Bonni-Core-v[0-9]+\\.[0-9]+\\.[0-9]+([+-][a-z])?-(AMD64|ARM64|ARMv7)-Offline\\.yml$'\n[[ \"$template\" =~ $pattern ]] || fail 'Unbekannter Compose-Dateiname.'\narchitecture=${BASH_REMATCH[2]}\ncase \"$(uname -m):$architecture\" in\n  x86_64:AMD64|aarch64:ARM64|arm64:ARM64|armv7l:ARMv7|armv8l:ARMv7) ;;\n  *) fail \"Das Paket $architecture passt nicht zur erkannten NAS-Architektur $(uname -m).\" ;;\nesac\nif [[ \"$os\" == Unraid && \"$architecture\" != AMD64 ]]; then\n  fail 'Für Unraid ist das AMD64-Paket vorgesehen.'\nfi\nstem=${template%-Offline.yml}\ncore_tar=\"$stem.tar\"\ndatabase_tar=\"$stem-Datenbank.tar\"\nfor utility in docker sha256sum grep od tr; do\n  command -v \"$utility\" >/dev/null || fail \"Benötigtes Programm fehlt: $utility.\"\ndone\ndocker_local=(docker --host unix:///var/run/docker.sock)\n\"${docker_local[@]}\" compose version >/dev/null 2>&1 || fail 'Docker Compose v2 fehlt. Bitte Docker/Container Manager zuerst bereitstellen.'\n\"${docker_local[@]}\" info >/dev/null 2>&1 || fail 'Der lokale Docker-Dienst läuft nicht oder ist für dieses Terminal nicht erreichbar.'\n\nif [[ -z \"$root\" ]]; then\n  if [[ -t 0 && \"$check\" == false ]]; then\n    read -r -p \"Datenordner [${suggestion:-absoluter NAS-Pfad erforderlich}]: \" root || fail 'Eingabe abgebrochen.'\n  fi\n  root=${root:-$suggestion}\nfi\n[[ \"$root\" =~ ^(/[a-zA-Z0-9._-]+){2,}$ && \"$root/\" != *'/./'* && \"$root/\" != *'/../'* && \"$root\" != \"$here\" ]] || fail 'Bitte einen absoluten Datenordner ohne Leerzeichen angeben (gegebenenfalls mit --ordner).'\ncase \"$root\" in /bin/*|/boot/*|/dev/*|/etc/*|/proc/*|/sys/*|/usr/*|/var/lib/docker|/var/lib/docker/*)\n  fail 'Dieser System- oder Docker-Pfad ist nicht als Bonni-Datenordner erlaubt.' ;;\nesac\nif [[ \"$os\" == Unraid && \"$root\" == /mnt/user/* && ! -d \"$unraid_appdata\" ]]; then fail 'Der Unraid-Share appdata ist nicht erreichbar.'; fi\ntarget_parent=${root%/*}\ncreate_unraid_parent=false\nif [[ \"$os\" == Unraid && \"$root\" == \"$unraid_default\" && ! -d \"$target_parent\" ]]; then\n  [[ -d \"$unraid_appdata\" ]] || fail 'Der Unraid-Share appdata ist nicht erreichbar.'\n  create_unraid_parent=true\nfi\nparent=$root\nwhile [[ -n \"$parent\" ]]; do\n  [[ ! -L \"$parent\" ]] || fail 'Der Datenpfad darf keine Symlinks enthalten. Bitte den echten Speicherpfad angeben.'\n  [[ ! -e \"$parent\" || -d \"$parent\" ]] || fail 'Der Datenpfad enthält eine Datei.'\n  parent=${parent%/*}\ndone\n[[ -d \"$target_parent\" || \"$create_unraid_parent\" == true ]] || fail 'Bitte zuerst den übergeordneten Ordner auf dem richtigen NAS-Speicher anlegen.'\nconfig=\"$root.bonni-compose.yml\"\n[[ ! -e \"$config\" && ! -L \"$config\" ]] || fail \"Es gibt bereits eine Installationskonfiguration: $config. Sie wird nicht überschrieben.\"\nrequire_empty_root() {\n  local -a entries\n  if [[ -d \"$root\" ]]; then\n    [[ -r \"$root\" && -x \"$root\" && ! -L \"$root\" ]] || fail 'Der Datenordner konnte nicht sicher geprüft werden.'\n    shopt -s dotglob\n    entries=(\"$root\"/*)\n    shopt -u dotglob\n    ((${#entries[@]} == 0)) || fail 'Der Datenordner ist bereits belegt. Vorhandene Installationen werden nicht verändert.'\n  fi\n}\nrequire_empty_root\n\nfor input in \"$template\" \"$core_tar\" \"$database_tar\"; do\n  check_file=\"$input.sha256\"\n  [[ -f \"$input\" && ! -L \"$input\" && -f \"$check_file\" && ! -L \"$check_file\" ]] || fail \"Paketdatei oder Prüfsumme fehlt: $input.\"\n  hash_line=$(sha256sum -- \"$input\") || fail \"Prüfsumme nicht lesbar: $input.\"\n  [[ \"$(<\"$check_file\")\" == \"$hash_line\" ]] || fail \"Prüfsumme stimmt nicht: $input.\"\ndone\nsource_yaml=$(<\"$template\")\nfor marker in 'x-bonni-root: &bonni_root /var/lib/bonni-core' \\\n  'BITTE_EIGENES_DATENBANKKENNWORT_EINTRAGEN' 'BITTE_EIGENEN_ZUFAELLIGEN_MASTER_KEY_EINTRAGEN' \\\n  'BITTE_EIGENES_ADMIN_KENNWORT_EINTRAGEN' 'BONNI_OFFLINE: \"true\"'; do\n  [[ \"$source_yaml\" == *\"$marker\"* ]] || fail 'Die Compose-Vorlage passt nicht zu diesem Installer.'\ndone\nsay \"Paket und Prüfsummen in Ordnung: $architecture. Ziel: $root.\"\nif [[ \"$create_unraid_parent\" == true ]]; then say \"Wird bei der Installation neu angelegt: $target_parent.\"; fi\nif [[ \"$check\" == true ]]; then exit 0; fi\n\nport=4000\nif command -v ss >/dev/null; then\n  listeners=$(ss -H -ltn) || fail 'Offene TCP-Ports konnten nicht geprüft werden.'\n  if grep -Eq '[[:space:]][^[:space:]]*:(4000|4001|4199)[[:space:]]' <<<\"$listeners\"; then\n    fail 'Port 4000, 4001 oder 4199 ist belegt. Bestehende Dienste werden nicht automatisch gestoppt.'\n  fi\nfi\n[[ -t 0 ]] || fail 'Für die Erstinstallation bitte ein interaktives NAS-Terminal öffnen.'\nread -rs -p 'Neues Bonni-Admin-Passwort (mindestens 16 Zeichen): ' admin; printf '\\n'\nread -rs -p 'Admin-Passwort wiederholen: ' confirm; printf '\\n'\nallowed='^[a-zA-Z0-9._@%+!:=-]+$'\n[[ \"$admin\" == \"$confirm\" && ${#admin} -ge 16 && ${#admin} -le 512 && \"$admin\" =~ $allowed && \"$admin\" =~ [A-Z] && \"$admin\" =~ [a-z] && \"$admin\" =~ [0-9] && \"$admin\" =~ [-._@%+!:=] ]] || fail 'Passwörter müssen übereinstimmen und Groß- und Kleinbuchstaben, eine Zahl und ein Sonderzeichen aus ._@%+!:=- enthalten.'\nif grep -Eqi 'BITTE_|change.?me|replace|example|default|password|postgres|placeholder' <<<\"$admin\"; then fail 'Bitte ein individuelles Admin-Passwort ohne Platzhalter verwenden.'; fi\nunset confirm\nsay 'Eingerichtet werden Bonni Core, seine Datenbank und der Core-Update-Dienst. Keine Apps.'\nread -r -p 'Bonni Core jetzt neu installieren und starten? [j/N] ' confirm\n[[ \"$confirm\" == j || \"$confirm\" == J ]] || { say 'Abgebrochen. Es wurde nichts installiert.'; exit 0; }\n\nrandom_hex() { od -An -N32 -v -tx1 /dev/urandom | tr -d '[:space:]'; }\ndatabase_secret=$(random_hex)\nmaster_secret=$(random_hex)\n[[ ${#database_secret} == 64 && ${#master_secret} == 64 ]] || fail 'Zufallsschlüssel konnten nicht erzeugt werden.'\nyaml=${source_yaml/'x-bonni-root: &bonni_root /var/lib/bonni-core'/\"x-bonni-root: &bonni_root $root\"}\nyaml=${yaml/BITTE_EIGENES_DATENBANKKENNWORT_EINTRAGEN/\"$database_secret\"}\nyaml=${yaml/BITTE_EIGENEN_ZUFAELLIGEN_MASTER_KEY_EINTRAGEN/\"$master_secret\"}\nyaml=${yaml/BITTE_EIGENES_ADMIN_KENNWORT_EINTRAGEN/\"$admin\"}\nunset database_secret master_secret admin\nproject_hash=$(printf '%s' \"$root\" | sha256sum)\nproject=\"bonni-install-${project_hash:0:12}\"\ncompose=(\"${docker_local[@]}\" compose --project-directory \"$root\" --project-name \"$project\")\n# Never print the configuration with its secrets.\n\"${docker_local[@]}\" compose -f - config -q <<<\"$yaml\" || fail 'Docker Compose lehnt die Installationskonfiguration ab.'\nif [[ \"$create_unraid_parent\" == true ]]; then\n  [[ -d \"$unraid_appdata\" && ! -L \"$unraid_appdata\" ]] || fail 'Der Unraid-Share appdata ist nicht erreichbar.'\n  if [[ ! -d \"$target_parent\" ]]; then mkdir -- \"$target_parent\"; fi\nfi\n[[ -d \"$target_parent\" && ! -L \"$target_parent\" ]] || fail 'Der Zielordner ist kein direkter Ordner.'\nif [[ ! -d \"$root\" ]]; then mkdir -- \"$root\"; fi\nrequire_empty_root\n# The controller requires an empty data directory on first startup.\n(set -o noclobber; printf '%s\\n' \"$yaml\" > \"$config\") || fail 'Konfiguration konnte nicht sicher neu angelegt werden.'\nunset yaml\nsay 'Importiere die geprüften lokalen Core- und Datenbank-Images …'\n\"${docker_local[@]}\" image load -i \"$core_tar\"\n\"${docker_local[@]}\" image load -i \"$database_tar\"\n\"${compose[@]}\" -f \"$config\" up -d --pull never\nsay \"Start angestoßen. Öffne http://<NAS-IP>:$port, sobald Bonni bereit ist.\"\nsay \"Konfiguration: $config (enthält Zugangsdaten, nicht teilen).\"\n"
+          installer_bytes = installer_text.encode('utf-8')
+          installer_filename = 'bonnicore-install.sh'
+          subprocess.run(['bash', '-n'], input=installer_bytes, check=True)
           root = pathlib.Path('compose-assets')
           instruction_file = pathlib.Path('release/PAYLOAD/SYSTEM/backend/deploy/bonni-container-instructions.json')
           instructions = {}
@@ -1712,10 +1716,12 @@ jobs:
               instruction_text = instructions.get(instruction_key, '')
               instruction_member = folder + '/Anleitung.txt'
               members = []
+              extra_members = {}
               for variant in variants:
                   stem = 'Bonni-Core-v' + version + '-' + variant['architecture']
                   names = [stem + suffix for suffix in ('.yml', '.yml.sha256', '-Offline.yml', '-Offline.yml.sha256', '.tar', '.tar.sha256', '-Datenbank.tar', '-Datenbank.tar.sha256')]
                   directory = folder + '/' + (variant['subfolder'] + '/' if variant['subfolder'] else '')
+                  extra_members[directory + installer_filename] = (installer_bytes, 0o100755)
                   for name in names:
                       path = root / name
                       if path.is_symlink() or not path.is_file() or path.stat().st_size == 0:
@@ -1726,6 +1732,17 @@ jobs:
                       expected = digest(root / name) + '  ' + name + '\n'
                       if (root / (name + '.sha256')).read_text() != expected:
                           raise ValueError('BONNI_BUNDLE_CHECKSUM_MISMATCH: ' + name)
+              installer_commands = '\n'.join('  bash ' + (v['subfolder'] + '/' if v['subfolder'] else '') + installer_filename for v in variants)
+              extra_members[folder + '/INSTALLATION.txt'] = (('Bonni Core – geführte Neuinstallation\n\n'
+                  'Das ZIP vollständig entpacken und auf dem NAS im entpackten Paketordner das Terminal öffnen.\n'
+                  'Den passenden Installer bewusst starten:\n' + installer_commands + '\n\n'
+                  'Der Installer erkennt die NAS-Software und prüft Architektur, Docker Compose und die Paketdateien.\n'
+                  'Auf Unraid ist /mnt/user/appdata/bonni-core/bonni-daten der Vorschlag. Ist nur der Share appdata vorhanden, legt der Installer die beiden Unterordner nach Bestätigung an. Auf anderen NAS den echten persistenten Pfad angeben.\n'
+                  'Für einen reinen Test --pruefen an den Befehl anhängen; falls nötig zusätzlich --ordner /absoluter/datenpfad.\n'
+                  'Nur Bonni Core, die zugehörige Datenbank und der Core-Update-Dienst werden eingerichtet. Apps werden nicht installiert.\n'
+                  'Nur für Neuinstallationen: Vorhandene Datenordner werden nicht überschrieben.\n'
+                  'Nur ZIPs aus offiziellen Bonni-Core-Releases verwenden, bevorzugt vor dem Entpacken die veröffentlichte ZIP-Prüfsumme vergleichen.\n'
+                  'Start erfolgt erst nach Bestätigung im Terminal; Container und Zugangsdaten bleiben auf dem eigenen NAS.\n').encode('utf-8'), 0o100644)
               # Only explicit, documented placeholders are expanded, once. No code evaluation.
               paths = lambda suffix: '\n'.join((v['subfolder'] + '/' if v['subfolder'] else '') + 'Bonni-Core-v' + version + '-' + v['architecture'] + suffix for v in variants)
               tokens = {
@@ -1733,7 +1750,7 @@ jobs:
                   'ARCHITEKTUR': 'ARMv7 (32 Bit) und ARM64 (64 Bit)' if raspi else arch,
                   'YAML_DATEI': paths('.yml'), 'OFFLINE_YAML_DATEI': paths('-Offline.yml'),
                   'TAR_DATEI': paths('.tar'), 'DATENBANK_TAR_DATEI': paths('-Datenbank.tar'),
-                  'DATEIEN': '\n'.join(member[len(folder)+1:] for name, member in members),
+                  'DATEIEN': '\n'.join(member[len(folder)+1:] for member in [*(member for _, member in members), *extra_members]),
               }
               instruction_text = re.sub(r'\{\{([A-Z_]+)\}\}', lambda m: tokens.get(m.group(1), m.group(0)), instruction_text)
               instruction_bytes = instruction_text.encode('utf-8') if instruction_text.strip() else None
@@ -1751,6 +1768,12 @@ jobs:
                           info.compress_type = zipfile.ZIP_DEFLATED
                           with open(root / name, 'rb') as source, archive.open(info, 'w', force_zip64=True) as destination:
                               shutil.copyfileobj(source, destination, length=1024*1024)
+                      for member, (data, mode) in extra_members.items():
+                          info = zipfile.ZipInfo(member, date_time=(1980,1,1,0,0,0))
+                          info.create_system = 3
+                          info.external_attr = mode << 16
+                          info.compress_type = zipfile.ZIP_DEFLATED
+                          archive.writestr(info, data)
                       if instruction_bytes is not None:
                           info = zipfile.ZipInfo(instruction_member, date_time=(1980,1,1,0,0,0))
                           info.create_system = 3
@@ -1758,11 +1781,14 @@ jobs:
                           info.compress_type = zipfile.ZIP_DEFLATED
                           archive.writestr(info, instruction_bytes)
                   with zipfile.ZipFile(temporary) as archive:
-                      expected_members = [member for name, member in members] + ([instruction_member] if instruction_bytes is not None else [])
+                      expected_members = [member for name, member in members] + list(extra_members) + ([instruction_member] if instruction_bytes is not None else [])
                       if archive.namelist() != expected_members or archive.testzip() is not None:
                           raise ValueError('BONNI_BUNDLE_VERIFICATION_FAILED')
                       if instruction_bytes is not None and archive.read(instruction_member) != instruction_bytes:
                           raise ValueError('BONNI_INSTRUCTIONS_CONTENT_MISMATCH')
+                      for member, (data, mode) in extra_members.items():
+                          if archive.read(member) != data or archive.getinfo(member).external_attr >> 16 != mode:
+                              raise ValueError('BONNI_INSTALLER_CONTENT_MISMATCH: ' + member)
                       for name, member in members:
                           with archive.open(member) as source:
                               if hashlib.file_digest(source, 'sha256').hexdigest() != digest(root / name):
