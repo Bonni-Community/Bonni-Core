@@ -1,4 +1,4 @@
-# Bonni Core v0.1.21 – ARMv7
+# Bonni Core v0.1.21 – AMD64
 # Vor dem ersten Start die drei BITTE-Werte durch eigene Werte ersetzen.
 # DB: mindestens 24 Zeichen; MASTER_KEY: mindestens 43 Zeichen.
 # Admin: mindestens 16 Zeichen, Groß-/Kleinbuchstaben, Zahl und Sonderzeichen.
@@ -12,12 +12,12 @@ services:
   # Image-Referenz für Download/Offline-Export; der Controller startet die DB.
   db:
     profiles: [bonni-images]
-    image: ghcr.io/bonni-community/bonni-core-database:0.1.21-armv7
-    platform: linux/arm/v7
+    image: postgres:16-alpine@sha256:7a396fd264a2067788b6551122b50f162bf6136312c7fc9d74381cb92c648382
+    platform: linux/amd64
 
   bonni-core:
     image: ghcr.io/bonni-community/bonni-core:0.1.21
-    platform: linux/arm/v7
+    platform: linux/amd64
     init: true
     restart: unless-stopped
     pid: host
@@ -25,8 +25,8 @@ services:
     environment:
       BONNI_HOST_PROJECT_ROOT: *bonni_root
       BONNI_INITIAL_IMAGE: ghcr.io/bonni-community/bonni-core:0.1.21
-      BONNI_DATABASE_IMAGE: ghcr.io/bonni-community/bonni-core-database:0.1.21-armv7
-      BONNI_PLATFORM: linux/arm/v7
+      BONNI_DATABASE_IMAGE: postgres:16-alpine@sha256:7a396fd264a2067788b6551122b50f162bf6136312c7fc9d74381cb92c648382
+      BONNI_PLATFORM: linux/amd64
       BONNI_OFFLINE: "false"
       BONNI_HTTP_PORT: "4000"
       POSTGRES_PASSWORD: "BITTE_EIGENES_DATENBANKKENNWORT_EINTRAGEN"
@@ -44,7 +44,7 @@ services:
     healthcheck:
       test: ["CMD", "node", "/app/backend/scripts/deployment/controller.mjs", "--health"]
       interval: 10s
-      timeout: 30s
+      timeout: 10s
       retries: 60
       start_period: 90s
     stop_grace_period: 10m
