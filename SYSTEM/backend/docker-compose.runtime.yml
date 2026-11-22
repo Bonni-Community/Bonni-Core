@@ -127,6 +127,7 @@ services:
     security_opt:
       - no-new-privileges:true
     labels:
+      folder.view3: "Bonni Core"
       org.bonni.runtime.managed: "true"
       org.bonni.runtime.role: update-secret-init
 
@@ -151,6 +152,7 @@ services:
     security_opt:
       - no-new-privileges:true
     labels:
+      folder.view3: "Bonni Core"
       org.bonni.runtime.managed: "true"
       org.bonni.runtime.role: database
 
@@ -176,6 +178,7 @@ services:
     security_opt:
       - no-new-privileges:true
     labels:
+      folder.view3: "Bonni Core"
       org.bonni.runtime.managed: "true"
       org.bonni.runtime.role: bootstrap
 
@@ -223,6 +226,7 @@ services:
     security_opt:
       - no-new-privileges:true
     labels:
+      folder.view3: "Bonni Core"
       org.bonni.runtime.managed: "true"
       org.bonni.runtime.role: active
 
@@ -282,6 +286,7 @@ services:
     security_opt:
       - no-new-privileges:true
     labels:
+      folder.view3: "Bonni Core"
       org.bonni.runtime.managed: "true"
       org.bonni.runtime.role: emergency
 
@@ -307,6 +312,7 @@ services:
     security_opt:
       - no-new-privileges:true
     labels:
+      folder.view3: "Bonni Core"
       org.bonni.runtime.managed: "true"
       org.bonni.runtime.role: candidate-database
       org.bonni.runtime.disposable: "true"
@@ -345,6 +351,7 @@ services:
     security_opt:
       - no-new-privileges:true
     labels:
+      folder.view3: "Bonni Core"
       org.bonni.runtime.managed: "true"
       org.bonni.runtime.role: candidate-bootstrap
       org.bonni.runtime.disposable: "true"
@@ -373,6 +380,7 @@ services:
     security_opt:
       - no-new-privileges:true
     labels:
+      folder.view3: "Bonni Core"
       org.bonni.runtime.managed: "true"
       org.bonni.runtime.role: candidate-migrator
       org.bonni.runtime.disposable: "true"
@@ -425,6 +433,7 @@ services:
     security_opt:
       - no-new-privileges:true
     labels:
+      folder.view3: "Bonni Core"
       org.bonni.runtime.managed: "true"
       org.bonni.runtime.role: candidate
       org.bonni.runtime.disposable: "true"
@@ -459,6 +468,7 @@ services:
     security_opt:
       - no-new-privileges:true
     labels:
+      folder.view3: "Bonni Core"
       org.bonni.runtime.managed: "true"
       org.bonni.runtime.role: database-migrator
 
@@ -498,6 +508,7 @@ services:
     security_opt:
       - no-new-privileges:true
     labels:
+      folder.view3: "Bonni Core"
       org.bonni.runtime.managed: "true"
       org.bonni.runtime.role: update-snapshot-create
 
@@ -540,6 +551,7 @@ services:
     security_opt:
       - no-new-privileges:true
     labels:
+      folder.view3: "Bonni Core"
       org.bonni.runtime.managed: "true"
       org.bonni.runtime.role: update-snapshot-restore
 
@@ -566,6 +578,7 @@ services:
     security_opt:
       - no-new-privileges:true
     labels:
+      folder.view3: "Bonni Core"
       org.bonni.runtime.managed: "true"
       org.bonni.runtime.role: update-snapshot-cleanup
 
@@ -599,6 +612,7 @@ services:
     security_opt:
       - no-new-privileges:true
     labels:
+      folder.view3: "Bonni Core"
       org.bonni.runtime.managed: "true"
       org.bonni.runtime.role: proxy
 
@@ -675,6 +689,7 @@ services:
     security_opt:
       - no-new-privileges:true
     labels:
+      folder.view3: "Bonni Core"
       org.bonni.component: update-runner
       org.bonni.runtime.scope: compose-project
 

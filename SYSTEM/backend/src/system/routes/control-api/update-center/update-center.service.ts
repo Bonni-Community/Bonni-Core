@@ -193,10 +193,13 @@ function cachedManifestPath() {
   return path.join(updateCenterRoot(), "available-manifest.json");
 }
 
-function localManifestPath() {
-  return process.env.BONNI_UPDATE_MANIFEST_FILE
-    ? path.resolve(process.env.BONNI_UPDATE_MANIFEST_FILE)
-    : path.join(localReleaseRoot(), "manifest.json");
+function localManifestPaths() {
+  if (process.env.BONNI_UPDATE_MANIFEST_FILE) return [path.resolve(process.env.BONNI_UPDATE_MANIFEST_FILE)];
+  const root = localReleaseRoot();
+  const label = process.platform === "linux"
+    ? ({ x64: "AMD64", arm64: "ARM64", arm: "ARMv7" } as Record<string, string>)[process.arch]
+    : undefined;
+  return label ? [path.join(root, `manifest-offline-${label}.json`)] : [];
 }
 
 function runnerHeartbeatPath() {
@@ -352,6 +355,12 @@ async function readResponseBytesLimited(response: Response, maximumBytes: number
 
 async function trustedReleaseKeys(manifest: ReleaseManifest) {
   if (!manifest.signature) return undefined;
+  if (manifest.buildAuthorization) {
+    // GitHub artifacts are signed by a scoped build key. Trust stays with the
+    // enrolled issuers in the same configured key store used by the runner.
+    const { loadTrustedReleaseKeys } = await import("../../../../../src/system/update-runner/trusted-keys.mjs");
+    return loadTrustedReleaseKeys(process.env, getProductRoot());
+  }
   const keyId = manifest.signature.keyId;
   const keyDirectory = String(process.env.BONNI_UPDATE_TRUSTED_KEYS_DIR || "").trim();
   const keyPath = keyDirectory
@@ -384,7 +393,7 @@ async function verifyManifest(value: unknown) {
 
 async function loadLocalOrCachedManifest(): Promise<SelectedRelease | null> {
   const candidates = [
-    { manifestFile: localManifestPath(), sourceLocation: localManifestPath(), local: true },
+    ...localManifestPaths().map(file => ({ manifestFile: file, sourceLocation: file, local: true })),
     {
       manifestFile: cachedManifestPath(),
       sourceLocation: String(process.env.BONNI_UPDATE_MANIFEST_URL || "").trim() || "",
@@ -393,11 +402,22 @@ async function loadLocalOrCachedManifest(): Promise<SelectedRelease | null> {
   ];
   const loaded: SelectedRelease[] = [];
   for (const candidate of candidates) {
-    const value = await readJson<unknown>(candidate.manifestFile);
-    if (!value) continue;
     try {
+      if (candidate.local) {
+        const state = await fs.lstat(candidate.manifestFile);
+        if (!state.isFile() || state.isSymbolicLink() || state.size > MAXIMUM_MANIFEST_BYTES) continue;
+      }
+      const value = await readJson<unknown>(candidate.manifestFile);
+      if (!value) continue;
       const manifest = await verifyManifest(value);
-      if (candidate.local && manifest.artifact.source.kind !== "local") continue;
+      if (candidate.local) {
+        if (manifest.artifact.source.kind !== "local") continue;
+        await resolveSecureLocalReleaseArtifact({
+          manifestFile: candidate.manifestFile,
+          artifactPath: manifest.artifact.source.path,
+          allowedRoot: localReleaseRoot(),
+        });
+      }
       if (!candidate.local && manifest.artifact.source.kind !== "https") continue;
       const sourceLocation = candidate.sourceLocation
         || (manifest.artifact.source.kind === "https" ? manifest.artifact.source.url : candidate.manifestFile);
