@@ -26,7 +26,7 @@ export function resolveBootstrapAdminPassword(
   const validation = validateExactLocalPassword(configuredPassword);
   if (
     !validation.ok
-    || validation.characters < 16
+    || validation.characters < 8
     || !/[a-z]/.test(configuredPassword)
     || !/[A-Z]/.test(configuredPassword)
     || !/[0-9]/.test(configuredPassword)
