@@ -162,24 +162,36 @@ jobs:
               return ["-Offline.yml", "-Offline.yml.sha256", ".tar", ".tar.sha256", "-Datenbank.tar", "-Datenbank.tar.sha256"].map(suffix => base + suffix);
             });
           }
-          async function readContainerUpdateAssets({env = process.env, verifyManifest} = {}) {
+          async function readContainerUpdateAssets({env = process.env, verifyManifest, cwd = process.cwd()} = {}) {
             const fs = await import("node:fs/promises"), path = await import("node:path");
             const {pathToFileURL} = await import("node:url");
-            const verify = verifyManifest || (await import(pathToFileURL(path.resolve("release/PAYLOAD/SYSTEM/backend/dist/system/update-release/index.js")).href)).verifyReleaseManifest;
+            const {isDeepStrictEqual} = await import("node:util");
+            const verify = verifyManifest || (await import(pathToFileURL(path.resolve(cwd, "release/PAYLOAD/SYSTEM/backend/dist/system/update-release/index.js")).href)).verifyReleaseManifest;
             const version = env.VERSION.replace(/-([a-z])$/, "+$1");
             if (env.GITHUB_REPOSITORY?.toLowerCase() !== "bonni-community/bonni-core") throw Error("BONNI_UPDATE_REPOSITORY_INVALID");
             const platforms = canonicalContainerPlatforms(env.PLATFORMS.split(","));
-            const root = path.resolve(env.BONNI_UPDATE_ASSET_DIRECTORY || "update-assets");
-            const trust = JSON.parse(await fs.readFile("release/PAYLOAD/SYSTEM/APP-INSTALL-TRUST.json", "utf8"));
+            const root = path.resolve(cwd, env.BONNI_UPDATE_ASSET_DIRECTORY || "update-assets");
+            const trust = JSON.parse(await fs.readFile(path.resolve(cwd, "release/PAYLOAD/SYSTEM/APP-INSTALL-TRUST.json"), "utf8"));
             if (trust.schema !== "bonni.app-install-trust/v1" || !Array.isArray(trust.keys)) throw Error("BONNI_UPDATE_TRUST_INVALID");
             const trustedKeys = Object.fromEntries(trust.keys.filter(k => k.scopes?.includes("RELEASE")).map(k => [k.keyId, k.publicKey]));
             const archives = [], manifests = [];
-            for (const platform of platforms) {
-              const arch = containerArchitecture(platform), dir = path.join(root, arch), name = `manifest-${arch}.json`;
-              const file = path.join(dir, name), stat = await fs.lstat(file);
+            async function readVerified(file) {
+              const stat = await fs.lstat(file);
               if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 1024 * 1024) throw Error("BONNI_UPDATE_MANIFEST_FILE_INVALID");
               const manifest = JSON.parse(await fs.readFile(file, "utf8"));
-              verify(manifest, {trustedKeys, runnerVersion: "0.5.0", nodeEnv: "production", expectedChannel: "stable"});
+              const result = verify(manifest, {trustedKeys, runnerVersion: "0.5.0", nodeEnv: "production", expectedChannel: "stable"});
+              if (result.verified !== true) throw Error("BONNI_UPDATE_MANIFEST_NOT_VERIFIED");
+              return result.manifest;
+            }
+            function binding(manifest) {
+              const {signature, artifact: {source, ...archive}, ...release} = manifest;
+              return {...release, artifact: archive, signingKeyId: signature.keyId};
+            }
+            for (const platform of platforms) {
+              const arch = containerArchitecture(platform), dir = path.join(root, arch), name = `manifest-${arch}.json`;
+              const offlineName = `manifest-offline-${arch}.json`;
+              const file = path.join(dir, name), offlineFile = path.join(dir, offlineName);
+              const [manifest, offline] = await Promise.all([readVerified(file), readVerified(offlineFile)]);
               const identity = manifest.artifact?.imageIdentity;
               const actualPlatform = identity?.platform?.os + "/" + identity?.platform?.architecture + (identity?.platform?.architecture === "arm" ? "/" + identity.platform.variant : "");
               const archiveName = `Bonni-Core-Update-v${env.VERSION}-${arch}-${manifest.artifact?.sha256}.oci`;
@@ -187,9 +199,11 @@ jobs:
               if (manifest.buildAuthorization?.buildCertificate?.sourceSha256 !== env.ASSET_SHA256 || manifest.minimumRunnerVersion !== "0.5.0"
                 || manifest.version !== version || actualPlatform !== platform || !/^[a-f0-9]{64}$/.test(manifest.artifact?.sha256 || "")
                 || manifest.artifact?.source?.kind !== "https" || manifest.artifact.source.url !== url
-                || (await fs.readdir(dir)).sort().join("\n") !== [archiveName, name].sort().join("\n")) throw Error("BONNI_UPDATE_ASSET_PAIR_INVALID");
+                || offline.artifact.source.kind !== "local" || offline.artifact.source.path !== archiveName
+                || !isDeepStrictEqual(binding(manifest), binding(offline))
+                || (await fs.readdir(dir)).sort().join("\n") !== [archiveName, name, offlineName].sort().join("\n")) throw Error("BONNI_UPDATE_ASSET_PAIR_INVALID");
               archives.push({name: archiveName, file: path.join(dir, archiveName), expectedDigest: "sha256:" + manifest.artifact.sha256, expectedSize: manifest.artifact.sizeBytes, immutable: true});
-              manifests.push({name, file});
+              manifests.push({name, file}, {name: offlineName, file: offlineFile});
             }
             return [...archives, ...manifests]; // all archives become available before any manifest
           }
@@ -327,7 +341,7 @@ jobs:
             });
             if (!downloadsComplete(current)) throw Error("BONNI_RELEASE_DOWNLOADS_INCOMPLETE");
             const result = {sourceFingerprint: plan.sourceFingerprint, sourceSha256: sha, sourceCommit: env.SOURCE_COMMIT,
-              imageDigest: env.DIGEST, signedCoreUpdates: true, downloadLayout: "offline-zip-online-yml/v1",
+              imageDigest: env.DIGEST, signedCoreUpdates: true, offlineUpdateManifests: true, downloadLayout: "offline-zip-online-yml/v1",
               assets: local.map(({name, size, digest}) => ({name, size, digest}))};
             const latest = await validate();
             const superseded = new Set(containerSupersededDownloadNames(coreVersion, platforms));
@@ -362,11 +376,20 @@ jobs:
             const downloads = containerBundles(coreVersion, platforms).map(bundle =>
               "- Offline-ZIP: " + link(bundle.filename)).concat(platforms.map(platform =>
                 "- Online-YML: " + link("Bonni-Core-v" + coreVersion + "-" + containerArchitecture(platform) + ".yml"))).join("\n");
+            const offlineDownloads = platforms.map(platform => {
+              const arch = containerArchitecture(platform);
+              const archive = updates.find(file => file.immutable && file.name.startsWith(`Bonni-Core-Update-v${version}-${arch}-`));
+              return "- " + arch + ": " + link(`manifest-offline-${arch}.json`) + " und " + link(archive.name);
+            }).join("\n");
             const qualification = platforms.includes("linux/arm/v7")
               ? "\n\nARMv7: Start/Neustart unter Emulation und ELF-32K-Vorprüfung bestanden. Hardwaretest noch erforderlich." : "";
             const body = cleaned + "\n\n" + start + "\nGeprüfter Container: `" + env.IMAGE + "@" + env.DIGEST
               + "`.\n\nGeführte NAS-Installation: Das passende Offline-ZIP entpacken, INSTALLATION.txt lesen und `bash bonnicore-install.sh` im passenden Paketordner ausführen. Der Installer erkennt die NAS-Software und richtet Bonni Core samt Datenbank und Update-Dienst ein. Apps werden nicht installiert. Alternativ steht die Online-YML für eine manuelle Installation zur Verfügung. Prüfsummen liegen jeweils bei.\n\n" + downloads + qualification
-              + "\n\nAutomatische Updates: Signierte Core-Updatepakete und Update-Manifeste für " + platforms.map(containerArchitecture).join(", ") + " sind separat verfügbar, vollständig geprüft und veröffentlicht. Bonni Core ruft diese Dateien über seinen Update-Dienst ab."
+              + "\n\nBonni Core aktualisieren (bestehende Installation):"
+              + "\n\nMit Internet: Im Control Center unter Updates prüfen. Bonni lädt `manifest-<Architektur>.json` und das signierte Update direkt von GitHub."
+              + "\n\nOhne Internet: Für die passende Architektur das Offline-Manifest und dieselbe `.oci`-Datei am PC herunterladen:"
+              + "\n\n" + offlineDownloads
+              + "\n\nBeide Dateien unverändert per USB-Stick oder Freigabe in `UPDATE/core/offline` im Bonni-Datenordner kopieren. Dann im Control Center unter Updates erneut prüfen."
               + "\n\nPassender Quellcode: [SYSTEM](" + code + ").\n" + end
               + "\n\n<!-- bonni-container-built:" + env.DIGEST + " -->\n" + resultPrefix + JSON.stringify(result) + " -->\n";
             await api(releasePath, {method: "PATCH", json: {name: "Bonni Core v" + coreVersion, body, draft: false}});
@@ -1675,6 +1698,7 @@ jobs:
               return source.read_bytes()
           installer_bytes = read_installer_member(installer_filename)
           browser_setup = {name: read_installer_member(name) for name in ('bonnicore-setup.html', 'bonnicore-setup.mjs')}
+          unraid_icon = read_installer_member('bonni-unraid.png')
           subprocess.run(['bash', '-n'], input=installer_bytes, check=True)
           root = pathlib.Path('compose-assets')
           instruction_file = deployment / 'bonni-container-instructions.json'
@@ -1733,6 +1757,8 @@ jobs:
                   extra_members[directory + installer_filename] = (installer_bytes, 0o100755)
                   for setup_name, setup_content in browser_setup.items():
                       extra_members[directory + setup_name] = (setup_content, 0o100644)
+                  if variant['architecture'] == 'AMD64':
+                      extra_members[directory + 'bonni-unraid.png'] = (unraid_icon, 0o100644)
                   for name in names:
                       path = root / name
                       if path.is_symlink() or not path.is_file() or path.stat().st_size == 0:
@@ -1744,19 +1770,32 @@ jobs:
                       if (root / (name + '.sha256')).read_text() != expected:
                           raise ValueError('BONNI_BUNDLE_CHECKSUM_MISMATCH: ' + name)
               installer_commands = '\n'.join('  bash ' + (v['subfolder'] + '/' if v['subfolder'] else '') + installer_filename for v in variants)
-              extra_members[folder + '/INSTALLATION.txt'] = (('Bonni Core – geführte Neuinstallation\n\n'
-                  'Das ZIP vollständig entpacken und auf dem NAS im entpackten Paketordner das Terminal öffnen.\n'
-                  'Den passenden Installer bewusst starten:\n' + installer_commands + '\n\n'
-                  'Für den Browser-Assistenten --browser an den passenden Befehl anhängen. Er läuft nur vorübergehend auf 127.0.0.1 des NAS.\n'
+              browser_commands = '\n'.join(command + ' --browser' for command in installer_commands.splitlines())
+              terminal_commands = '\n'.join(command + ' --terminal' for command in installer_commands.splitlines())
+              extra_members[folder + '/INSTALLATION.txt'] = (('Bonni Core auf dem NAS\n\n'
+                  'Bestehendes Bonni aktualisieren\n'
+                  'Dieses ZIP ist für Einrichtung und Reparatur, nicht für ein Versionsupdate.\n'
+                  'Mit Internet: In der Bonni-Weboberfläche unter Control Center > Updates auf Updates prüfen und das angebotene signierte Core-Update verwenden.\n'
+                  'Ohne Internet: Aus dem Bonni-Core-Release manifest-offline-<Architektur>.json und die dazugehörige OCI-Datei am PC herunterladen. Beide unverändert im Bonni-Datenordner unter UPDATE/core/offline ablegen und im Control Center erneut auf Updates prüfen.\n'
+                  'Das normale GitHub-Manifest mit HTTPS-Link ist kein Offline-Manifest. Nicht umschreiben oder mit dem Installations-ZIP ersetzen.\n\n'
+                  'Bonni einrichten oder reparieren\n'
+                  'Das Offline-ZIP am PC herunterladen, auf das NAS kopieren und dort vollständig entpacken. Docker mit Compose muss auf dem NAS bereits verfügbar sein; Bonni-Core- und Datenbank-Images kommen aus dem ZIP.\n'
+                  'Auf dem NAS im entpackten Paketordner das Terminal öffnen.\n'
+                  'Standard: Der Browser-Assistent startet mit diesem Befehl:\n' + installer_commands + '\n\n'
+                  'Den Browser-Modus kannst du auch ausdrücklich auswählen:\n' + browser_commands + '\n\n'
+                  'Der Browser-Assistent läuft nur vorübergehend auf 127.0.0.1 des NAS.\n'
                   'Am eigenen Rechner den im Terminal angezeigten SSH-Tunnel öffnen und dann den privaten Einrichtungslink aufrufen.\n'
-                  'Der eigentliche Start wird danach im NAS-Terminal bestätigt. Ohne --browser bleibt die reine Terminal-Einrichtung verfügbar.\n\n'
+                  'Im Assistenten Reparatur oder Neuinstallation wählen und den Start dort einmal bestätigen.\n'
+                  'Reparatur verwendet den bisherigen Datenordner, die bisherigen Zugangsdaten und das dazu passende Originalpaket. Direkter Aufruf: bash bonnicore-install.sh --wieder-starten. Mit --terminal läuft die Reparatur im Terminal. --wieder-starten --pruefen liest nur.\n\n'
+                  'Alternativ alle Eingaben im NAS-Terminal machen:\n' + terminal_commands + '\n\n'
                   'Der Installer erkennt die NAS-Software und prüft Architektur, Docker Compose und die Paketdateien.\n'
                   'Auf Unraid ist /mnt/user/appdata/bonni-core/bonni-daten der Vorschlag. Ist nur der Share appdata vorhanden, legt der Installer die beiden Unterordner nach Bestätigung an. Auf anderen NAS den echten persistenten Pfad angeben.\n'
+                  'Unraid erhält bei der Neuinstallation den Haupteintrag Bonni-Core mit Original-Logo, WebUI und Unraid-Vorlage. Regler für den Betrieb nicht an den internen Diensten ändern. Mit bereits installiertem FolderView3 und dem Ordner Bonni Core können die Einträge dort zusammengeklappt werden.\n'
+                  'Neuinstallation löscht einen eindeutig erkannten älteren Bonni-Datenordner nur nach einmaliger ausdrücklicher Bestätigung dieses Pfades. Kein Backup, kein Verschieben. Fremde Ordner und Docker-Volumes werden nicht gelöscht. Die bisherigen Bonni-Container müssen vorher entfernt sein.\n'
                   'Für einen reinen Test --pruefen an den Befehl anhängen; falls nötig zusätzlich --ordner /absoluter/datenpfad.\n'
                   'Nur Bonni Core, die zugehörige Datenbank und der Core-Update-Dienst werden eingerichtet. Apps werden nicht installiert.\n'
-                  'Nur für Neuinstallationen: Vorhandene Datenordner werden nicht überschrieben.\n'
                   'Nur ZIPs aus offiziellen Bonni-Core-Releases verwenden, bevorzugt vor dem Entpacken die veröffentlichte ZIP-Prüfsumme vergleichen.\n'
-                  'Start erfolgt erst nach Bestätigung im Terminal; Container und Zugangsdaten bleiben auf dem eigenen NAS.\n').encode('utf-8'), 0o100644)
+                  'Start erfolgt erst nach Bestätigung im gewählten Assistenten; Container und Zugangsdaten bleiben auf dem eigenen NAS.\n').encode('utf-8'), 0o100644)
               # Only explicit, documented placeholders are expanded, once. No code evaluation.
               paths = lambda suffix: '\n'.join((v['subfolder'] + '/' if v['subfolder'] else '') + 'Bonni-Core-v' + version + '-' + v['architecture'] + suffix for v in variants)
               tokens = {
@@ -1908,6 +1947,20 @@ jobs:
             if(!key.equals(crypto.createPublicKey(privateKey)))throw Error('BONNI_CORE_BUILD_SIGNING_KEY_MISMATCH');
             return bundle;
           }
+          function createContainerOfflineManifest({online, archiveName, privateKey, keyId, verifyManifest, signManifest, trustedKeys}) {
+            const policy = {trustedKeys, runnerVersion: "0.5.0", nodeEnv: "production", expectedChannel: "stable"};
+            const checked = verifyManifest(online, policy);
+            if (checked.verified !== true || checked.keyId !== keyId) throw Error("BONNI_UPDATE_OFFLINE_SIGNER_MISMATCH");
+            const {signature, ...payload} = checked.manifest;
+            const artifact = payload.artifact;
+            const expectedUrl = "https://github.com/Bonni-Community/bonni-core/releases/download/" + encodeURIComponent("v" + payload.version) + "/" + archiveName;
+            if (!/^Bonni-Core-Update-v[0-9]+\.[0-9]+\.[0-9]+(?:-[a-z])?-(?:AMD64|ARM64|ARMv7)-[a-f0-9]{64}\.oci$/.test(archiveName)
+              || !archiveName.endsWith("-" + artifact.sha256 + ".oci") || artifact.source.kind !== "https"
+              || artifact.source.url !== expectedUrl) throw Error("BONNI_UPDATE_OFFLINE_SOURCE_INVALID");
+            const offline = signManifest({...payload, artifact: {...artifact, source: {kind: "local", path: archiveName}}}, keyId, privateKey);
+            if (verifyManifest(offline, policy).verified !== true) throw Error("BONNI_UPDATE_OFFLINE_SIGNATURE_INVALID");
+            return offline;
+          }
           async function prepareContainerUpdateAssets({env = process.env, dockerImpl, prepareRelease} = {}) {
             const fs = await import("node:fs/promises"), path = await import("node:path");
             const {createReadStream} = await import("node:fs"), {createHash} = await import("node:crypto");
@@ -1921,6 +1974,7 @@ jobs:
               || !/^[a-f0-9]{40}$/.test(env.SOURCE_COMMIT || "") || !/^[a-f0-9]{64}$/.test(env.ASSET_SHA256 || "")) throw Error("BONNI_UPDATE_PUBLICATION_INPUT_INVALID");
             const signing = await checkContainerSigningKey({env});
             const prepare = prepareRelease || (await import(pathToFileURL(path.resolve("release/PAYLOAD/SYSTEM/backend/scripts/update-release/prepare-public-release.mjs")).href)).preparePublicRelease;
+            const {verifyReleaseManifest, signReleaseManifest} = await import(pathToFileURL(path.resolve("release/PAYLOAD/SYSTEM/backend/dist/system/update-release/index.js")).href);
             const plans = JSON.parse(await fs.readFile("export-plan.json", "utf8"));
             if (!Array.isArray(plans) || plans.map(p => p.platform).join(",") !== platforms.join(",")) throw Error("BONNI_UPDATE_EXPORT_PLAN_INVALID");
             const output = path.resolve(env.BONNI_UPDATE_ASSET_DIRECTORY || "update-assets");
@@ -1969,8 +2023,16 @@ jobs:
                     } else if (status !== "UNCHANGED") throw Error("BONNI_ARMV7_UPDATE_ARCHIVE_RESULT_INVALID");
                     console.log("ARMv7 update TAR: " + status);
                   }
-                  const result = await prepare({archive, version, privateKey: key, keyId: signing.keyId, buildAuthorization: signing.authorization, trust, outputDir: path.join(output, arch)});
+                  const directory = path.join(output, arch);
+                  const result = await prepare({archive, version, privateKey: key, keyId: signing.keyId, buildAuthorization: signing.authorization, trust, outputDir: directory});
                   if (result.architecture !== arch) throw Error("BONNI_UPDATE_SIGNED_PLATFORM_MISMATCH");
+                  const online = JSON.parse(await fs.readFile(path.join(directory, `manifest-${arch}.json`), "utf8"));
+                  const archiveName = `Bonni-Core-Update-v${env.VERSION}-${arch}-${online.artifact?.sha256}.oci`;
+                  const imageTrust = JSON.parse(await fs.readFile(trust, "utf8"));
+                  const trustedKeys = Object.fromEntries(imageTrust.keys.filter(entry => entry.scopes?.includes("RELEASE")).map(entry => [entry.keyId, entry.publicKey]));
+                  const offline = createContainerOfflineManifest({online, archiveName, privateKey: signing.privateKey, keyId: signing.keyId,
+                    verifyManifest: verifyReleaseManifest, signManifest: signReleaseManifest, trustedKeys});
+                  await fs.writeFile(path.join(directory, `manifest-offline-${arch}.json`), JSON.stringify(offline, null, 2) + "\n", {mode: 0o600, flag: "wx"});
                 } finally {
                   if (container && /^[a-f0-9]{12,64}$/.test(container)) await docker("rm", container);
                   if (tagged) await docker("image", "rm", updateTag);
