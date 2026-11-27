@@ -14,6 +14,124 @@ fail_with() {
 }
 say() { printf '[Bonni] %s\n' "$*"; }
 
+install_unraid() {
+  local zip=$1 members spec stem version registry local_image image_id identity running attempt contents
+  local appdata=/mnt/user/appdata data template_dir=/boot/config/plugins/dockerMan/templates-user
+  local template name=Bonni-Core webui='http://[IP]:[PORT:4000]/' mode=unraid-single-container
+  local -a docker=(docker --host unix:///var/run/docker.sock)
+  [[ -f /etc/unraid-version && $(uname -m) == x86_64 ]] || fail 'Dieser Installationsweg ist für Unraid auf AMD64 vorgesehen.'
+  ((EUID == 0)) || fail 'Bitte das Unraid-Webterminal öffnen.'
+  [[ -d "$appdata" && -d "$template_dir" ]] || fail 'Unraid benötigt einen erreichbaren appdata-Share und aktiviertes Docker.'
+  timeout 15 "${docker[@]}" info >/dev/null 2>&1 || fail 'Der lokale Docker-Dienst ist nicht erreichbar.'
+  data="$appdata/bonni-core-unraid"
+  template="$template_dir/my-Bonni-Core.xml"
+  exec 9>/var/lock/bonni-core-install.lock
+  flock -n 9 || fail 'Eine Bonni-Installation läuft bereits.'
+  if [[ -n "$zip" ]]; then
+    [[ -f "$zip" ]] || fail 'Das Bonni-Core-ZIP wurde nicht gefunden.'
+    members=${zip##*/}
+    [[ "$members" =~ ^64-Bit-Bonni-Core-v([0-9]+\.[0-9]+\.[0-9]+([+-][a-z])?)-AMD64\.zip$ ]] || fail 'Bitte das unveränderte 64-Bit-Bonni-Core-Release-ZIP für AMD64 angeben.'
+    members=${members%.zip}
+    stem=${members#64-Bit-}
+  else
+    cd -- "$(dirname -- "${BASH_SOURCE[0]}")"
+    shopt -s nullglob
+    local -a images=(Bonni-Core-v*-AMD64.tar)
+    ((${#images[@]} == 1)) || fail 'Im entpackten Paket muss genau ein AMD64-Core-Image liegen.'
+    stem=${images[0]%.tar}
+  fi
+  [[ "$stem" =~ ^Bonni-Core-v([0-9]+\.[0-9]+\.[0-9]+([+-][a-z])?)-AMD64$ ]] || fail 'Das Paket enthält keinen eindeutigen AMD64-Stand.'
+  version=${BASH_REMATCH[1]}
+  read_member() {
+    if [[ -n "$zip" ]]; then unzip -p "$zip" "$members/$1"; else cat -- "$1"; fi
+  }
+  spec=$(read_member my-Bonni-Core.xml) || fail 'Die Unraid-Vorlage fehlt im Paket.'
+  registry=$(sed -nE 's/^[[:space:]]*<Repository>([^<]+)<\/Repository>[[:space:]]*$/\1/p' <<<"$spec")
+  [[ "$registry" =~ ^[a-z0-9][a-z0-9._:/-]*@sha256:([a-f0-9]{64})$ ]] || fail 'Die Unraid-Vorlage enthält keine eindeutige Image-Referenz.'
+  local_image="bonni-core:${version//+/-}-amd64-${BASH_REMATCH[1]}"
+
+  if identity=$("${docker[@]}" container inspect --format '{{index .Config.Labels "org.bonni.install.unraid"}}|{{.Config.Image}}' "$name" 2>/dev/null); then
+    [[ "$identity" == "$mode|$local_image" ]] || fail 'Bonni-Core existiert bereits. Nutze für diese Installation die WebUI und den Update-Weg des bestehenden Containers.'
+    running=$("${docker[@]}" container inspect --format '{{.State.Running}}' "$name")
+    if [[ "$running" == false ]]; then "${docker[@]}" start "$name" >/dev/null; fi
+  else
+    [[ ! -L "$data" ]] || fail 'Der Bonni-Datenordner ist ein symbolischer Link.'
+    if [[ -e "$data" ]]; then
+      [[ -d "$data" && -r "$data" && -x "$data" ]] || fail 'Der Bonni-Datenordner ist nicht zugänglich.'
+      contents=$(find "$data" -mindepth 1 -maxdepth 1 -print -quit) || fail 'Der Bonni-Datenordner ließ sich nicht prüfen.'
+      [[ -z "$contents" ]] || fail 'Im Bonni-Datenordner befinden sich bereits Daten.'
+    fi
+    [[ ! -L "$template" && ( ! -e "$template" || -f "$template" ) ]] || fail 'Der Pfad der Unraid-Vorlage ist ungültig.'
+    if [[ -f "$template" ]]; then
+      grep -Eq '^[[:space:]]*<Name>Bonni-Core</Name>[[:space:]]*$' "$template" || fail 'Unter dem Namen liegt eine andere Unraid-Vorlage.'
+    fi
+
+    local expected archive
+    expected=$(read_member "$stem.tar.sha256") || fail 'Die Prüfsumme des Core-Images fehlt.'
+    local hash=${expected%% *}
+    [[ "$hash" =~ ^[a-f0-9]{64}$ && "$expected" == "$hash  $stem.tar" ]] || fail 'Die Prüfsumme im Paket hat ein ungültiges Format.'
+    if [[ -n "$zip" ]]; then
+      unraid_install_temp=$(mktemp -d "$appdata/.bonni-install.XXXXXXXX")
+      trap 'rm -rf -- "$unraid_install_temp"' EXIT
+      archive="$unraid_install_temp/$stem.tar"
+      say 'Entpacke das Bonni-Core-Image aus dem ZIP …'
+      read_member "$stem.tar" >"$archive" || fail 'Das Core-Image konnte nicht entpackt werden.'
+    else
+      archive="$stem.tar"
+    fi
+    local actual
+    actual=$(sha256sum -- "$archive") || fail 'Das Core-Image konnte nicht geprüft werden.'
+    [[ "${actual%% *}" == "$hash" ]] || fail 'Die Prüfsumme des Core-Images stimmt nicht.'
+    say 'Importiere das geprüfte Core-Image in Docker …'
+    "${docker[@]}" image load --input "$archive" || fail 'Der Image-Import ist fehlgeschlagen.'
+    identity=$("${docker[@]}" image inspect --format '{{.Os}}/{{.Architecture}}|{{index .Config.Labels "org.bonni.product"}}|{{.Id}}' "$local_image") || fail 'Das erwartete lokale Bonni-Core-Image fehlt.'
+    image_id=${identity##*|}
+    [[ "$identity" == "linux/amd64|bonni-core|$image_id" && "$image_id" =~ ^sha256:[a-f0-9]{64}$ ]] || fail 'Das Docker-Image passt nicht zum Unraid-Paket.'
+
+    mkdir -p -- "$data"
+    local rendered=${spec/"$registry"/"$local_image"} staged backup
+    if [[ ! -f "$template" || $(<"$template") != "$rendered" ]]; then
+      if [[ -f "$template" ]]; then
+        backup=$(mktemp "$template_dir/my-Bonni-Core.xml.bak.XXXXXXXX")
+        cp -- "$template" "$backup"
+      fi
+      staged=$(mktemp "$template_dir/.bonni-template.XXXXXXXX")
+      printf '%s\n' "$rendered" >"$staged"
+      mv -f -- "$staged" "$template"
+    fi
+    say 'Lege Bonni-Core in Docker an und starte den Container …'
+    "${docker[@]}" run --detach --name "$name" --pull never --network bridge --publish 4000:4000/tcp \
+      --env "BONNI_DEPLOYMENT_MODE=$mode" --env "TZ=${TZ:-Europe/Berlin}" \
+      --label "org.bonni.install.unraid=$mode" --label net.unraid.docker.managed=dockerman \
+      --label "net.unraid.docker.webui=$webui" \
+      --mount "type=bind,source=$data,target=/bonni-data" \
+      --init --restart unless-stopped --stop-timeout 75 --security-opt no-new-privileges \
+      --health-cmd 'node /app/backend/scripts/deployment/unraid-runtime.mjs --health' --health-start-period 5m \
+      "$local_image" >/dev/null || fail 'Docker konnte Bonni-Core nicht starten. Prüfe die Meldung direkt darüber.'
+  fi
+
+  for ((attempt=0; attempt<30; attempt++)); do
+    if curl -fsS --max-time 1 http://127.0.0.1:4000/api/setup/status >/dev/null 2>&1 \
+        || curl -fsS --max-time 1 http://127.0.0.1:4000/runtime-proxy/active-health >/dev/null 2>&1; then
+      say 'Jetzt in Unraid: Docker → Bonni-Core → WebUI. Den Einrichtungscode findest du im Menü Protokolle.'
+      return
+    fi
+    sleep 1
+  done
+  fail 'Bonni-Core wurde angelegt. Die WebUI antwortet noch nicht. Öffne Docker → Bonni-Core → Protokolle.'
+}
+
+if [[ "${1-}" == --unraid-zip ]]; then
+  (($# == 2)) || fail 'Aufruf: bash bonnicore-install.sh --unraid-zip /pfad/zum/AMD64-Release.zip'
+  install_unraid "$2"
+  exit
+fi
+if { (($# == 0)) || [[ $# == 1 && $1 == --browser ]]; } \
+    && [[ -f /etc/unraid-version && -f "$(dirname -- "${BASH_SOURCE[0]}")/my-Bonni-Core.xml" ]]; then
+  install_unraid ''
+  exit
+fi
+
 root=''
 check=false
 recover=false

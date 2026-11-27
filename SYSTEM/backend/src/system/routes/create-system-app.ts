@@ -60,7 +60,14 @@ function createBaseExpressApp(surface: "platform" | "local" = "platform"): Expre
   // CSP frame-ancestors is the authoritative, modern framing policy. Sending
   // X-Frame-Options as well is ignored by browsers and creates a misleading
   // console warning for intentionally embedded opaque feature modules.
-  app.use(helmet({ frameguard: false }));
+  const directUnraidWebUI = process.env.BONNI_DEPLOYMENT_MODE === "unraid-single-container";
+  app.use(helmet({
+    frameguard: false,
+    // Unraid's WebUI template serves HTTP directly. Its frontend assets must use the same origin.
+    contentSecurityPolicy: {
+      directives: { "upgrade-insecure-requests": directUnraidWebUI ? null : [] },
+    },
+  }));
   app.use(requestLogger);
   app.use(createBrowserOriginGuard());
   app.use(browserCors);

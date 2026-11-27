@@ -192,6 +192,7 @@ async function prepareDatabase(state, server) {
 function applicationEnv(state, runtimeRoot) {
   return {
     NODE_ENV: 'production',
+    BONNI_DEPLOYMENT_MODE: 'unraid-single-container',
     SYSTEM_VERSION: version,
     BONNI_CORE_IMAGE_VERSION: version,
     BONNI_PROJECT_ROOT: '/app',
@@ -257,6 +258,8 @@ async function main() {
   const accepted = new Promise(resolve => { startInstallation = resolve; });
   const setup = state ? null : unraidSetup({
     logo: await fs.readFile(new URL('./bonni-unraid.png', import.meta.url)),
+    designSource: await fs.readFile(new URL('./unraid-setup-design.html', import.meta.url), 'utf8'),
+    version,
     async savePassword(admin) {
       const next = {
         format: dataVersion, version, phase: 'initializing', admin,

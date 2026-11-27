@@ -244,6 +244,7 @@ FROM core-runtime AS runtime
 ARG TARGETARCH
 COPY --from=bonni-unraid-payload /unraid-payload/ /usr/local/
 COPY SYSTEM/backend/deploy/bonni-nas-installer/bonni-unraid.png /app/backend/scripts/deployment/bonni-unraid.png
+COPY SYSTEM/backend/deploy/bonni-nas-installer/bonnicore-setup.html /app/backend/scripts/deployment/unraid-setup-design.html
 RUN if [ "${TARGETARCH}" = amd64 ]; then \
       set -e; \
       apt-get update; \

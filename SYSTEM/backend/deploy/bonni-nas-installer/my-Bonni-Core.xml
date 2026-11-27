@@ -8,7 +8,7 @@
   <Support>https://github.com/Bonni-Community/Bonni-Core</Support>
   <Overview>Bonni Core für Unraid. Beim ersten Öffnen der WebUI führt der Assistent durch die Einrichtung. Den Einrichtungscode findest du in den Container-Logs.</Overview>
   <WebUI>http://[IP]:[PORT:4000]/</WebUI>
-  <ExtraParams>--init --restart=unless-stopped --stop-timeout=75 --security-opt=no-new-privileges --health-cmd="node /app/backend/scripts/deployment/unraid-runtime.mjs --health" --health-start-period=5m</ExtraParams>
+  <ExtraParams>--init --restart=unless-stopped --stop-timeout=75 --security-opt=no-new-privileges --label org.bonni.install.unraid=unraid-single-container --health-cmd="node /app/backend/scripts/deployment/unraid-runtime.mjs --health" --health-start-period=5m</ExtraParams>
   <Config Name="WebUI" Target="4000" Default="4000" Mode="tcp" Description="Port der Weboberfläche auf Unraid" Type="Port" Display="always" Required="true" Mask="false">4000</Config>
   <Config Name="Datenordner" Target="/bonni-data" Default="/mnt/user/appdata/bonni-core-unraid" Mode="rw" Description="Dauerhafter Ordner für Bonni Core und die Datenbank" Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/bonni-core-unraid</Config>
   <Config Name="Betriebsart" Target="BONNI_DEPLOYMENT_MODE" Default="unraid-single-container" Mode="" Description="" Type="Variable" Display="advanced-hide" Required="true" Mask="false">unraid-single-container</Config>

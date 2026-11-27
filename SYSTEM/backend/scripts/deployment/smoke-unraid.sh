@@ -31,11 +31,18 @@ assert_single() {
 }
 
 assert_healthy() {
+  local headers
   wait_for "$1/runtime-proxy/active-health" '"ok"'
   wait_for "$1/runtime-proxy/emergency-health" '"ok"'
   wait_for "$1/" '<html'
   if curl -fsS "$1/" | grep -q 'Bonni Core einrichten'; then
     printf 'Die WebUI zeigt weiterhin den Erstinstallationsassistenten.\n' >&2
+    return 1
+  fi
+  headers=$(curl -fsSI --max-time 10 "$1/")
+  if ! grep -qi '^content-security-policy:.*script-src' <<<"$headers" \
+      || grep -qi '^content-security-policy:.*upgrade-insecure-requests' <<<"$headers"; then
+    printf 'Die Sicherheitsrichtlinie der Unraid-WebUI erlaubt den vorgesehenen HTTP-Aufruf nicht.\n' >&2
     return 1
   fi
   assert_single
@@ -48,6 +55,11 @@ previous=$(docker ps -aq | sort)
 start 14000
 setup=http://127.0.0.1:14000
 wait_for "$setup/" 'Bonni Core einrichten'
+setup_page=$(curl -fsS --max-time 8 "$setup/")
+for marker in 'System prüfen' 'Speicherort prüfen' 'Admin-Konto anlegen' 'Einrichtung überprüfen' 'data-pose="3"'; do
+  [[ "$setup_page" == *"$marker"* ]]
+done
+unset setup_page
 wait_for "$setup/api/setup/status" '"phase":"waiting"'
 token=$(docker logs "$name" 2>&1 | sed -n 's@.*Einrichtungscode: \([a-f0-9]\{64\}\)$@\1@p')
 [[ "$token" =~ ^[a-f0-9]{64}$ ]]
