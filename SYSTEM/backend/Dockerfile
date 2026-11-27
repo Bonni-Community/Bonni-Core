@@ -32,6 +32,16 @@ ENV PATH=/usr/local/pgsql/bin:$PATH
 RUN echo /usr/local/pgsql/lib > /etc/ld.so.conf.d/bonni-postgresql.conf && ldconfig && node --version && pg_dump --version
 FROM node:22-bookworm-slim@sha256:6c74791e557ce11fc957704f6d4fe134a7bc8d6f5ca4403205b2966bd488f6b3 AS bonni-base-amd64
 FROM node:22-bookworm-slim@sha256:6c74791e557ce11fc957704f6d4fe134a7bc8d6f5ca4403205b2966bd488f6b3 AS bonni-base-arm64
+
+# Only the AMD64 release image includes the PostgreSQL server for Unraid.
+FROM bonni-pg-build AS bonni-unraid-payload-amd64
+RUN mkdir -p /unraid-payload && cp -a /usr/local/pgsql /unraid-payload/pgsql
+FROM bonni-node-host AS bonni-unraid-payload-empty
+RUN mkdir -p /unraid-payload
+FROM bonni-unraid-payload-empty AS bonni-unraid-payload-arm64
+FROM bonni-unraid-payload-empty AS bonni-unraid-payload-arm
+FROM bonni-unraid-payload-${TARGETARCH} AS bonni-unraid-payload
+
 FROM --platform=$BUILDPLATFORM ubuntu:22.04@sha256:5ec03bb3441e8b0bf3b4f9cd4629a1ae763010dc3035bb8da3ae6cf026486401 AS bonni-engines
 COPY --from=bonni-node-host /usr/local /usr/local
 ARG TARGETARCH
@@ -138,7 +148,7 @@ RUN node scripts/licenses/finalize-core-license-payload.mjs \
 RUN node scripts/setup/prebuilt-frontend.mjs --write public/system
 RUN node scripts/setup/prebuilt-frontend.mjs --verify public/system
 
-FROM bonni-base-${TARGETARCH} AS runtime
+FROM bonni-base-${TARGETARCH} AS core-runtime
 COPY --from=bonni-engines /opt/bonni-engines /opt/bonni-engines
 
 ARG BONNI_CORE_VERSION=0.1.21
@@ -225,7 +235,25 @@ RUN ln -s /app/backend/node_modules /app/node_modules \
        /app/run_system/system /app/run_system/storage/media /app/run_system/storage/licenses \
        /app/run_system/archiv/logs /app/public/system
 
-EXPOSE 4000 4001 4002
-
 ENTRYPOINT ["/opt/bonni-engines/entrypoint.sh"]
 CMD ["sh", "-c", "npm run backup:restore-pending && exec npm run start"]
+
+# Use the same Bonni Core image for the Unraid WebUI. The template selects the
+# single-container entry mode; the standard start command remains available.
+FROM core-runtime AS runtime
+ARG TARGETARCH
+COPY --from=bonni-unraid-payload /unraid-payload/ /usr/local/
+COPY SYSTEM/backend/deploy/bonni-nas-installer/bonni-unraid.png /app/backend/scripts/deployment/bonni-unraid.png
+RUN if [ "${TARGETARCH}" = amd64 ]; then \
+      set -e; \
+      apt-get update; \
+      apt-get install -y --no-install-recommends libreadline8; \
+      rm -rf /var/lib/apt/lists/*; \
+      groupadd --gid 1001 bonni-postgres; \
+      useradd --uid 1001 --gid 1001 --no-create-home bonni-postgres; \
+      useradd --uid 1002 --gid 1000 --no-create-home bonni-emergency; \
+      mkdir -p /bonni-data; \
+      /usr/local/pgsql/bin/postgres --version; \
+    fi
+ENTRYPOINT ["/bin/sh", "/app/backend/scripts/deployment/container-entrypoint.sh"]
+EXPOSE 4000 4001 4002
