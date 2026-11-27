@@ -1,4 +1,5 @@
 name: Publish Bonni Core container
+run-name: Bonni Core ${{ inputs.version }} / Auftrag ${{ inputs.asset_id }}
 
 on:
   workflow_dispatch:
@@ -277,6 +278,17 @@ jobs:
               if (entry.expectedDigest && (entry.expectedDigest !== digest || entry.expectedSize !== stat.size)) throw Error("BONNI_UPDATE_ARCHIVE_CHANGED: " + name);
               local.push({name, file, size: stat.size, digest, immutable: entry.immutable === true});
             }
+            let unraidBrowserZip;
+            if (platforms.includes("linux/amd64")) {
+              const {filename} = containerBundles(coreVersion, platforms).find(b => b.platform === "linux/amd64");
+              const zip = local.find(item => item.name === filename);
+              const receiptFile = (env.BONNI_ASSET_DIRECTORY || "compose-assets") + "/.bonni-unraid-browser-v1";
+              const stat = await fs.lstat(receiptFile).catch(() => null);
+              if (!stat?.isFile() || stat.size > 256 || await fs.readFile(receiptFile, "utf8") !== filename + "\n" + zip.digest + "\n") {
+                throw Error("BONNI_UNRAID_BROWSER_ZIP_NOT_VERIFIED");
+              }
+              unraidBrowserZip = {schema:"bonni.unraid-browser-zip/v1", name:filename, digest:zip.digest};
+            }
             if (phase === "verify") return {verified: local.length, updates: updates.length};
             const current = await assets();
             const identical = (asset, file) => asset?.state === "uploaded" && asset.size === file.size && asset.digest === file.digest;
@@ -340,9 +352,13 @@ jobs:
               return matches.length === 1 && identical(matches[0], file);
             });
             if (!downloadsComplete(current)) throw Error("BONNI_RELEASE_DOWNLOADS_INCOMPLETE");
+            const [runId, runAttempt, assetId] = [env.GITHUB_RUN_ID, env.GITHUB_RUN_ATTEMPT, env.ASSET_ID].map(Number);
+            const sourceRun = [runId, runAttempt, assetId].every(value => Number.isSafeInteger(value) && value > 0)
+              ? {runId, runAttempt, assetId} : undefined;
             const result = {sourceFingerprint: plan.sourceFingerprint, sourceSha256: sha, sourceCommit: env.SOURCE_COMMIT,
               imageDigest: env.DIGEST, signedCoreUpdates: true, offlineUpdateManifests: true, downloadLayout: "offline-zip-online-yml/v1",
-              assets: local.map(({name, size, digest}) => ({name, size, digest}))};
+              ...(sourceRun ? {sourceRun} : {}),
+              ...(unraidBrowserZip ? {unraidBrowserZip} : {}), assets: local.map(({name, size, digest}) => ({name, size, digest}))};
             const latest = await validate();
             const superseded = new Set(containerSupersededDownloadNames(coreVersion, platforms));
             const obsolete = current.filter(asset => superseded.has(asset.name));
@@ -576,6 +592,30 @@ jobs:
             throw new Error("GITHUB_CONTAINER_SOURCE_INPUT_INVALID");
           }
           const coreVersion = version.replace(/-([a-z])$/, "+$1");
+          const separateModuleDirectories = new Set(["app","apps","add-on","add-ons","addon","addons","plug-in","plug-ins","plugin","plugins","bridge","bridges"]);
+          const developmentFile = new RegExp("^(?:regelwerk\\.md|(?:(?:anleitung|pr(?:ue|ü)fung|pr(?:ue|ü)fbericht|testbericht)[ ._-]+dev(?:[ ._-][^/]*|[0-9][^/]*)?|aufr(?:ae|ä)umplan(?:[ ._-][^/]*)?)\\.(?:txt|md|json|log|pdf))$", "iu");
+          const rulebookDirectory = "regelwerk";
+          const readmeFile = new RegExp("^readme(?:$|\\.[^/]+|[ _-][^/]+\\.(?:md|markdown|mdown|mkd|txt|text|rst|adoc|asciidoc|html?|pdf|rtf|docx?))$", "iu");
+          const CORE_RELEASE_README_HEADER = "# Bonni Core\n\nBonni Core ist die modulare Plattform für Vereine und Organisationen.\n\n## Aufbau\n\n- **[Backend](backend/)** verarbeitet Anfragen der Weboberfläche, prüft Anmeldung und Berechtigungen und liest oder speichert Daten in der Datenbank.\n- **[Frontend](frontend/)** ist die Oberfläche im Browser. Es zeigt die Anmeldung, die Navigation und die Funktionen von Bonni an und spricht über die API mit dem Backend.\n- **Apps, Add-ons und Plugins** erweitern den Core und werden als eigene Pakete veröffentlicht.\n\nInstallationspakete findest du im Bereich **Releases**. Die Lizenzinformationen stehen in [LICENSE.md](../LICENSE.md).\n\n## Versionshistorie\n\nHier stehen die Änderungen der veröffentlichten Vollversionen.\n\n";
+          const MAX_CORE_RELEASE_README_BYTES = 524288;
+          const RELEASE_VERSION = /^((?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*))(?:\+?([a-z]))?$/u;
+          function validCoreReleaseReadme(bytes, version, notes) {
+            if (!bytes || bytes.length > MAX_CORE_RELEASE_README_BYTES) return false;
+            const readme = bytes.toString("utf8");
+            if (!readme.startsWith(CORE_RELEASE_README_HEADER) || !readme.endsWith("\n")
+              || /[\u0000-\u0008\u000b-\u001f\u007f]/u.test(readme)) return false;
+            const entries = readme.slice(CORE_RELEASE_README_HEADER.length, -1).split(/\n\n(?=### )/u);
+            const seen = new Set();
+            return entries.every((entry, index) => {
+              const [heading, blank, ...items] = entry.split("\n");
+              const label = heading.slice(4);
+              if (!heading.startsWith("### ") || !RELEASE_VERSION.test(label) || seen.has(label)
+                || (index === 0 && (label !== version || (notes !== undefined && items.join("\n") !== notes)))
+                || blank !== "" || !items.length || !items.every(item => /^- \S.*$/u.test(item))) return false;
+              seen.add(label);
+              return true;
+            });
+          }
           if (!(await fs.lstat(systemRoot)).isDirectory() || (await fs.lstat(systemRoot)).isSymbolicLink()) {
             throw new Error("GITHUB_CONTAINER_SOURCE_UNSAFE");
           }
@@ -593,7 +633,16 @@ jobs:
             const entries = [];
             const names = (await fs.readdir(directory)).sort((a, b) => Buffer.compare(Buffer.from(a), Buffer.from(b)));
             for (const name of names) {
+              if (!prefix && separateModuleDirectories.has(name.toLowerCase())) {
+                throw new Error("GITHUB_CONTAINER_CORE_SCOPE_INVALID");
+              }
+              if (!prefix && (name.toLowerCase() === rulebookDirectory || developmentFile.test(name))) {
+                throw new Error("GITHUB_CONTAINER_CORE_DEVELOPMENT_FILES");
+              }
               const relative = prefix + name;
+              if (readmeFile.test(name) && relative !== "README.md") {
+                throw new Error("GITHUB_CONTAINER_CORE_DEVELOPMENT_FILES");
+              }
               if (/[\u0000-\u001f\u007f\\]/.test(name) ||
                   /^(?:tests?|__tests__|__mocks__|fixtures|node_modules|coverage|\.git)$/i.test(name) ||
                   (name.startsWith(".env") && relative !== "backend/.env.example") ||
@@ -609,6 +658,9 @@ jobs:
               } else if (info.isFile() && info.nlink === 1) {
                 if (++files > 10000) throw new Error("GITHUB_CONTAINER_SOURCE_TOO_LARGE");
                 const bytes = await fs.readFile(file);
+                if (relative === "README.md" && !validCoreReleaseReadme(bytes, coreVersion)) {
+                  throw new Error("GITHUB_CONTAINER_CORE_README_INVALID");
+                }
                 if (relative === "backend/package.json" || relative === "frontend/package.json") {
                   if (JSON.parse(bytes.toString("utf8")).version !== coreVersion) throw new Error("GITHUB_CONTAINER_SOURCE_VERSION_MISMATCH");
                 }
@@ -623,12 +675,17 @@ jobs:
             const file = path.join(systemRoot, part, "package.json");
             if (!(await fs.lstat(file)).isFile()) throw new Error("GITHUB_CONTAINER_SOURCE_PACKAGE_MISSING");
           }
+          const readme = await fs.lstat(path.join(systemRoot, "README.md")).catch(() => null);
+          if (!readme?.isFile() || readme.nlink !== 1) throw new Error("GITHUB_CONTAINER_CORE_README_INVALID");
           const systemTree = await sourceTree(systemRoot);
           const receipt = Buffer.from(JSON.stringify({schema: "bonni.container-source/v1", version: coreVersion,
             image: (process.env.IMAGE || "") + ":" + version, sourcePackageSha256: sourceSha256, platforms}, null, 2) + "\n");
           const receiptBlob = git(["hash-object", "-w", "--no-filters", "--stdin"], receipt).trim();
           const rootEntries = git(["ls-tree", "-z", baseCommit]).split("\0").filter(Boolean)
-            .filter(entry => !["SYSTEM", "BONNI-CONTAINER-RELEASE.json"].includes(entry.slice(entry.indexOf("\t") + 1)));
+            .filter(entry => {
+              const name = entry.slice(entry.indexOf("\t") + 1);
+              return !["SYSTEM", "BONNI-CONTAINER-RELEASE.json"].includes(name) && !readmeFile.test(name);
+            });
           rootEntries.push("040000 tree " + systemTree + "\tSYSTEM", "100644 blob " + receiptBlob + "\tBONNI-CONTAINER-RELEASE.json");
           const tree = git(["mktree", "-z"], Buffer.from(rootEntries.join("\0") + "\0")).trim();
           const previousTree = git(["rev-parse", baseCommit + "^{tree}"]).trim();
@@ -1685,7 +1742,7 @@ jobs:
         run: |
           set -euo pipefail
           python3 - <<'BONNI_BUNDLES'
-          import hashlib, json, os, pathlib, re, shutil, subprocess, zipfile
+          import hashlib, json, os, pathlib, re, shutil, subprocess, tarfile, zipfile
           installer_filename = 'bonnicore-install.sh'
           deployment = pathlib.Path('release/PAYLOAD/SYSTEM/backend/deploy')
           installer_dir = deployment / 'bonni-nas-installer'
@@ -1723,6 +1780,51 @@ jobs:
           def digest(path):
               with open(path, 'rb') as source:
                   return hashlib.file_digest(source, 'sha256').hexdigest()
+          
+          # Index the runtime already present in the exact, verified Core TAR. No second
+          # copy of Node is shipped and no Docker operation is needed for this extraction.
+          def unraid_runtime_index(file):
+              expected = {'usr/local/bin/node', './usr/local/bin/node'}
+              whiteouts = {'.wh.node', '.wh.bin', '.wh.local', '.wh.usr', '.wh..wh..opq'}
+              with tarfile.open(file, 'r:') as image:
+                  manifest_member = image.getmember('manifest.json')
+                  if not manifest_member.isfile() or not 0 < manifest_member.size <= 1048576:
+                      raise ValueError('BONNI_UNRAID_NODE_MANIFEST_INVALID')
+                  manifest = json.load(image.extractfile(manifest_member))
+                  if not isinstance(manifest, list) or len(manifest) != 1 or not isinstance(manifest[0].get('Layers'), list):
+                      raise ValueError('BONNI_UNRAID_NODE_MANIFEST_INVALID')
+                  for name in reversed(manifest[0]['Layers']):
+                      if not re.fullmatch(r'(?:blobs/sha256/[0-9a-f]{64}|[0-9a-f]{64}/layer\.tar)', name):
+                          raise ValueError('BONNI_UNRAID_NODE_LAYER_INVALID')
+                      layer = image.getmember(name)
+                      if not layer.isfile():
+                          raise ValueError('BONNI_UNRAID_NODE_LAYER_INVALID')
+                      stream = image.extractfile(layer)
+                      lead = stream.read(4)
+                      stream.seek(0)
+                      compression = 'gzip' if lead.startswith(b'\x1f\x8b') else 'tar'
+                      with tarfile.open(fileobj=stream, mode='r|gz' if compression == 'gzip' else 'r|') as data:
+                          found = None
+                          for entry in data:
+                              normalized = entry.name.removeprefix('./')
+                              parent, _, basename = normalized.rpartition('/')
+                              if parent in {'', 'usr', 'usr/local', 'usr/local/bin'} and basename in whiteouts:
+                                  raise ValueError('BONNI_UNRAID_NODE_RUNTIME_MASKED')
+                              if entry.name not in expected:
+                                  continue
+                              if found is not None or not entry.isfile() or not 4096 <= entry.size <= 268435456:
+                                  raise ValueError('BONNI_UNRAID_NODE_INVALID')
+                              node = data.extractfile(entry)
+                              head = node.read(20)
+                              if head[:6] != b'\x7fELF\x02\x01' or head[18:20] != b'\x3e\x00':
+                                  raise ValueError('BONNI_UNRAID_NODE_PLATFORM_INVALID')
+                              check = hashlib.sha256(head)
+                              while chunk := node.read(1024*1024):
+                                  check.update(chunk)
+                              found = f'{name}\n{entry.name}\n{compression}\n{check.hexdigest()}\n'
+                          if found is not None:
+                              return found.encode('ascii')
+              raise ValueError('BONNI_UNRAID_NODE_NOT_FOUND')
           seen = set()
           for plan in plans:
               folder, filename = plan['folder'], plan['filename']
@@ -1769,6 +1871,8 @@ jobs:
                       expected = digest(root / name) + '  ' + name + '\n'
                       if (root / (name + '.sha256')).read_text() != expected:
                           raise ValueError('BONNI_BUNDLE_CHECKSUM_MISMATCH: ' + name)
+                  if variant['architecture'] == 'AMD64':
+                      extra_members[directory + 'bonni-unraid-runtime.txt'] = (unraid_runtime_index(root / (stem+'.tar')), 0o100644)
               installer_commands = '\n'.join('  bash ' + (v['subfolder'] + '/' if v['subfolder'] else '') + installer_filename for v in variants)
               browser_commands = '\n'.join(command + ' --browser' for command in installer_commands.splitlines())
               terminal_commands = '\n'.join(command + ' --terminal' for command in installer_commands.splitlines())
@@ -1786,10 +1890,12 @@ jobs:
                   'Der Browser-Assistent läuft nur vorübergehend auf 127.0.0.1 des NAS.\n'
                   'Am eigenen Rechner den im Terminal angezeigten SSH-Tunnel öffnen und dann den privaten Einrichtungslink aufrufen.\n'
                   'Im Assistenten Reparatur oder Neuinstallation wählen und den Start dort einmal bestätigen.\n'
+                  'Bonni zeigt den Startfortschritt an. Der Knopf Bonni öffnen erscheint erst, wenn die Dienste und die Weboberfläche geprüft sind. Lass den angezeigten SSH-Tunnel mit beiden Weiterleitungen dafür geöffnet.\n'
                   'Reparatur verwendet den bisherigen Datenordner, die bisherigen Zugangsdaten und das dazu passende Originalpaket. Direkter Aufruf: bash bonnicore-install.sh --wieder-starten. Mit --terminal läuft die Reparatur im Terminal. --wieder-starten --pruefen liest nur.\n\n'
                   'Alternativ alle Eingaben im NAS-Terminal machen:\n' + terminal_commands + '\n\n'
                   'Der Installer erkennt die NAS-Software und prüft Architektur, Docker Compose und die Paketdateien.\n'
-                  'Vor dem Browser-Assistenten und vor dem Import prüft Bonni den freien Docker-Speicher. Die benötigte Menge ist eine Schätzung, nicht die Größe des ZIPs. Bei Platzmangel bitte auf Unraid unter Einstellungen > Docker die Docker-vDisk prüfen und erneut starten. Bonni ändert den Docker-Speicher nicht automatisch.\n'
+                  'Auf Unraid startet der Browser-Assistent ohne Docker und ohne Internet. Er prüft die Voraussetzungen und zeigt an, falls Docker nicht läuft oder zu wenig Speicher frei ist. Nach einer Korrektur im selben Fenster erneut prüfen. Bonni ändert den Docker-Speicher nicht automatisch.\n'
+                  'Vor dem Import prüft Bonni den freien Docker-Speicher nochmals. Die benötigte Menge ist eine Schätzung, nicht die Größe des ZIPs. Auf anderen NAS bleibt der bisherige Assistent über Docker bestehen.\n'
                   'Auf Unraid ist /mnt/user/appdata/bonni-core/bonni-daten der Vorschlag. Ist nur der Share appdata vorhanden, legt der Installer die beiden Unterordner nach Bestätigung an. Auf anderen NAS den echten persistenten Pfad angeben.\n'
                   'Unraid erhält bei der Neuinstallation den Haupteintrag Bonni-Core mit Original-Logo, WebUI und Unraid-Vorlage. Regler für den Betrieb nicht an den internen Diensten ändern. Mit bereits installiertem FolderView3 und dem Ordner Bonni Core können die Einträge dort zusammengeklappt werden.\n'
                   'Neuinstallation löscht einen eindeutig erkannten älteren Bonni-Datenordner nur nach einmaliger ausdrücklicher Bestätigung dieses Pfades. Kein Backup, kein Verschieben. Fremde Ordner und Docker-Volumes werden nicht gelöscht. Die bisherigen Bonni-Container müssen vorher entfernt sein.\n'
@@ -1838,6 +1944,23 @@ jobs:
                       expected_members = [member for name, member in members] + list(extra_members) + ([instruction_member] if instruction_bytes is not None else [])
                       if archive.namelist() != expected_members or archive.testzip() is not None:
                           raise ValueError('BONNI_BUNDLE_VERIFICATION_FAILED')
+                      if plan.get('platform') == 'linux/amd64':
+                          # Check the actual ZIP against the Unraid contract independently of the writer's member list.
+                          def required(name, limit):
+                              item = archive.getinfo(folder + '/' + name)
+                              if not 0 < item.file_size <= limit:
+                                  raise ValueError('BONNI_UNRAID_MEMBER_INVALID: ' + name)
+                              return archive.read(item)
+                          script = required('bonnicore-install.sh', 2097152)
+                          for marker in (b'\nmode=browser\n', b'--browser|--terminal)', b'/etc/unraid-version',
+                                         b'container_name: Bonni-Core', b'my-Bonni-Core.xml', b'net.unraid.docker.icon'):
+                              if marker not in script:
+                                  raise ValueError('BONNI_UNRAID_INSTALLER_CONTRACT_MISSING')
+                          if (b'data-mode="live"' not in required('bonnicore-setup.html', 2097152)
+                              or b'startWizard' not in required('bonnicore-setup.mjs', 2097152)
+                              or not required('bonni-unraid.png', 2097152).startswith(b'\x89PNG\r\n\x1a\n')
+                              or not re.fullmatch(rb'(?:blobs/sha256/[a-f0-9]{64}|[a-f0-9]{64}/layer\.tar)\n(?:\./)?usr/local/bin/node\n(?:tar|gzip)\n[a-f0-9]{64}\n', required('bonni-unraid-runtime.txt', 256))):
+                              raise ValueError('BONNI_UNRAID_BROWSER_ASSETS_INVALID')
                       if instruction_bytes is not None and archive.read(instruction_member) != instruction_bytes:
                           raise ValueError('BONNI_INSTRUCTIONS_CONTENT_MISMATCH')
                       for member, (data, mode) in extra_members.items():
@@ -1850,7 +1973,12 @@ jobs:
                   os.replace(temporary, root / filename)
               finally:
                   temporary.unlink(missing_ok=True)
-              (root / (filename + '.sha256')).write_text(digest(root / filename) + '  ' + filename + '\n')
+              zip_hash = digest(root / filename)
+              (root / (filename + '.sha256')).write_text(zip_hash + '  ' + filename + '\n')
+              if plan.get('platform') == 'linux/amd64':
+                  # Runner-only receipt; never ship another file in the end user's ZIP or release.
+                  (root / '.bonni-unraid-browser-v1').write_text(filename + '\nsha256:' + zip_hash + '\n')
+                  print('Unraid-ZIP geprüft: Browser als Standard, Offline-Logo und bearbeitbarer Haupteintrag Bonni-Core.')
               print('Verified package: ' + filename)
           
           BONNI_BUNDLES
