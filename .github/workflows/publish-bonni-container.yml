@@ -1931,6 +1931,22 @@ jobs:
                   'Sie lädt das Bonni-Core-Image und startet einen Container. Danach WebUI öffnen und den Assistenten durchgehen. '
                   'Die Schritte im Browser stehen in Unraid-WebUI.md.\n\n'
               ) if plan.get('platform') == 'linux/amd64' and has_unraid_webui else ''
+              if unraid_intro and b'--unraid-zip' in installer_bytes:
+                  guide = read_installer_member('Unraid-WebUI.md').decode('utf-8')
+                  launchers = re.findall(r'^([^\n]+ --unraid-zip [^\n]+)$', guide, re.M)
+                  if len(launchers) != 1:
+                      raise ValueError('BONNI_UNRAID_ZIP_COMMAND_INVALID')
+                  launcher, count = re.subn(r'/mnt/user/appdata/64-Bit-Bonni-Core-v[^/\s]+-AMD64\.zip',
+                                            '/mnt/user/appdata/' + filename, launchers[0])
+                  if count != 1:
+                      raise ValueError('BONNI_UNRAID_ZIP_COMMAND_INVALID')
+                  unraid_intro = (
+                      'Unraid neu einrichten (AMD64)\n'
+                      'Dieses ZIP unentpackt in appdata ablegen und im Unraid-Webterminal ausführen:\n\n'
+                      + launcher + '\n\n'
+                      'Danach Docker > Bonni-Core > WebUI öffnen. Der Einrichtungscode steht unter Protokolle.\n'
+                      'Details stehen in Unraid-WebUI.md.\n\n'
+                  )
               extra_members[folder + '/INSTALLATION.txt'] = (('Bonni Core auf dem NAS\n\n' + unraid_intro +
                   'Bestehendes Bonni aktualisieren\n'
                   'Dieses ZIP ist für Einrichtung und Reparatur, nicht für ein Versionsupdate.\n'
