@@ -7,8 +7,8 @@ export function validAdminPassword(password) {
     && /[._@%+!:=-]/.test(password) && !/change.?me|example|default|password|passwort|admin|postgres/i.test(password);
 }
 
-export function unraidSetup({logo, designSource, version, savePassword, onSetup, onError, token = randomBytes(32).toString('hex')}) {
-  const {html, csp} = unraidSetupView(designSource, version);
+export function unraidSetup({logo, designSource, version, hostDataPath, savePassword, onSetup, onError, token = randomBytes(32).toString('hex')}) {
+  const {html, csp} = unraidSetupView(designSource, version, hostDataPath);
   const headers = {
     'Cache-Control': 'no-store',
     'Referrer-Policy': 'no-referrer',

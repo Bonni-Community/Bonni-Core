@@ -2,7 +2,15 @@
 
 ## Installation mit einem Befehl
 
-Lege das offizielle AMD64-Release-ZIP unentpackt in `appdata`. Öffne das Webterminal von Unraid und kopiere die folgende Zeile. Passe bei einer anderen Release-Version den ZIP-Dateinamen an.
+Lege die kurze Startdatei `bonnicore-install.sh` und das offizielle AMD64-Release-ZIP unentpackt in `appdata`. Öffne das Webterminal von Unraid und kopiere die folgende Zeile.
+
+```bash
+bash /mnt/user/appdata/bonnicore-install.sh
+```
+
+Für die Weitergabe als eine einzige Datei kann die Startdatei mit `--einzeldatei` das vorhandene ZIP unter `Unraid/bonnicore-install.sh` einbetten. Die erzeugte Datei allein wird dann in `appdata` abgelegt und mit demselben kurzen Befehl gestartet.
+
+Für den direkten Aufruf aus einem AMD64-Release-ZIP gilt die folgende Zeile. Passe bei einer anderen Release-Version den ZIP-Dateinamen an.
 
 ```bash
 ( set -e; zip=/mnt/user/appdata/64-Bit-Bonni-Core-v0.1.21-AMD64.zip; teil=${zip##*/}; installer=$(mktemp); trap 'rm -f -- "$installer"' EXIT; unzip -p "$zip" "${teil%.zip}/bonnicore-install.sh" > "$installer"; bash "$installer" --unraid-zip "$zip" )

@@ -16,12 +16,12 @@ Hier stehen die Änderungen der veröffentlichten Vollversionen.
 
 ### 0.1.21
 
-- NAS-Installer für Einrichtung und Reparatur – 10 Dateien hinzugefügt.
+- NAS-Installer für Einrichtung und Reparatur – 11 Dateien hinzugefügt.
 - Prüfung und Einspielen von Core-Updates – 5 Dateien hinzugefügt, 6 Dateien überarbeitet.
 - Container-Bau und Docker-Compose-Konfiguration – 2 Dateien hinzugefügt, 3 Dateien überarbeitet.
 - Einrichtung und Containerbetrieb – 13 Dateien hinzugefügt, 17 Dateien überarbeitet.
 - Anmeldung und Berechtigungen – 37 Dateien hinzugefügt, 22 Dateien überarbeitet.
-- Updates und Veröffentlichung – 3 Dateien hinzugefügt, 17 Dateien überarbeitet.
+- Updates und Veröffentlichung – 3 Dateien hinzugefügt, 19 Dateien überarbeitet.
 - Diagnose und Wartung – 10 Dateien hinzugefügt, 4 Dateien überarbeitet.
 - Datenbank, Datenablage und Sicherung – 4 Dateien hinzugefügt, 13 Dateien überarbeitet.
 - Verwaltung von Erweiterungen – 25 Dateien hinzugefügt, 11 Dateien überarbeitet.

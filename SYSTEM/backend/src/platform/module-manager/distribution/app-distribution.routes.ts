@@ -114,7 +114,11 @@ function route(action:(req:any,service:any)=>Promise<any>) {
     try {res.json(await action(req,await service()));}
     catch(error:any) {
       const code=error.code==='ENOENT'?'APP_REQUIRED_FILE_MISSING':String(error.code||(/^APP_[A-Z_]+$/.test(error.message||'')?error.message:'APP_INSTALL_FAILED')); 
-      res.status(code==='APP_INSTALL_BUSY_OR_RECOVERY_REQUIRED'?409:400).json({ok:false,error:code,message:messages[code]||'Das App-Paket konnte nicht verarbeitet werden ('+code+').'});
+      const permissionError = code === 'EACCES' || code === 'EPERM';
+      const message = permissionError
+        ? 'Bonni konnte auf einen Store-Ordner nicht zugreifen. Prüfe die Rechte für den UPDATE-Ordner und die gespeicherten Store-Einstellungen.'
+        : messages[code] || 'Das App-Paket konnte nicht verarbeitet werden ('+code+').';
+      res.status(permissionError ? 500 : code==='APP_INSTALL_BUSY_OR_RECOVERY_REQUIRED'?409:400).json({ok:false,error:code,message});
     }
   };
 }

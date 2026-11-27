@@ -8,13 +8,14 @@ import {
 
 export default function CoreUpdatePopover({
   status,
+  installedVersion,
   loading,
   action,
   error,
   onCheck,
   onNavigate,
 }) {
-  const currentVersion = status?.currentVersion || "";
+  const currentVersion = status?.currentVersion || installedVersion || "";
   const localUpdate = status?.localSourceUpdate || null;
   const localState = normalizeUpdateState(localUpdate?.state);
   const progressState = normalizeUpdateState(
@@ -41,11 +42,13 @@ export default function CoreUpdatePopover({
   const currentVersionLabel = formatBonniCoreVersion(currentVersion);
   const targetVersionLabel = targetVersion ? formatBonniCoreVersion(targetVersion) : null;
   const showUpdateAction = releaseAvailable || localAttention;
+  const versionConfirmed = status?.releasePlan?.packages?.some((entry) => entry.status === "installed") === true;
+  const statusLabel = !status ? "Status offen" : "Kein Update gemeldet";
   const headerLabel = localAttention
       ? localUpdateStateLabel(displayState)
       : releaseAvailable
         ? "Update verfügbar"
-      : "Aktuell";
+        : versionConfirmed ? "Aktuell" : statusLabel;
 
   return (
     <div className="cc-version-popover cc-update-popover cc-update-popover--compact" role="dialog" aria-label="Bonni-Core-Aktualisierung">
@@ -57,7 +60,7 @@ export default function CoreUpdatePopover({
             {targetVersion && targetVersion !== currentVersion ? <><b aria-hidden="true">→</b>{targetVersionLabel}</> : null}
           </strong>
         </div>
-        <span className={`cc-update-state${showUpdateAction ? " is-available" : ""}${localAttention && !releaseAvailable ? " is-local" : ""}`}>
+        <span className={`cc-update-state${showUpdateAction ? " is-available" : versionConfirmed ? "" : " is-unknown"}${localAttention && !releaseAvailable ? " is-local" : ""}`}>
           {headerLabel}
         </span>
       </div>
@@ -81,10 +84,14 @@ export default function CoreUpdatePopover({
             {localSuccess ? "Details ansehen" : localBusy ? "Fortschritt öffnen" : localFailure ? "Fehler ansehen" : "Aktualisieren"}
           </button>
         </section>
-      ) : (
+      ) : versionConfirmed ? (
         <div className="cc-update-compact-current">
           <span aria-hidden="true">✓</span>
           <div><strong>Bonni Core ist aktuell</strong><small>Derzeit ist keine Aktualisierung vorgemerkt.</small></div>
+        </div>
+      ) : (
+        <div className="cc-update-compact-status" role="status">
+          {!status && error ? "Der Update-Status konnte nicht geladen werden." : !status && loading ? "Der Update-Status wird geladen …" : statusLabel}
         </div>
       )}
 

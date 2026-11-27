@@ -31,7 +31,7 @@ assert_single() {
 }
 
 assert_healthy() {
-  local headers
+  local headers session access_token
   wait_for "$1/runtime-proxy/active-health" '"ok"'
   wait_for "$1/runtime-proxy/emergency-health" '"ok"'
   wait_for "$1/" '<html'
@@ -46,9 +46,15 @@ assert_healthy() {
     return 1
   fi
   assert_single
-  curl -fsS --max-time 10 -H "Origin: $1" -H 'Content-Type: application/json' \
+  session=$(curl -fsS --max-time 10 -H "Origin: $1" -H 'Content-Type: application/json' \
     --data "$(printf '{"login":"admin","password":"%s"}' "$password")" \
-    "$1/api/identity/auth/login" >/dev/null
+    "$1/api/identity/auth/login")
+  access_token=$(node -e 'const {accessToken} = JSON.parse(require("node:fs").readFileSync(0, "utf8")); if (!accessToken) process.exit(1); process.stdout.write(accessToken)' <<<"$session")
+  curl -fsS --max-time 15 -H "Authorization: Bearer $access_token" \
+    "$1/api/system/update-center" | node -e 'const status = JSON.parse(require("node:fs").readFileSync(0, "utf8")); if (!status.ok || status.area !== "core-update") process.exit(1)'
+  curl -fsS --max-time 15 -X PUT -H "Origin: $1" -H "Authorization: Bearer $access_token" \
+    -H 'Content-Type: application/json' --data '{"repository":""}' \
+    "$1/api/update/apps/settings" | node -e 'const settings = JSON.parse(require("node:fs").readFileSync(0, "utf8")); if (!settings.ok || settings.inbox !== "/bonni-data/UPDATE") process.exit(1)'
 }
 
 previous=$(docker ps -aq | sort)

@@ -102,6 +102,7 @@ install_unraid() {
     say 'Lege Bonni-Core in Docker an und starte den Container …'
     "${docker[@]}" run --detach --name "$name" --pull never --network bridge --publish 4000:4000/tcp \
       --env "BONNI_DEPLOYMENT_MODE=$mode" --env "TZ=${TZ:-Europe/Berlin}" \
+      --env "BONNI_UNRAID_HOST_DATA_PATH=$data" \
       --label "org.bonni.install.unraid=$mode" --label net.unraid.docker.managed=dockerman \
       --label "net.unraid.docker.webui=$webui" \
       --mount "type=bind,source=$data,target=/bonni-data" \

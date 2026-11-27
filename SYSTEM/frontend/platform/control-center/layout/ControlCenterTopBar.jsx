@@ -395,7 +395,8 @@ export default function ControlCenterTopBar({
 
           {versionOpen ? (
             <CoreUpdatePopover
-              status={{ ...(updateStatus || { currentVersion: BONNI_CORE_VERSION }), versionMismatch }}
+              status={updateStatus}
+              installedVersion={BONNI_CORE_VERSION}
               loading={updateLoading}
               action={updateAction}
               error={updateError}

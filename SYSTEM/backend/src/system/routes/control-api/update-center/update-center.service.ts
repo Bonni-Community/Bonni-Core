@@ -595,6 +595,9 @@ function preflightStorage(manifest: ReleaseManifest) {
 }
 
 function installationPolicy(manifest: ReleaseManifest | null, runner: Awaited<ReturnType<typeof getRunnerStatus>>) {
+  if (process.env.BONNI_DEPLOYMENT_MODE === "unraid-single-container") {
+    return { allowed: false, reason: "Dieser Unraid-Einzelcontainer hat keinen Core-Update-Dienst. Core-Images werden über Unraid gewechselt." };
+  }
   if (!manifest) return { allowed: false, reason: "Kein gültiges Update-Manifest vorhanden." };
   if (manifest.artifact.type !== "oci-image-archive") {
     return { allowed: false, reason: "Der Runner akzeptiert ausschließlich signierte OCI-Systemimages." };

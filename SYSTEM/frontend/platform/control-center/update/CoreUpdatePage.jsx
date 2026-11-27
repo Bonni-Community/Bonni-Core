@@ -1389,7 +1389,7 @@ export default function CoreUpdatePage({ token, onBack }) {
 
           <section className="cc-update-page-card cc-update-page-start">
             <span>Sicher aktualisieren</span>
-            <h2>{busy ? "Aktualisierung läuft" : completed ? "Bonni ist aktuell" : "Bereit zum Start"}</h2>
+            <h2>{busy ? "Aktualisierung läuft" : completed ? "Bonni ist aktuell" : installationBlocked ? "Installation gesperrt" : updateAvailable ? "Bereit zum Start" : "Kein Update gemeldet"}</h2>
             <ul>
               <li>Paket und Dateihashes werden zuerst geprüft.</li>
               <li>Vor Änderungen wird eine Sicherung erstellt.</li>

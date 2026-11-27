@@ -260,6 +260,7 @@ async function main() {
     logo: await fs.readFile(new URL('./bonni-unraid.png', import.meta.url)),
     designSource: await fs.readFile(new URL('./unraid-setup-design.html', import.meta.url), 'utf8'),
     version,
+    hostDataPath: process.env.BONNI_UNRAID_HOST_DATA_PATH,
     async savePassword(admin) {
       const next = {
         format: dataVersion, version, phase: 'initializing', admin,
@@ -329,6 +330,10 @@ async function main() {
   for (const name of ['run-system', 'storage', 'extensions', 'update']) {
     await directory(path.join(data, name), 0o750, activeUser);
   }
+  // The Store and the update lifecycle use separate, case-sensitive paths.
+  await directory(path.join(data, 'UPDATE'), 0o750, activeUser);
+  await directory(path.join(data, 'SYSTEM'), 0o750, activeUser);
+  await directory(path.join(data, 'SYSTEM', '.bonni-source-update'), 0o700, activeUser);
   await directory(readOnlySystem, 0o750, emergencyUser);
   await directory(path.join(runSystem, 'system'), 0o750, activeUser);
   await directory(path.join(runSystem, 'system/emergency'), 0o750, activeUser);

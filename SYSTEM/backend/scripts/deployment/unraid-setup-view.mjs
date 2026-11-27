@@ -146,9 +146,40 @@ const poseDescriptions = [
   ['pose-zusammenfassung', 'Bonni stellt das Ergebnis auf einer Anzeige dar.'],
 ];
 
-export function unraidSetupView(designSource, version) {
-  const stylesheet = /<style>([\s\S]*?)<\/style>/.exec(designSource)?.[1].replace(/\r\n?/g, '\n');
-  if (!stylesheet) throw Error('UNRAID_SETUP_STYLES_MISSING');
+const setupStyles = `
+.brand-hexagon, .brand-hexagon-inner {
+  display: grid;
+  place-items: center;
+  clip-path: polygon(50% 0%, 93% 25%, 93% 75%, 50% 100%, 7% 75%, 7% 25%);
+}
+.brand-hexagon { width: 44px; height: 44px; padding: 1px; background: #ffa954; }
+.brand-hexagon-inner { width: 100%; height: 100%; background: #fff; }
+.brand-hexagon .brand-logo { width: 100%; height: 100%; }
+@media (min-width: 761px) {
+  .rail { align-self: stretch; display: flex; flex-direction: column; }
+  .rail .helper { margin-top: auto; }
+  .rail .steps { margin-bottom: 24px; }
+}
+@media (max-width: 760px) {
+  .brand-hexagon { width: 36px; height: 36px; }
+  .storage-path { flex-wrap: wrap; gap: 4px 14px; }
+}
+`;
+
+function storageRows(hostDataPath) {
+  const escaped = hostDataPath?.startsWith('/')
+    ? hostDataPath.replace(/[&<>]/g, value => ({'&': '&amp;', '<': '&lt;', '>': '&gt;'})[value])
+    : null;
+  const host = escaped ? `<code>${escaped}</code>` : 'Unter „Bonni-Core → Bearbeiten“ prüfen';
+  return `<div class="datum storage-path"><dt>Datenordner auf Unraid</dt><dd>${host}</dd></div>
+        <div class="datum storage-path"><dt>Pfad im Container</dt><dd><code>/bonni-data</code></dd></div>`;
+}
+
+export function unraidSetupView(designSource, version, hostDataPath) {
+  const baseStyles = /<style>([\s\S]*?)<\/style>/.exec(designSource)?.[1].replace(/\r\n?/g, '\n');
+  if (!baseStyles) throw Error('UNRAID_SETUP_STYLES_MISSING');
+  const stylesheet = baseStyles + setupStyles;
+  const paths = storageRows(hostDataPath);
   const illustrations = poseDescriptions.map(([id, description], index) => {
     const src = new RegExp(`<img id="${id}"[^>]* src="(data:image/(?:png|webp);base64,[A-Za-z0-9+/=]+)"`).exec(designSource)?.[1];
     if (!src) throw Error('UNRAID_SETUP_ILLUSTRATION_MISSING: ' + id);
@@ -166,7 +197,7 @@ export function unraidSetupView(designSource, version) {
   <style>${stylesheet}</style>
 </head>
 <body>
-<header><div class="bar"><div class="brand"><img class="brand-logo" src="/bonni-logo.png" alt="" width="44" height="44">Bonni Core</div><span class="small-label">Ersteinrichtung</span></div></header>
+<header><div class="bar"><div class="brand"><span class="brand-hexagon" aria-hidden="true"><span class="brand-hexagon-inner"><img class="brand-logo" src="/bonni-logo.png" alt="" width="44" height="44"></span></span>Bonni Core</div><span class="small-label">Ersteinrichtung</span></div></header>
 <main class="layout">
   <aside class="rail" aria-label="Einrichtungsschritte">
     <h2>Bonni einrichten</h2>
@@ -189,9 +220,8 @@ export function unraidSetupView(designSource, version) {
     </section>
     <section data-step="1" hidden>
       <h1 tabindex="-1">Speicherort prüfen</h1>
-      <p class="intro">Bonni nutzt den Datenordner, den du in Unraid für diesen Container eingestellt hast. Datenbank und Einstellungen bleiben dort gespeichert.</p>
-      <dl class="rows"><div class="datum"><dt>Pfad im Container</dt><dd><code>/bonni-data</code></dd></div></dl>
-      <p class="note">Den Ordner auf deinem NAS kannst du in Unraid unter Docker → Bonni-Core → Bearbeiten ansehen oder ändern.</p>
+      <dl class="rows">${paths}</dl>
+      <p class="note">Im Datenordner auf Unraid speichert Bonni die Datenbank und die Einstellungen. Den Ordner findest du unter Docker → Bonni-Core → Bearbeiten.</p>
     </section>
     <section data-step="2" hidden>
       <h1 tabindex="-1">Admin-Konto anlegen</h1>
@@ -212,7 +242,7 @@ export function unraidSetupView(designSource, version) {
     <section data-step="3" hidden>
       <h1 tabindex="-1">Einrichtung überprüfen</h1>
       <dl class="rows">
-        <div class="datum"><dt>Speicherort</dt><dd><code>/bonni-data</code></dd></div>
+        ${paths}
         <div class="datum"><dt>Datenbank</dt><dd>PostgreSQL im Bonni-Core-Container</dd></div>
         <div class="datum"><dt>Anmeldung</dt><dd>admin</dd></div>
       </dl>

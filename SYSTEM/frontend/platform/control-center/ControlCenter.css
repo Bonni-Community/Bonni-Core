@@ -776,6 +776,18 @@
   background: rgba(255, 107, 47, 0.13);
 }
 
+.cc-update-state.is-unknown,
+.cc-update-compact-status {
+  color: #414956;
+  background: #eef0f3;
+}
+
+.cc-update-compact-status {
+  border-radius: 12px;
+  padding: 13px;
+  font-size: 0.84rem;
+}
+
 .cc-update-popover--compact {
   width: min(440px, calc(100vw - 36px));
   max-height: min(660px, calc(100vh - 170px));
