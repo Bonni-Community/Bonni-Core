@@ -399,8 +399,15 @@ jobs:
             }).join("\n");
             const qualification = platforms.includes("linux/arm/v7")
               ? "\n\nARMv7: Start/Neustart unter Emulation und ELF-32K-Vorprüfung bestanden. Hardwaretest noch erforderlich." : "";
+            const unraidWebUiIncluded = platforms.includes("linux/amd64")
+              && (await fs.lstat("release/PAYLOAD/SYSTEM/backend/deploy/bonni-nas-installer/my-Bonni-Core.xml").catch(error => {
+                if (error.code !== "ENOENT") throw error;
+                return null;
+              }))?.isFile();
+            const unraidInstall = unraidWebUiIncluded
+              ? "\n\nUnraid (AMD64): Die Unraid-Vorlage liegt im Bonni-Core-AMD64-ZIP. Vorlage über das Docker-Menü verwenden und anschließend WebUI öffnen. Bonni Core, Datenbank und Einrichtungsassistent laufen in einem Container." : "";
             const body = cleaned + "\n\n" + start + "\nGeprüfter Container: `" + env.IMAGE + "@" + env.DIGEST
-              + "`.\n\nGeführte NAS-Installation: Das passende Offline-ZIP entpacken, INSTALLATION.txt lesen und `bash bonnicore-install.sh` im passenden Paketordner ausführen. Der Installer erkennt die NAS-Software und richtet Bonni Core samt Datenbank und Update-Dienst ein. Apps werden nicht installiert. Alternativ steht die Online-YML für eine manuelle Installation zur Verfügung. Prüfsummen liegen jeweils bei.\n\n" + downloads + qualification
+              + "`.\n\nNAS-Installation: Das passende Bonni-Core-ZIP entpacken und INSTALLATION.txt öffnen. Die Online-YML und die Prüfsummen stehen ebenfalls zum Download bereit." + unraidInstall + "\n\n" + downloads + qualification
               + "\n\nBonni Core aktualisieren (bestehende Installation):"
               + "\n\nMit Internet: Im Control Center unter Updates prüfen. Bonni lädt `manifest-<Architektur>.json` und das signierte Update direkt von GitHub."
               + "\n\nOhne Internet: Für die passende Architektur das Offline-Manifest und dieselbe `.oci`-Datei am PC herunterladen:"
@@ -1366,6 +1373,25 @@ jobs:
           
           BONNI_COMPOSE_SCRIPT
 
+      - name: Test the Unraid WebUI with the regular AMD64 release image
+        if: contains(inputs.platforms, 'linux/amd64')
+        run: |
+          set -euo pipefail
+          backend=release/PAYLOAD/SYSTEM/backend
+          template="$backend/deploy/bonni-nas-installer/my-Bonni-Core.xml"
+          entry="$backend/scripts/deployment/container-entrypoint.sh"
+          if [[ ! -e "$template" && ! -e "$entry" ]]; then exit 0; fi
+          test -f "$template"
+          test -f "$entry"
+          image=$(node -e '
+            const plan = require("./export-plan.json").find(p => p.platform === "linux/amd64");
+            const image = plan?.images.find(i => i.service === "bonni-core")?.reference;
+            if (!/^[a-z0-9][a-z0-9._:/-]*@sha256:[a-f0-9]{64}$/.test(image)) process.exit(1);
+            process.stdout.write(image);
+          ')
+          docker pull --platform linux/amd64 "$image"
+          BONNI_UNRAID_IMAGE="$image" bash "$backend/scripts/deployment/smoke-unraid.sh"
+
       - name: Start and restart the Compose application for every architecture
         env:
           PLATFORMS: ${{ inputs.platforms }}
@@ -1743,6 +1769,7 @@ jobs:
           set -euo pipefail
           python3 - <<'BONNI_BUNDLES'
           import hashlib, json, os, pathlib, re, shutil, subprocess, tarfile, zipfile
+          import xml.etree.ElementTree as ET
           installer_filename = 'bonnicore-install.sh'
           deployment = pathlib.Path('release/PAYLOAD/SYSTEM/backend/deploy')
           installer_dir = deployment / 'bonni-nas-installer'
@@ -1777,6 +1804,25 @@ jobs:
           plans = json.loads(pathlib.Path('bundle-plan.json').read_text())
           if not isinstance(plans, list) or not 1 <= len(plans) <= 4:
               raise ValueError('BONNI_BUNDLE_PLAN_INVALID')
+          unraid_template = None
+          webui_source = installer_dir / 'my-Bonni-Core.xml'
+          webui_entry = deployment.parent / 'scripts/deployment/container-entrypoint.sh'
+          has_unraid_webui = any(plan.get('platform') == 'linux/amd64' for plan in plans) and (
+              webui_source.exists() or webui_source.is_symlink() or webui_entry.exists() or webui_entry.is_symlink()
+          )
+          if has_unraid_webui:
+              if webui_entry.is_symlink() or not webui_entry.is_file():
+                  raise ValueError('BONNI_UNRAID_ENTRYPOINT_MISSING')
+              export = json.loads(pathlib.Path('export-plan.json').read_text())
+              amd64 = next(plan for plan in export if plan['platform'] == 'linux/amd64')
+              image = next(entry['reference'] for entry in amd64['images'] if entry['service'] == 'bonni-core')
+              if not re.fullmatch(r'[a-z0-9][a-z0-9._:/-]*@sha256:[a-f0-9]{64}', image):
+                  raise ValueError('BONNI_UNRAID_IMAGE_INVALID')
+              marker = b'{{BONNI_IMAGE}}'
+              template_source = read_installer_member('my-Bonni-Core.xml')
+              if template_source.count(marker) != 1:
+                  raise ValueError('BONNI_UNRAID_TEMPLATE_INVALID')
+              unraid_template = template_source.replace(marker, image.encode('ascii'))
           def digest(path):
               with open(path, 'rb') as source:
                   return hashlib.file_digest(source, 'sha256').hexdigest()
@@ -1861,6 +1907,9 @@ jobs:
                       extra_members[directory + setup_name] = (setup_content, 0o100644)
                   if variant['architecture'] == 'AMD64':
                       extra_members[directory + 'bonni-unraid.png'] = (unraid_icon, 0o100644)
+                  if variant['architecture'] == 'AMD64' and has_unraid_webui:
+                      extra_members[directory + 'my-Bonni-Core.xml'] = (unraid_template, 0o100644)
+                      extra_members[directory + 'Unraid-WebUI.md'] = (read_installer_member('Unraid-WebUI.md'), 0o100644)
                   for name in names:
                       path = root / name
                       if path.is_symlink() or not path.is_file() or path.stat().st_size == 0:
@@ -1876,13 +1925,19 @@ jobs:
               installer_commands = '\n'.join('  bash ' + (v['subfolder'] + '/' if v['subfolder'] else '') + installer_filename for v in variants)
               browser_commands = '\n'.join(command + ' --browser' for command in installer_commands.splitlines())
               terminal_commands = '\n'.join(command + ' --terminal' for command in installer_commands.splitlines())
-              extra_members[folder + '/INSTALLATION.txt'] = (('Bonni Core auf dem NAS\n\n'
+              unraid_intro = (
+                  'Unraid neu einrichten (AMD64)\n'
+                  'Die Vorlage my-Bonni-Core.xml aus diesem Paket im Unraid-Docker-Menü verwenden. '
+                  'Sie lädt das Bonni-Core-Image und startet einen Container. Danach WebUI öffnen und den Assistenten durchgehen. '
+                  'Die Schritte im Browser stehen in Unraid-WebUI.md.\n\n'
+              ) if plan.get('platform') == 'linux/amd64' and has_unraid_webui else ''
+              extra_members[folder + '/INSTALLATION.txt'] = (('Bonni Core auf dem NAS\n\n' + unraid_intro +
                   'Bestehendes Bonni aktualisieren\n'
                   'Dieses ZIP ist für Einrichtung und Reparatur, nicht für ein Versionsupdate.\n'
                   'Mit Internet: In der Bonni-Weboberfläche unter Control Center > Updates auf Updates prüfen und das angebotene signierte Core-Update verwenden.\n'
                   'Ohne Internet: Aus dem Bonni-Core-Release manifest-offline-<Architektur>.json und die dazugehörige OCI-Datei am PC herunterladen. Beide unverändert im Bonni-Datenordner unter UPDATE/core/offline ablegen und im Control Center erneut auf Updates prüfen.\n'
                   'Das normale GitHub-Manifest mit HTTPS-Link ist kein Offline-Manifest. Nicht umschreiben oder mit dem Installations-ZIP ersetzen.\n\n'
-                  'Bonni einrichten oder reparieren\n'
+                  'Offline-Installation und Reparatur mit dem NAS-Installer\n'
                   'Das Offline-ZIP am PC herunterladen, auf das NAS kopieren und dort vollständig entpacken. Docker mit Compose muss auf dem NAS bereits verfügbar sein; Bonni-Core- und Datenbank-Images kommen aus dem ZIP.\n'
                   'Auf dem NAS im entpackten Paketordner das Terminal öffnen.\n'
                   'Standard: Der Browser-Assistent startet mit diesem Befehl:\n' + installer_commands + '\n\n'
@@ -1961,6 +2016,19 @@ jobs:
                               or not required('bonni-unraid.png', 2097152).startswith(b'\x89PNG\r\n\x1a\n')
                               or not re.fullmatch(rb'(?:blobs/sha256/[a-f0-9]{64}|[a-f0-9]{64}/layer\.tar)\n(?:\./)?usr/local/bin/node\n(?:tar|gzip)\n[a-f0-9]{64}\n', required('bonni-unraid-runtime.txt', 256))):
                               raise ValueError('BONNI_UNRAID_BROWSER_ASSETS_INVALID')
+                          if has_unraid_webui:
+                              template = ET.fromstring(required('my-Bonni-Core.xml', 2097152))
+                              mode = template.find("./Config[@Target='BONNI_DEPLOYMENT_MODE']")
+                              data_path = template.find("./Config[@Target='/bonni-data']")
+                              port = template.find("./Config[@Target='4000']")
+                              if (template.tag != 'Container' or template.findtext('Repository') != image
+                                  or template.findtext('WebUI') != 'http://[IP]:[PORT:4000]/'
+                                  or template.findtext('Privileged') != 'false'
+                                  or mode is None or mode.attrib.get('Type') != 'Variable' or mode.text != 'unraid-single-container'
+                                  or data_path is None or data_path.attrib.get('Type') != 'Path'
+                                  or port is None or port.attrib.get('Type') != 'Port'):
+                                  raise ValueError('BONNI_UNRAID_TEMPLATE_INVALID')
+                              required('Unraid-WebUI.md', 2097152)
                       if instruction_bytes is not None and archive.read(instruction_member) != instruction_bytes:
                           raise ValueError('BONNI_INSTRUCTIONS_CONTENT_MISMATCH')
                       for member, (data, mode) in extra_members.items():
@@ -1978,7 +2046,8 @@ jobs:
               if plan.get('platform') == 'linux/amd64':
                   # Runner-only receipt; never ship another file in the end user's ZIP or release.
                   (root / '.bonni-unraid-browser-v1').write_text(filename + '\nsha256:' + zip_hash + '\n')
-                  print('Unraid-ZIP geprüft: Browser als Standard, Offline-Logo und bearbeitbarer Haupteintrag Bonni-Core.')
+                  if has_unraid_webui:
+                      print('Unraid-ZIP geprüft: WebUI-Vorlage mit dem offiziellen AMD64-Image und Einrichtungsassistent.')
               print('Verified package: ' + filename)
           
           BONNI_BUNDLES
