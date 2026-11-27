@@ -6,6 +6,12 @@ umask 077
 export LC_ALL=C
 
 fail() { printf '[Bonni] %s\n' "$*" >&2; exit 1; }
+fail_with() {
+  local code=$1; shift
+  if [[ "${diagnose_only:-false}" == true ]]; then printf '%s\n' "$code" >&3; exit 1; fi
+  wizard_failure=$code
+  fail "$@"
+}
 say() { printf '[Bonni] %s\n' "$*"; }
 
 root=''
@@ -64,30 +70,40 @@ core_version=${stem#Bonni-Core-v}
 core_version=${core_version%-"$architecture"}
 core_tar="$stem.tar"
 database_tar="$stem-Datenbank.tar"
-for utility in docker sha256sum grep od tr df awk stat; do
+for utility in sha256sum grep od tr df awk stat; do
   command -v "$utility" >/dev/null || fail "Benötigtes Programm fehlt: $utility."
 done
 docker_local=(docker --host unix:///var/run/docker.sock)
-"${docker_local[@]}" compose version >/dev/null 2>&1 || fail 'Docker Compose v2 fehlt. Bitte Docker/Container Manager zuerst bereitstellen.'
-"${docker_local[@]}" info >/dev/null 2>&1 || fail 'Der lokale Docker-Dienst läuft nicht oder ist für dieses Terminal nicht erreichbar.'
+host_wizard=false
+if [[ "$os:$mode:$check" == 'Unraid:browser:false' ]]; then host_wizard=true; fi
+require_docker() {
+  local -a command=("${docker_local[@]}")
+  if [[ "$host_wizard" == true ]]; then command=(timeout 8 "${command[@]}"); fi
+  command -v docker >/dev/null || fail_with docker-missing 'Der Docker-Befehl fehlt. Prüfe den Docker-Dienst auf dem NAS.'
+  "${command[@]}" info >/dev/null 2>&1 || fail_with docker-off 'Der lokale Docker-Dienst läuft nicht oder ist für dieses Terminal nicht erreichbar.'
+  "${command[@]}" compose version >/dev/null 2>&1 || fail_with compose-missing 'Docker Compose v2 fehlt. Bitte Docker/Container Manager zuerst bereitstellen.'
+}
+if [[ "$host_wizard" == false ]]; then require_docker; fi
 
 check_docker_space() {
   local details docker_root driver_status free_kib tar size archive_kib=0 need_kib=524288 hint quiet=false
   if [[ "${1-}" == --quiet ]]; then quiet=true; shift; fi
   # DockerRootDir is the daemon's data path, not the location of the ZIP or the NAS share.
   # Do not guess a storage path if Docker reports a separate containerd image store.
-  details=$("${docker_local[@]}" info --format '{{.DockerRootDir}}{{println}}{{json .DriverStatus}}' 2>/dev/null) \
-    || fail 'Docker-Speicher nicht prüfbar: Der lokale Docker-Dienst meldet seinen Datenpfad nicht.'
+  local -a command=("${docker_local[@]}")
+  if [[ "$host_wizard" == true ]]; then command=(timeout 8 "${command[@]}"); fi
+  details=$("${command[@]}" info --format '{{.DockerRootDir}}{{println}}{{json .DriverStatus}}' 2>/dev/null) \
+    || fail_with disk-unreadable 'Docker-Speicher nicht prüfbar: Der lokale Docker-Dienst meldet seinen Datenpfad nicht.'
   docker_root=${details%%$'\n'*}
   driver_status=${details#*$'\n'}
   [[ "$details" == *$'\n'* && "$docker_root" == /* && "$docker_root" != / && "$docker_root" != *[[:cntrl:]]* && -d "$docker_root" \
     && ( "$driver_status" == null || "$driver_status" == \[*\] ) && "$driver_status" != *$'\n'* ]] \
-    || fail 'Docker-Speicher nicht prüfbar: Docker-Datenpfad oder Speichertreiber nicht eindeutig. Es wird nicht fortgefahren.'
+    || fail_with disk-unreadable 'Docker-Speicher nicht prüfbar: Docker-Datenpfad oder Speichertreiber nicht eindeutig. Es wird nicht fortgefahren.'
   [[ "$driver_status" != *'io.containerd.snapshotter.v1'* ]] \
-    || fail 'Docker-Speicher nicht prüfbar: Das separate containerd-Image-Verzeichnis lässt sich nicht sicher ermitteln. Es wird nicht fortgefahren.'
+    || fail_with disk-unreadable 'Docker-Speicher nicht prüfbar: Das separate containerd-Image-Verzeichnis lässt sich nicht sicher ermitteln. Es wird nicht fortgefahren.'
   free_kib=$(df -Pk -- "$docker_root" 2>/dev/null | awk 'NR == 2 { print $4 } END { if (NR != 2) exit 1 }') \
-    || fail "Docker-Speicher nicht prüfbar: Freier Platz für $docker_root ist nicht lesbar."
-  [[ "$free_kib" =~ ^[0-9]{1,16}$ ]] || fail "Docker-Speicher nicht prüfbar: Ungültige Größenangabe für $docker_root."
+    || fail_with disk-unreadable "Docker-Speicher nicht prüfbar: Freier Platz für $docker_root ist nicht lesbar."
+  [[ "$free_kib" =~ ^[0-9]{1,16}$ ]] || fail_with disk-unreadable "Docker-Speicher nicht prüfbar: Ungültige Größenangabe für $docker_root."
   for tar in "$@"; do
     size=$(stat -c '%s' -- "$tar" 2>/dev/null) || fail "Größe des Image-Archivs nicht lesbar: $tar."
     [[ "$size" =~ ^[0-9]{1,15}$ ]] && (( 10#$size > 0 )) || fail "Ungültige Größe des Image-Archivs: $tar."
@@ -102,7 +118,7 @@ check_docker_space() {
   if ((free_kib < need_kib)); then
     hint='Bitte auf dem Docker-Speicher Platz schaffen und erneut starten.'
     if [[ "$os" == Unraid ]]; then hint='Auf Unraid unter Einstellungen > Docker Größe und Speicherort der Docker-vDisk prüfen.'; fi
-    fail "Zu wenig Docker-Speicher ($docker_root): $((free_kib / 1024)) MiB frei, mindestens $(((need_kib + 1023) / 1024)) MiB empfohlen. Abbruch. $hint"
+    fail_with disk-space "Zu wenig Docker-Speicher ($docker_root): $((free_kib / 1024)) MiB frei, mindestens $(((need_kib + 1023) / 1024)) MiB empfohlen. Abbruch. $hint"
   fi
   if [[ "$quiet" == false ]]; then
     say "Docker-Speicher ($docker_root): $((free_kib / 1024)) MiB frei; Speicherprüfung bestanden."
@@ -156,11 +172,11 @@ render_config() {
 
 read_private_recovery_file() {
   local metadata perms owner size
-  [[ -f "$1" && ! -L "$1" ]] || fail "$2 fehlt oder ist keine direkte Datei."
-  metadata=$(stat -c '%a %u %s' -- "$1") || fail "$2 ist nicht lesbar."
+  [[ -f "$1" && ! -L "$1" ]] || fail_with invalid-config "$2 fehlt oder ist keine direkte Datei."
+  metadata=$(stat -c '%a %u %s' -- "$1") || fail_with invalid-config "$2 ist nicht lesbar."
   read -r perms owner size <<<"$metadata"
-  [[ "$perms" =~ ^[0-7]{1,4}$ && "$owner" == "$(id -u)" && "$size" =~ ^[0-9]{1,8}$ ]] || fail "$2 gehört nicht dem aktuellen Benutzer oder hat ungültige Dateidaten."
-  (( (8#$perms & 077) == 0 && size > 0 && size <= 65536 )) || fail "$2 hat unsichere Rechte oder eine unzulässige Größe."
+  [[ "$perms" =~ ^[0-7]{1,4}$ && "$owner" == "$(id -u)" && "$size" =~ ^[0-9]{1,8}$ ]] || fail_with invalid-config "$2 gehört nicht dem aktuellen Benutzer oder hat ungültige Dateidaten."
+  (( (8#$perms & 077) == 0 && size > 0 && size <= 65536 )) || fail_with invalid-config "$2 hat unsichere Rechte oder eine unzulässige Größe."
   cat -- "$1"
 }
 
@@ -169,19 +185,19 @@ read_exact_field() {
   while IFS= read -r line; do
     if [[ "$line" =~ $regex ]]; then found=${BASH_REMATCH[1]}; count=$((count+1)); fi
   done <<<"$data"
-  ((count == 1)) || fail 'Vorhandene Installation passt nicht eindeutig zum Bonni-Format.'
+  ((count == 1)) || fail_with invalid-config 'Vorhandene Installation passt nicht eindeutig zum Bonni-Format.'
   printf '%s' "$found"
 }
 
 prepare_recovery() {
   local intent=${1:-recover} path_cursor original normal native database_value master_value admin_value native_expected
   local stored_state schema phase stored_root runtime_project environment owner
-  [[ "$root" =~ ^(/[a-zA-Z0-9._-]+){2,}$ && "$root/" != *'/./'* && "$root/" != *'/../'* && "$root" != "$here" ]] || fail 'Bitte den bisherigen absoluten Bonni-Datenpfad mit --ordner angeben.'
+  [[ "$root" =~ ^(/[a-zA-Z0-9._-]+){2,}$ && "$root/" != *'/./'* && "$root/" != *'/../'* && "$root" != "$here" ]] || fail_with data-path 'Bitte den bisherigen absoluten Bonni-Datenpfad mit --ordner angeben.'
   case "$root" in /bin/*|/boot/*|/dev/*|/etc/*|/proc/*|/sys/*|/usr/*|/var/lib/docker|/var/lib/docker/*) fail 'Der Datenpfad liegt in einem Systemordner.';; esac
-  [[ -d "$root" && -r "$root" && -x "$root" ]] || fail 'Der ursprüngliche Bonni-Datenordner fehlt oder ist nicht lesbar.'
+  [[ -d "$root" && -r "$root" && -x "$root" ]] || fail_with data-path 'Der ursprüngliche Bonni-Datenordner fehlt oder ist nicht lesbar.'
   path_cursor=$root
   while [[ -n "$path_cursor" ]]; do
-    [[ ! -L "$path_cursor" ]] || fail 'Der ursprüngliche Bonni-Datenpfad darf keine Symlinks enthalten.'
+    [[ ! -L "$path_cursor" ]] || fail_with data-path 'Der ursprüngliche Bonni-Datenpfad darf keine Symlinks enthalten.'
     path_cursor=${path_cursor%/*}
   done
   recovery_config="$root.bonni-compose.yml"
@@ -192,9 +208,9 @@ prepare_recovery() {
   recovery_layout=normal
   normal=$(render_config "$database_value" "$master_value" "$admin_value" normal) || exit 1
   if [[ "$original" != "$normal" ]]; then
-    [[ "$os" == Unraid ]] || fail 'Die vorhandene Konfiguration passt nicht zu diesem NAS-Paket. Das ursprüngliche Offline-ZIP verwenden.'
+    [[ "$os" == Unraid ]] || fail_with wrong-package 'Die vorhandene Konfiguration passt nicht zu diesem NAS-Paket. Das ursprüngliche Offline-ZIP verwenden.'
     native=$(render_config "$database_value" "$master_value" "$admin_value" native) || exit 1
-    [[ "$original" == "$native" ]] || fail 'Die vorhandene Konfiguration passt nicht zu diesem NAS-Paket. Das ursprüngliche Offline-ZIP verwenden.'
+    [[ "$original" == "$native" ]] || fail_with wrong-package 'Die vorhandene Konfiguration passt nicht zu diesem NAS-Paket. Das ursprüngliche Offline-ZIP verwenden.'
     recovery_layout=native
     # Validate any already registered native template's private start inputs,
     # without rewriting them or consuming a credential from the boot device.
@@ -223,17 +239,17 @@ prepare_recovery() {
     environment=$(read_private_recovery_file "$root/SYSTEM/backend/.env" 'Die gespeicherte Laufzeitkonfiguration') || exit 1
     [[ "$(read_exact_field "$environment" "^COMPOSE_PROJECT_NAME='(bonni-[0-9a-f]{12})'$" )" == "$runtime_project" ]] || fail 'Der gespeicherte Projektname stimmt nicht mit dem Installationsbeleg überein.'
     if [[ "$intent" == recover ]]; then
-      owner=$("${docker_local[@]}" volume inspect --format '{{index .Labels "com.docker.compose.project"}}/{{index .Labels "org.bonni.runtime.data"}}' "${runtime_project}_postgres_data" 2>/dev/null) || fail 'Das ursprüngliche PostgreSQL-Volume fehlt oder ist nicht lesbar. Es wird keine neue Datenbank angelegt.'
-      [[ "$owner" == "$runtime_project/production-database" ]] || fail 'Das PostgreSQL-Volume konnte Bonnis Installation nicht eindeutig zugeordnet werden.'
+      owner=$("${docker_local[@]}" volume inspect --format '{{index .Labels "com.docker.compose.project"}}/{{index .Labels "org.bonni.runtime.data"}}' "${runtime_project}_postgres_data" 2>/dev/null) || fail_with database 'Das ursprüngliche PostgreSQL-Volume fehlt oder ist nicht lesbar. Es wird keine neue Datenbank angelegt.'
+      [[ "$owner" == "$runtime_project/production-database" ]] || fail_with database 'Das PostgreSQL-Volume konnte Bonnis Installation nicht eindeutig zugeordnet werden.'
     fi
   else
     local -a old_files
     shopt -s dotglob
     old_files=("$root"/*)
     shopt -u dotglob
-    ((${#old_files[@]} == 0)) || fail 'Der Datenordner ist belegt, aber der Installationsbeleg fehlt. Bonni startet nicht automatisch.'
+    ((${#old_files[@]} == 0)) || fail_with invalid-config 'Der Datenordner ist belegt, aber der Installationsbeleg fehlt. Bonni startet nicht automatisch.'
   fi
-  "${recovery_compose[@]}" config -q >/dev/null 2>&1 || fail 'Docker Compose kann die gespeicherte Konfiguration nicht prüfen.'
+  "${recovery_compose[@]}" config -q >/dev/null 2>&1 || fail_with invalid-config 'Docker Compose kann die gespeicherte Konfiguration nicht prüfen.'
 }
 
 check_recovery_images() {
@@ -247,7 +263,7 @@ check_recovery_images() {
     if ! image=$("${docker_local[@]}" image inspect --format '{{.Id}}' "$ref" 2>/dev/null); then
       recovery_missing+=("$tar")
     elif [[ ! "$image" =~ ^sha256:[a-f0-9]{64}$ || ( -n "$expected" && "$expected" != "$image" ) ]]; then
-      fail 'Das lokale Image passt nicht zum gespeicherten Installationsstand. Kein Start.'
+      fail_with wrong-package 'Das lokale Image passt nicht zum gespeicherten Installationsstand. Kein Start.'
     fi
   done
   if ((${#recovery_missing[@]})); then check_docker_space "${recovery_missing[@]}"; fi
@@ -272,7 +288,8 @@ start_recovery() {
     fi
     [[ "$image" =~ ^sha256:[a-f0-9]{64}$ && ( -z "$expected" || "$expected" == "$image" ) ]] || fail 'Das lokale Image passt nicht zum gespeicherten Installationsstand. Kein Start.'
   done
-  "${recovery_compose[@]}" up -d --pull never --no-build --no-recreate --wait --wait-timeout 300 bonni-core || fail 'Bonni hat den Wiederanlauf nicht abgeschlossen. Die Startkonfiguration wurde nicht ersetzt.'
+  "${recovery_compose[@]}" up -d --pull never --no-build --no-recreate --wait --wait-timeout 300 bonni-core || fail_with start-failed 'Bonni hat den Wiederanlauf nicht abgeschlossen. Die Startkonfiguration wurde nicht ersetzt.'
+  if [[ "$mode" == browser ]]; then wait_for_webui "${recovery_compose[@]}"; fi
   say 'Bonni Core ist wieder bereit. WebUI: http://<NAS-IP>:4000'
 }
 
@@ -287,22 +304,151 @@ verify_erase_target() {
   if [[ -n "$recovery_runtime_project" ]]; then projects+=("$recovery_runtime_project"); fi
   for project_id in "${projects[@]}"; do
     containers=$("${docker_local[@]}" ps --all --quiet --filter "label=com.docker.compose.project=$project_id" 2>/dev/null) || fail 'Container-Status nicht sicher prüfbar.'
-    [[ -z "$containers" ]] || fail 'Zum Leeren müssen die Container dieser Bonni-Installation vorher entfernt sein.'
+    [[ -z "$containers" ]] || fail_with folder-in-use 'Zum Leeren müssen die Container dieser Bonni-Installation vorher entfernt sein.'
   done
   containers=$("${docker_local[@]}" ps --all --quiet --filter "volume=$root" 2>/dev/null) || fail 'Der Mount-Status ist nicht sicher prüfbar.'
-  [[ -z "$containers" ]] || fail 'Der Datenordner wird noch von einem Container verwendet.'
+  [[ -z "$containers" ]] || fail_with folder-in-use 'Der Datenordner wird noch von einem Container verwendet.'
   mount_points=$(findmnt -nr -o TARGET) || fail 'Mounts im Bonni-Datenordner sind nicht sicher prüfbar.'
   while IFS= read -r mount_path; do
-    [[ "$mount_path" != "$root" && "$mount_path" != "$root/"* ]] || fail 'Ein Mount liegt im Bonni-Datenpfad. Kein Löschen.'
+    [[ "$mount_path" != "$root" && "$mount_path" != "$root/"* ]] || fail_with folder-mounted 'Ein Mount liegt im Bonni-Datenpfad. Kein Löschen.'
   done <<<"$mount_points"
 }
 
-wizard_result=started
+wizard_result=failed
+wizard_failure=unknown
+browser_phase=''
+wizard_tmp=''
+wizard_pid=''
+wizard_accepted=false
+cleanup_host_wizard() {
+  if [[ "$wizard_tmp" == /tmp/bonni-setup.* && -d "$wizard_tmp" ]]; then
+    rm -f -- "$wizard_tmp/node" "$wizard_tmp/bonnicore-setup.mjs" "$wizard_tmp/bonnicore-setup.html"
+    rmdir -- "$wizard_tmp"
+  fi
+}
+publish_phase() {
+  if [[ "$browser_phase" != "$1" ]]; then
+    browser_phase=$1
+    { printf '%s\n' "$1" >&"$wizard_in"; } 2>/dev/null || :
+  fi
+}
 finish_browser() {
   local status=$?
-  if [[ $status != 0 ]]; then wizard_result=failed; fi
-  printf '%s\n' "$wizard_result" >&"$wizard_in" 2>/dev/null || :
-  wait "$wizard_pid" 2>/dev/null || :
+  if [[ -n "$wizard_pid" ]]; then
+    if [[ "$wizard_accepted" == true ]]; then
+      if [[ $status != 0 || "$wizard_result" != ready ]]; then publish_phase "failed:$wizard_failure"
+      else publish_phase ready; fi
+    else
+      kill "$wizard_pid" 2>/dev/null || :
+    fi
+    wait "$wizard_pid" 2>/dev/null || :
+  fi
+  cleanup_host_wizard
+}
+
+# No Docker access: write only a verified binary and public UI files to tmpfs.
+prepare_host_wizard() {
+  local index=bonni-unraid-runtime.txt digest
+  local -a items extraction=(tar -xOf -)
+  command -v tar >/dev/null || fail 'Für den Unraid-Assistenten fehlt tar.'
+  [[ -f "$index" && ! -L "$index" && "$(stat -c '%s' -- "$index")" -le 256 ]] || fail 'Unraid-Laufzeitindex fehlt. Das neue AMD64-ZIP bitte vollständig entpacken.'
+  mapfile -t items < "$index"
+  ((${#items[@]}==4)) && [[ "${items[0]}" =~ ^(blobs/sha256/[0-9a-f]{64}|[0-9a-f]{64}/layer\.tar)$ \
+    && "${items[1]}" =~ ^(\./)?usr/local/bin/node$ && "${items[2]}" =~ ^(tar|gzip)$ && "${items[3]}" =~ ^[0-9a-f]{64}$ ]] \
+    || fail 'Der Unraid-Laufzeitindex im ZIP ist ungültig.'
+  if [[ "${items[2]}" == gzip ]]; then extraction=(tar -xOzf -); fi
+  wizard_tmp=$(mktemp -d /tmp/bonni-setup.XXXXXXXX)
+  # Only stdout extraction: no archive paths, rights or symlinks enter tmpfs.
+  tar -xOf "$core_tar" -- "${items[0]}" | "${extraction[@]}" -- "${items[1]}" > "$wizard_tmp/node" \
+    || fail 'Die Browser-Laufzeit konnte nicht aus dem Bonni-Archiv gelesen werden.'
+  digest=$(sha256sum -- "$wizard_tmp/node") || fail 'Die Browser-Laufzeit ist nicht lesbar.'
+  [[ "${digest%% *}" == "${items[3]}" ]] || fail 'Die Prüfsumme der Unraid-Browser-Laufzeit stimmt nicht.'
+  install -m 0444 -- bonnicore-setup.mjs bonnicore-setup.html "$wizard_tmp/"
+  chmod 0555 -- "$wizard_tmp/node"
+  chmod 0711 -- "$wizard_tmp"
+  wizard_command=(env -i PATH=/usr/bin:/bin "$wizard_tmp/node" "$wizard_tmp/bonnicore-setup.mjs")
+  if ((EUID==0)); then
+    command -v setpriv >/dev/null || fail 'Für den unprivilegierten Browser-Start fehlt setpriv.'
+    wizard_command=(setpriv --reuid 65534 --regid 65534 --clear-groups --no-new-privs "${wizard_command[@]}")
+  fi
+}
+
+# Regrouped Unraid entries and ordinary NAS Compose use the same controller.
+# Probe that exact service first, then check the real proxy and HTML locally.
+wait_for_webui() {
+  local controller state deadline=$((SECONDS+600)) probe
+  controller=$(timeout 8 "$@" ps --all --quiet bonni-core 2>/dev/null) \
+    || fail_with start-failed 'Der Bonni-Hauptcontainer konnte nicht geprüft werden.'
+  [[ "$controller" =~ ^[a-f0-9]{12,64}$ ]] || fail_with start-failed 'Docker meldet keinen eindeutigen Bonni-Hauptcontainer.'
+  probe='const base = "http://127.0.0.1:4000";
+    const request = path => fetch(base + path, {redirect:"error", signal:AbortSignal.timeout(2000)});
+    try {
+      const response = await request("/runtime-proxy/active-health");
+      if (response.status !== 200) process.exit(1);
+      const ready = await response.json();
+      if (ready.ok !== true || ready.state !== "ready" || ready.database?.ready !== true) process.exit(1);
+      const page = await request("/");
+      const html = page.status === 200 && /^text\/html(?:;|$)/i.test(page.headers.get("content-type") || "");
+      await page.body?.cancel();
+      process.exit(html ? 0 : 1);
+    } catch { process.exit(1); }'
+  publish_phase services
+  while ((SECONDS < deadline)); do
+    state=$(timeout 8 "${docker_local[@]}" container inspect --format '{{.State.Status}} {{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "$controller" 2>/dev/null) \
+      || fail_with start-failed 'Der Status des Bonni-Hauptcontainers ist nicht lesbar.'
+    case "$state" in
+      'running healthy')
+        publish_phase webui
+        if timeout 8 "${docker_local[@]}" exec "$controller" /usr/local/bin/node --input-type=module -e "$probe" >/dev/null 2>&1; then return 0; fi ;;
+      'exited '*|'dead '*) fail_with start-failed 'Der Bonni-Hauptcontainer wurde beendet, bevor die Weboberfläche bereit war.' ;;
+      *) publish_phase services ;;
+    esac
+    sleep 2
+  done
+  fail_with start-timeout 'Die Bonni-Weboberfläche ist nach 10 Minuten noch nicht bereit. Die Installation wurde nicht wiederholt oder rückgängig gemacht.'
+}
+
+# Return only one fixed diagnostic code on FD 3; never forward config, NAS
+# paths, credentials, Docker output or unfiltered stderr to the browser.
+setup_diagnostic() (
+  diagnose_only=true
+  root=$proposed_root
+  if [[ "$1" == repair ]]; then
+    prepare_recovery
+    check_recovery_images
+  else
+    verify_erase_target
+  fi
+)
+
+build_menu() {
+  can_repair=no; delete_offer=''; repair_issue='not-installed'; delete_issue=''
+  if [[ -n "$proposed_root" && ( -e "$proposed_root.bonni-compose.yml" || -L "$proposed_root.bonni-compose.yml" ) ]]; then
+    if repair_issue=$(setup_diagnostic repair 3>&1 >/dev/null 2>&1); then can_repair=yes; repair_issue=''
+    else repair_issue=${repair_issue:-unknown}; fi
+    if [[ "$recover" == false ]]; then
+      if delete_issue=$(setup_diagnostic erase 3>&1 >/dev/null 2>&1); then delete_offer=$proposed_root; delete_issue=''
+      else delete_issue=${delete_issue:-unknown}; fi
+    fi
+  fi
+}
+
+host_preflight() (
+  diagnose_only=true
+  require_docker
+  if [[ "$recover" == true ]]; then check_docker_space --quiet
+  else check_docker_space --quiet "$core_tar" "$database_tar"; fi
+)
+
+update_host_wizard() {
+  local block
+  if block=$(host_preflight 3>&1 >/dev/null 2>&1); then
+    build_menu
+    printf 'preflight\tready\t%s\t%s\t%s\t%s\n' "$can_repair" "$delete_offer" "$repair_issue" "$delete_issue" >&"$wizard_in"
+  else
+    can_repair=no; delete_offer=''
+    printf 'preflight\t%s\n' "${block:-unknown}" >&"$wizard_in"
+  fi
 }
 
 if [[ "$recover" == true && ( "$check" == true || "$mode" == terminal ) ]]; then
@@ -319,29 +465,29 @@ if [[ "$recover" == true && ( "$check" == true || "$mode" == terminal ) ]]; then
 fi
 
 if [[ "$check" == false && "$mode" == browser ]]; then
+  command -v timeout >/dev/null || fail 'Für die Browser-Einrichtung fehlt das Programm timeout.'
   [[ "$here" != *','* && "$here" != *'"'* && "$here" != *$'\n'* && "$here" != *$'\r'* ]] || fail 'Das Paket für den Browser-Assistenten in einen einfachen Ordner entpacken.'
   for ui_file in bonnicore-setup.html bonnicore-setup.mjs; do
     [[ -f "$ui_file" && ! -L "$ui_file" ]] || fail 'Der Browser-Assistent fehlt im Paket.'
   done
   verify_bundle
   proposed_root=${root:-$suggestion}
-  menu_action=menu; can_repair=no; delete_offer=''
+  menu_action=menu
   if [[ "$recover" == true ]]; then menu_action=repair; fi
-  if [[ -n "$proposed_root" && -e "$proposed_root.bonni-compose.yml" ]]; then
-    if (root=$proposed_root; prepare_recovery) >/dev/null 2>&1; then can_repair=yes; fi
-    if [[ "$recover" == false ]] && (root=$proposed_root; verify_erase_target) >/dev/null 2>&1; then delete_offer=$proposed_root; fi
-  fi
-  if [[ "$recover" == true && "$can_repair" == no ]]; then
-    # Report the local diagnostic without loading images or opening a menu.
-    root=$proposed_root
-    prepare_recovery
-    fail 'Keine Reparatur verfügbar.'
-  fi
+  trap finish_browser EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+  if [[ "$host_wizard" == true ]]; then
+    can_repair=no; delete_offer=''; repair_issue=''; delete_issue=''
+    prepare_host_wizard
+    say 'Der Unraid-Assistent startet ohne Docker und ohne Image-Import.'
+  else
+  build_menu
   mapfile -t image_lines < <(grep -E '^      BONNI_INITIAL_IMAGE: [a-z0-9][a-z0-9._:/@-]{1,255}$' <<<"$source_yaml")
   ((${#image_lines[@]} == 1)) || fail 'Das Core-Image für den Assistenten ist nicht eindeutig.'
   wizard_ref=${image_lines[0]#*BONNI_INITIAL_IMAGE: }
   wizard_image=''
-  if [[ "$recover" == true ]]; then
+  if [[ "$recover" == true && "$can_repair" == yes ]]; then
     root=$proposed_root
     prepare_recovery
     check_recovery_images
@@ -352,8 +498,10 @@ if [[ "$check" == false && "$mode" == browser ]]; then
     else
       check_docker_space "$core_tar"
     fi
-  else
+  elif [[ "$recover" == false ]]; then
     check_docker_space "$core_tar" "$database_tar"
+  else
+    check_docker_space "$core_tar"
   fi
   if [[ -z "$wizard_image" ]]; then
     say 'Das Offline-Paket ist geprüft. Lade das Core-Image für den temporären Assistenten …'
@@ -363,19 +511,27 @@ if [[ "$check" == false && "$mode" == browser ]]; then
   core_imported=true
   [[ "$wizard_image" =~ ^sha256:[a-f0-9]{64}$ ]] || fail 'Das Core-Image konnte nicht eindeutig gebunden werden.'
   check_docker_space --quiet
+  wizard_command=("${docker_local[@]}" run --rm -i --pull never --network host --log-driver none --read-only
+    --cap-drop ALL --security-opt no-new-privileges --user 65534:65534
+    --mount "type=bind,source=$here/bonnicore-setup.html,target=/wizard/bonnicore-setup.html,readonly"
+    --mount "type=bind,source=$here/bonnicore-setup.mjs,target=/wizard/bonnicore-setup.mjs,readonly"
+    --entrypoint /usr/local/bin/node "$wizard_image" /wizard/bonnicore-setup.mjs)
+  fi
   say 'Am eigenen Rechner per SSH weiterleiten (NAS-Benutzer und NAS-IP einsetzen):'
-  say 'ssh -N -o ExitOnForwardFailure=yes -L 127.0.0.1:4180:127.0.0.1:4180 <NAS-Benutzer>@<NAS-IP>'
+  say 'ssh -N -o ExitOnForwardFailure=yes -L 127.0.0.1:4180:127.0.0.1:4180 -L 127.0.0.1:4181:127.0.0.1:4000 <NAS-Benutzer>@<NAS-IP>'
   say 'Danach den unten angezeigten Einrichtungslink im Browser öffnen. Der Link läuft nach 10 Minuten ab.'
-  coproc BONNI_WIZARD { "${docker_local[@]}" run --rm -i --pull never --network host --log-driver none --read-only \
-    --cap-drop ALL --security-opt no-new-privileges --user 65534:65534 \
-    --mount "type=bind,source=$here/bonnicore-setup.html,target=/wizard/bonnicore-setup.html,readonly" \
-    --mount "type=bind,source=$here/bonnicore-setup.mjs,target=/wizard/bonnicore-setup.mjs,readonly" \
-    --entrypoint /usr/local/bin/node "$wizard_image" /wizard/bonnicore-setup.mjs "$os" "$architecture" "$proposed_root" "$core_version" "$menu_action" "$can_repair" "$delete_offer"; }
+  coproc BONNI_WIZARD { exec "${wizard_command[@]}" "$os" "$architecture" "$proposed_root" "$core_version" "$menu_action" "$can_repair" "$delete_offer" "$repair_issue" "$delete_issue" "$host_wizard"; }
   wizard_pid=$BONNI_WIZARD_PID; wizard_in=${BONNI_WIZARD[1]}; wizard_out=${BONNI_WIZARD[0]}
-  IFS= read -r -t 620 choice <&"$wizard_out" || fail 'Keine Eingaben übernommen. Für die Terminal-Einrichtung den Befehl mit --terminal starten.'
-  trap finish_browser EXIT
+  if [[ "$host_wizard" == true ]]; then update_host_wizard; fi
+  while :; do
+    IFS= read -r -t 620 choice <&"$wizard_out" || fail 'Keine Eingaben übernommen. Für die Terminal-Einrichtung den Befehl mit --terminal starten.'
+    if [[ "$host_wizard" == true && "$choice" == PRUEFEN ]]; then update_host_wizard; else break; fi
+  done
+  wizard_accepted=true
   if [[ "$choice" == WIEDER-STARTEN && "$can_repair" == yes ]]; then
     root=$proposed_root; unset choice
+    publish_phase services
+    require_docker
     start_recovery
     wizard_result=ready
     exit 0
@@ -390,6 +546,7 @@ if [[ "$check" == false && "$mode" == browser ]]; then
   esac
   confirm=$admin
   unset choice
+  require_docker
 fi
 
 if [[ -z "$root" ]]; then
@@ -427,13 +584,38 @@ unraid_template='/boot/config/plugins/dockerMan/templates-user/my-Bonni-Core.xml
 unraid_icon_disk='/var/lib/docker/unraid/images/Bonni-Core-icon.png'
 unraid_icon_ram='/usr/local/emhttp/state/plugins/dynamix.docker.manager/images/Bonni-Core-icon.png'
 unraid_icon='/state/plugins/dynamix.docker.manager/images/Bonni-Core-icon.png'
+render_unraid_template() {
+  local core_ref=$1
+  cat <<XML
+<?xml version="1.0"?>
+<Container version="2">
+  <Name>Bonni-Core</Name>
+  <Repository>$core_ref</Repository>
+  <Network>host</Network>
+  <Shell>bash</Shell>
+  <Privileged>false</Privileged>
+  <Overview>Bonni Core. Datenpfad und Startkonfiguration gehören zusammen; bei einer laufenden Installation nicht unabhängig ändern.</Overview>
+  <Category>Productivity:</Category>
+  <Icon>$unraid_icon</Icon>
+  <WebUI>http://[IP]:[PORT:4000]/</WebUI>
+  <ExtraParams>--init --pid=host --restart=unless-stopped --stop-timeout=600 --security-opt=no-new-privileges --env-file=$unraid_env --label 'folder.view3=Bonni Core' --health-cmd='node /app/backend/scripts/deployment/controller.mjs --health' --health-interval=10s --health-timeout=10s --health-retries=60 --health-start-period=90s</ExtraParams>
+  <PostArgs>/bin/bash /app/backend/scripts/deployment/entrypoint.sh</PostArgs>
+  <Config Name="Bonni-Daten" Target="$root" Default="$root" Mode="rw" Description="Bestehendes Datenverzeichnis. Nicht ohne eine unterstützte Datenübernahme ändern." Type="Path" Display="always" Required="true" Mask="false">$root</Config>
+  <Config Name="Docker-Socket für den Bonni-Controller" Target="/var/run/docker.sock" Default="/var/run/docker.sock" Mode="rw" Type="Path" Display="advanced" Required="true" Mask="false">/var/run/docker.sock</Config>
+  <Config Name="NAS-Zeitzone" Target="/etc/localtime" Default="/etc/localtime" Mode="ro" Type="Path" Display="advanced" Required="true" Mask="false">/etc/localtime</Config>
+</Container>
+XML
+}
+same_unraid_template() {
+  [[ -f "$unraid_template" && ! -L "$unraid_template" ]] && cmp -s -- "$unraid_template" <(render_unraid_template "$1")
+}
 verify_bundle
 if [[ -e "$config" || -L "$config" ]]; then
   if [[ "$check" == false && "$mode" == terminal ]]; then
     verify_erase_target
     erase=true
   elif [[ "$erase" == false ]]; then
-    fail "Es gibt bereits eine Installationskonfiguration: $config. Für Reparatur --wieder-starten verwenden."
+    fail_with existing-config "Es gibt bereits eine Installationskonfiguration: $config. Für Reparatur --wieder-starten verwenden."
   fi
 fi
 if [[ "$erase" == true ]]; then verify_erase_target; fi
@@ -443,14 +625,11 @@ if [[ "$os" == Unraid ]]; then
     [[ "$erase" == true && "$recovery_layout" == native ]] || fail 'Eine andere Bonni-Unraid-Konfiguration ist bereits vorhanden.'
   fi
   if [[ -e "$unraid_template" || -L "$unraid_template" ]]; then
-    [[ "$erase" == true && "$recovery_layout" == native && -f "$unraid_template" && ! -L "$unraid_template" ]] \
-      && grep -Fxq '  <Name>Bonni-Core</Name>' "$unraid_template" \
-      && grep -Fxq "  <Repository>$(read_image_ref BONNI_INITIAL_IMAGE)</Repository>" "$unraid_template" \
-      && grep -Fq -- "--env-file=$unraid_env " "$unraid_template" \
-      || fail 'Eine andere Unraid-Vorlage ist bereits vorhanden. Sie wird nicht überschrieben.'
+    template_ref=$(read_image_ref BONNI_INITIAL_IMAGE)
+    same_unraid_template "$template_ref" || fail 'Eine abweichende Unraid-Vorlage ist bereits vorhanden (my-Bonni-Core.xml). Sie wird nicht überschrieben.'
     reuse_unraid_template=true
   fi
-  if "${docker_local[@]}" container inspect Bonni-Core >/dev/null 2>&1; then fail 'Ein Container Bonni-Core existiert bereits. Er wird nicht ersetzt.'; fi
+  if "${docker_local[@]}" container inspect Bonni-Core >/dev/null 2>&1; then fail_with folder-in-use 'Ein Container Bonni-Core existiert bereits. Er wird nicht ersetzt.'; fi
   [[ -f bonni-unraid.png && ! -L bonni-unraid.png ]] || fail 'Das Bonni-Logo für Unraid fehlt im Paket. Bitte vollständig entpacken.'
 fi
 require_empty_root() {
@@ -460,7 +639,7 @@ require_empty_root() {
     shopt -s dotglob
     entries=("$root"/*)
     shopt -u dotglob
-    ((${#entries[@]} == 0)) || fail 'Der Datenordner ist bereits belegt. Vorhandene Installationen werden nicht verändert.'
+    ((${#entries[@]} == 0)) || fail_with folder-not-empty 'Der Datenordner ist bereits belegt. Vorhandene Installationen werden nicht verändert.'
   fi
 }
 if [[ "$erase" == false ]]; then require_empty_root; fi
@@ -474,7 +653,7 @@ port=4000
 if command -v ss >/dev/null; then
   listeners=$(ss -H -ltn) || fail 'Offene TCP-Ports konnten nicht geprüft werden.'
   if grep -Eq '[[:space:]][^[:space:]]*:(4000|4001|4199)[[:space:]]' <<<"$listeners"; then
-    fail 'Port 4000, 4001 oder 4199 ist belegt. Bestehende Dienste werden nicht automatisch gestoppt.'
+    fail_with port-used 'Port 4000, 4001 oder 4199 ist belegt. Bestehende Dienste werden nicht automatisch gestoppt.'
   fi
 fi
 [[ -t 0 ]] || fail 'Für die Erstinstallation bitte ein interaktives NAS-Terminal öffnen.'
@@ -522,15 +701,19 @@ project=$(project_for_root)
 compose=("${docker_local[@]}" compose --project-directory "$root" --project-name "$project")
 # Never print the configuration with its secrets.
 "${docker_local[@]}" compose -f - config -q <<<"$yaml" 2>/dev/null || fail 'Docker Compose lehnt die Installationskonfiguration ab.'
+if [[ "$mode" == browser ]]; then publish_phase images; fi
 say 'Importiere die geprüften lokalen Core- und Datenbank-Images …'
 if [[ "$core_imported" == false ]]; then
   check_docker_space --quiet "$core_tar" "$database_tar"
   "${docker_local[@]}" image load -i "$core_tar" || fail 'Das Core-Image konnte nicht importiert werden. Docker-Speicher und Paket prüfen.'
 fi
 check_docker_space --quiet "$database_tar"
-"${docker_local[@]}" image load -i "$database_tar" || fail 'Das Datenbank-Image konnte nicht importiert werden. Docker-Speicher und Paket prüfen.'
+"${docker_local[@]}" image load -i "$database_tar" || fail_with image-import 'Das Datenbank-Image konnte nicht importiert werden. Docker-Speicher und Paket prüfen.'
 if [[ "$erase" == true ]]; then verify_erase_target; fi
 check_docker_space --quiet
+if [[ "$reuse_unraid_template" == true ]]; then
+  same_unraid_template "$core_ref" || fail 'Die geprüfte Unraid-Vorlage wurde inzwischen verändert. Kein Löschen oder Start.'
+fi
 if [[ "$erase" == true ]]; then
   say "Leere ausschließlich den bestätigten Bonni-Datenordner: $root"
   find -P "$root" -xdev -depth -mindepth 1 -delete || fail 'Nicht alle Bonni-Dateien konnten gelöscht werden. Keine Installation gestartet.'
@@ -552,38 +735,29 @@ if [[ "$os" == Unraid ]]; then
   (set -o noclobber; printf '%s' "$native_env" > "$unraid_env") || fail 'Unraid-Startwerte konnten nicht sicher gespeichert werden.'
   unset native_env
 fi
-if [[ "$os" == Unraid && "$reuse_unraid_template" == false ]]; then
+if [[ "$os" == Unraid ]]; then
   template_parent=${unraid_template%/*}
   mkdir -p -- "$template_parent" "${unraid_icon_disk%/*}" "${unraid_icon_ram%/*}"
   for icon_target in "$unraid_icon_disk" "$unraid_icon_ram"; do
     [[ ! -L "$icon_target" ]] || fail 'Der Bonni-Iconpfad ist ein symbolischer Link.'
     if [[ ! -e "$icon_target" ]]; then install -m 644 -- bonni-unraid.png "$icon_target"; fi
   done
+fi
+if [[ "$os" == Unraid && "$reuse_unraid_template" == false ]]; then
   # The data path and image reference were restricted to safe characters.
   template_tmp=$(mktemp "$template_parent/.bonni-template.XXXXXX")
-  cat > "$template_tmp" <<XML
-<?xml version="1.0"?>
-<Container version="2">
-  <Name>Bonni-Core</Name>
-  <Repository>$core_ref</Repository>
-  <Network>host</Network>
-  <Shell>bash</Shell>
-  <Privileged>false</Privileged>
-  <Overview>Bonni Core. Datenpfad und Startkonfiguration gehören zusammen; bei einer laufenden Installation nicht unabhängig ändern.</Overview>
-  <Category>Productivity:</Category>
-  <Icon>$unraid_icon</Icon>
-  <WebUI>http://[IP]:[PORT:4000]/</WebUI>
-  <ExtraParams>--init --pid=host --restart=unless-stopped --stop-timeout=600 --security-opt=no-new-privileges --env-file=$unraid_env --label 'folder.view3=Bonni Core' --health-cmd='node /app/backend/scripts/deployment/controller.mjs --health' --health-interval=10s --health-timeout=10s --health-retries=60 --health-start-period=90s</ExtraParams>
-  <PostArgs>/bin/bash /app/backend/scripts/deployment/entrypoint.sh</PostArgs>
-  <Config Name="Bonni-Daten" Target="$root" Default="$root" Mode="rw" Description="Bestehendes Datenverzeichnis. Nicht ohne eine unterstützte Datenübernahme ändern." Type="Path" Display="always" Required="true" Mask="false">$root</Config>
-  <Config Name="Docker-Socket für den Bonni-Controller" Target="/var/run/docker.sock" Default="/var/run/docker.sock" Mode="rw" Type="Path" Display="advanced" Required="true" Mask="false">/var/run/docker.sock</Config>
-  <Config Name="NAS-Zeitzone" Target="/etc/localtime" Default="/etc/localtime" Mode="ro" Type="Path" Display="advanced" Required="true" Mask="false">/etc/localtime</Config>
-</Container>
-XML
+  render_unraid_template "$core_ref" > "$template_tmp"
   chmod 644 "$template_tmp"
   mv -n -- "$template_tmp" "$unraid_template"
   if [[ -e "$template_tmp" ]]; then rm -- "$template_tmp"; fail 'Eine vorhandene Unraid-Vorlage wird nicht überschrieben.'; fi
 fi
-"${compose[@]}" -f "$config" up -d --pull never
-say "Start angestoßen. Öffne http://<NAS-IP>:$port, sobald Bonni bereit ist."
+if [[ "$mode" == browser ]]; then publish_phase services; fi
+"${compose[@]}" -f "$config" up -d --pull never || fail_with start-failed 'Docker konnte Bonni nicht starten. Prüfe den Bonni-Haupteintrag.'
+if [[ "$mode" == browser ]]; then
+  wait_for_webui "${compose[@]}" -f "$config"
+  wizard_result=ready
+  say "Bonni Core ist bereit. WebUI: http://<NAS-IP>:$port"
+else
+  say "Start angestoßen. Öffne http://<NAS-IP>:$port, sobald Bonni bereit ist."
+fi
 say "Konfiguration: $config (enthält Zugangsdaten, nicht teilen)."

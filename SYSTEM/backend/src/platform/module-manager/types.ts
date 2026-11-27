@@ -128,6 +128,13 @@ export type ModuleLegalPayloadDeclaration = {
   fileCount: number;
 };
 
+export type MemberNavigationItem = {
+  /** App-local destination. Bonni Core passes it to the module as memberSection. */
+  section: string;
+  label: string;
+  profiles: string[];
+};
+
 export type ModuleManifest = {
   key: string;
   kind: ModuleKind;
@@ -157,6 +164,7 @@ export type ModuleManifest = {
     database?: ModuleDatabaseDeclaration;
     hubProducts?: import("../../core/hub/hub-products-contract.js").HubProductsDeclaration;
     accessProfiles?: ModuleAccessProfile[];
+    memberNavigation?: MemberNavigationItem[];
     nfcAccessProfiles?: string[];
     autoAssignMemberAccess?: boolean;
     technicalAccounts?: ModuleTechnicalAccountDeclaration[];

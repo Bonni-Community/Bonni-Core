@@ -1,6 +1,9 @@
+import {inventoryProfileGrants,syncInventoryProfileGrants} from "../../../core/hub/inventory-profile-grants.js";
+import {hubInventoryRegistry} from "../../../core/hub/hub-inventory-registry.js";
 import { guardModuleWrite, withErasureWriteLock, guardErasurePort } from "../../auth/users/erasure-write-barrier.js";
 import {moduleServicesRegistry} from '../../../core/module-services/module-services-runtime.js';
 import { hubInstallationPolicy, usesHubProducts } from "../../../core/hub/hub-installation-policy.js";
+import { hubTreeRegistry } from "../../../core/hub/hub-tree-registry.js";
 import { hubProductsRegistry } from "../../../core/hub/hub-products-registry.js";
 import { runtimeModuleIdentity } from "./module-runtime-identity.js";
 import {ensureAppDatabaseRuntime} from "../distribution/app-database-runtime.js";
@@ -261,6 +264,7 @@ async function loadModule(
     if (usesHubProducts(hubCandidate)) {
       const [installedModules, manifests] = await Promise.all([listInstalledModulesStrict(), listModuleManifests()]);
       const hubPolicy = hubInstallationPolicy(installedModules, hubCandidate, manifests);
+      if(hubPolicy.required&&!manifest?.metadata?.hubInventory)throw Object.assign(new Error('HUB_SHARED_INVENTORY_APP_UPDATE_REQUIRED'),{code:'HUB_SHARED_INVENTORY_APP_UPDATE_REQUIRED'});
       if (hubPolicy.required && !hubPolicy.enabled) {
         throw Object.assign(new Error("HUB_REQUIRED_FOR_MULTIPLE_APPS"), {
           code: "HUB_REQUIRED_FOR_MULTIPLE_APPS",
@@ -283,11 +287,14 @@ async function loadModule(
 
     phase = "create-core-services"; observe();
     const corePrisma = getPrismaClient();
+    if(manifest)await syncInventoryProfileGrants(corePrisma,manifest);
     const declaredDependencies = new Set(
       (manifest?.dependsOn || []).map((dependency) => String(dependency).trim()),
     );
     const moduleServicesRuntime = declaredDependencies.has('core.module-services') && manifest ? moduleServicesRegistry.stage(module.key,manifest) : null;
     const hubRuntime = manifest ? hubProductsRegistry.stage(module.key, manifest) : null;
+    const hubTreeRuntime = manifest ? hubTreeRegistry.stage(module.key, manifest) : null;
+    const hubInventoryRuntime = manifest ? hubInventoryRegistry.stage(module.key, manifest) : null;
     const networkRequestRuntime = createStagedModuleNetworkRequestRuntime(
       module.key,
       createModuleNetworkPolicyAuthorizer(corePrisma),
@@ -301,6 +308,8 @@ async function loadModule(
       : null;
     registrationCleanup = normalizeRuntimeModuleCleanup(() => {
       hubRuntime?.dispose();
+      hubTreeRuntime?.dispose();
+      hubInventoryRuntime?.dispose();
       moduleServicesRuntime?.dispose();
       domainMessageRuntime?.dispose();
       networkRequestRuntime.dispose();
@@ -308,13 +317,17 @@ async function loadModule(
     });
     const dataDomain = moduleDatabaseDomain(module.key, manifest);
     const modulePrisma = dataDomain ? getDataDomainPrismaClient(dataDomain) : null;
-    const database = createModuleDatabaseRuntime(module.key, modulePrisma, manifest, dataDomain ? () => getDataDomainJsonNulls(dataDomain) : undefined, { write: guardModuleWrite, transaction: withErasureWriteLock });
+    const database = createModuleDatabaseRuntime(module.key, modulePrisma, manifest, dataDomain ? () => getDataDomainJsonNulls(dataDomain) : undefined, { write: async<T>(delegate:any,operation:string,args:any[],work:()=>Promise<T>):Promise<T>=>{if(manifest&&usesHubProducts(manifest)&&!manifest.metadata?.hubInventory){const [installed,all]=await Promise.all([listInstalledModulesStrict(),listModuleManifests()]);if(hubInstallationPolicy(installed,undefined,all).required)throw Object.assign(new Error('HUB_SHARED_INVENTORY_APP_UPDATE_REQUIRED'),{code:'HUB_SHARED_INVENTORY_APP_UPDATE_REQUIRED',statusCode:409});}return guardModuleWrite(delegate,operation,args,work);}, transaction: withErasureWriteLock });
     const rawServices = {
       ...(moduleServicesRuntime ? {moduleServices:moduleServicesRuntime.runtime} : {}),
       ...(declaredDependencies.has('core.files') ? {files:createModuleFilesRuntime(module.key)} : {}),
       ...(declaredDependencies.has('core.public-web') ? {publicWeb:createModulePublicWebRuntime()} : {}),
       ...(hubRuntime?.providerRuntime ? { hubProvider: hubRuntime.providerRuntime } : {}),
       ...(hubRuntime?.client ? { hubProducts: hubRuntime.client } : {}),
+      ...(hubTreeRuntime?.providerRuntime ? { hubTreeProvider: hubTreeRuntime.providerRuntime } : {}),
+      ...(hubTreeRuntime?.client ? { hubTree: hubTreeRuntime.client } : {}),
+      ...(hubInventoryRuntime?.providerRuntime ? { hubInventoryProvider: hubInventoryRuntime.providerRuntime } : {}),
+      ...(hubInventoryRuntime?.client ? { hubInventory: hubInventoryRuntime.client } : {}),
       eventBus: coreEventBus,
       dataAdapters: createModuleDataAdapterRuntime(module.key),
       networkRequests: networkRequestRuntime.runtime,
@@ -348,6 +361,7 @@ async function loadModule(
               module.key,
               manifest?.name || module.name,
               manifest?.metadata?.technicalAccounts,
+              Object.fromEntries((manifest?.metadata?.accessProfiles || []).map(profile => [profile.key, inventoryProfileGrants(manifest, profile.key)])),
             ),
           }
         : {}),
@@ -380,6 +394,7 @@ async function loadModule(
                 moduleLabel: manifest?.name || module.name,
                 autoAssignDefaultProfile: manifest?.metadata?.autoAssignMemberAccess !== false,
                 technicalAccounts: manifest?.metadata?.technicalAccounts,
+                inventoryProfilePermissions: Object.fromEntries((manifest?.metadata?.accessProfiles || []).map(profile => [profile.key, inventoryProfileGrants(manifest, profile.key)])),
               },
             ),
           }
@@ -451,6 +466,8 @@ async function loadModule(
       // add-on cleanup. A slow disposer must not keep the module remotely
       // reachable or leave message subscriptions/retry timers alive.
       hubRuntime?.dispose();
+      hubTreeRuntime?.dispose();
+      hubInventoryRuntime?.dispose();
       moduleServicesRuntime?.dispose();
       domainMessageRuntime?.dispose();
       networkRequestRuntime.dispose();
@@ -464,6 +481,7 @@ async function loadModule(
       if (cleanupError) throw cleanupError;
     });
 
+    if (manifest) await syncInventoryProfileGrants(corePrisma, manifest);
     phase = "publish-routes"; observe();
     published = await dynamicRuntime.publish(
       module.key,
@@ -472,6 +490,8 @@ async function loadModule(
       isCurrent,
       () => {
         hubRuntime?.activate();
+    hubTreeRuntime?.activate();
+        hubInventoryRuntime?.activate();
         moduleServicesRuntime?.activate();
         domainMessageRuntime?.activate();
         networkRequestRuntime.activate();

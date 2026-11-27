@@ -1,3 +1,4 @@
+import {hubInvocationIdentity} from "../network-requests/verified-network-invocation.js";
 import { getVerifiedRequestIdentity } from "../../platform/auth/request-identity/request-identity-context.js";
 import { HUB_PRODUCTS_VERSION, HUB_PRODUCT_OPERATIONS, HUB_PRODUCT_CLIENT_OPERATIONS, HUB_PRODUCT_CHANGE_VERSION, HUB_PRODUCT_PERMISSIONS, HUB_PRODUCT_OPERATION_PERMISSIONS, type ProductClientOperation, type ProductChange, type ProductNotification, type ProductListener, type HubProductsClient, type HubProductsDeclaration, type HubProductsProvider } from "./hub-products-contract.js";
 
@@ -52,6 +53,7 @@ export function validateHubManifest(manifest: Record<string, any>): string[] {
 export function createHubProductsRegistry(options: {
   connectionState?: () => Promise<{ installed: boolean; enabled: boolean }>;
   sourceInstanceId?: () => Promise<string>;
+  confirmStorageReady?: (context: Readonly<{ sourceInstanceId: string; sourceModule: string; actorAccountId: string }>) => Promise<void>;
 } = {}) {
   let active: { provider: HubProductsProvider; live: boolean } | null = null;
   type Subscription = { listener: ProductListener; isActive(): boolean };
@@ -92,6 +94,7 @@ export function createHubProductsRegistry(options: {
           if (provider?.contractVersion !== HUB_PRODUCTS_VERSION || typeof provider.invoke !== "function") fail("HUB_CONTRACT_VERSION_UNSUPPORTED", 400);
           owned = { provider: Object.freeze({ contractVersion: HUB_PRODUCTS_VERSION, invoke: provider.invoke.bind(provider) }), live: false };
         },
+        publishInvalidation() { if (live && !disposed && owned?.live && active === owned) broadcast(stateEvent("resync")); },
         publishChange(event: ProductChange) {
           if (!live || disposed || !owned?.live || active !== owned) return;
           const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -100,7 +103,7 @@ export function createHubProductsRegistry(options: {
               || !["Product", "StockItem"].includes(event.entity) || !uuid.test(event.entityId)
               || (event.entity === "Product" && event.entityId !== event.productId)
               || !uuid.test(event.eventId) || !uuid.test(event.productId) || !Number.isSafeInteger(event.revision) || event.revision < 1
-              || !(event.entity === "Product" ? ["create", "update", "archive", "setComponent", "removeComponent"] : ["create", "move", "archive"]).includes(event.action) || typeof event.changedAt !== "string"
+              || !(event.entity === "Product" ? ["create", "update", "archive", "restore", "setComponent", "removeComponent"] : ["create", "move", "archive"]).includes(event.action) || typeof event.changedAt !== "string"
               || !Number.isFinite(Date.parse(event.changedAt))) fail("HUB_NOTIFICATION_INVALID", 400);
           if (recentEvents.has(event.eventId)) return;
           recentEvents.add(event.eventId);
@@ -117,6 +120,24 @@ export function createHubProductsRegistry(options: {
           if (!live || disposed) fail("HUB_CALLER_INACTIVE", 503);
           return Object.freeze({ installed: state.installed, enabled: state.enabled });
         }],
+        ["confirmStorageReady", async () => {
+          if (!live || disposed) fail("HUB_CALLER_INACTIVE", 503);
+          if (!operations.has("list") || !operations.has("create")) fail("HUB_OPERATION_DENIED", 403);
+          const identity = getVerifiedRequestIdentity();
+          if (!identity) fail("HUB_AUTHENTICATION_REQUIRED", 401);
+          if (!["hub.products.read", "hub.products.write"].every(right => identity.permissions.includes(right))) fail("HUB_PERMISSION_DENIED", 403);
+          const target = active;
+          if (!target?.live) fail("HUB_UNAVAILABLE", 503);
+          if (!options.confirmStorageReady || !options.connectionState) fail("HUB_STORAGE_CORE_REQUIRED", 503);
+          const assertActive = () => { if (!live || disposed || !target.live || target !== active) fail("HUB_CALL_CANCELLED", 503); };
+          const state = await options.connectionState(); assertActive();
+          if (!state.installed || !state.enabled) fail("HUB_UNAVAILABLE", 503);
+          const sourceInstanceId = options.sourceInstanceId ? await options.sourceInstanceId() : fail("HUB_INSTANCE_IDENTITY_REQUIRED", 503);
+          const context = Object.freeze({ sourceInstanceId, sourceModule: moduleKey, actorAccountId: identity.accountId, assertActive });
+          // Confirm an actual authenticated read; an enabled registry row alone is insufficient.
+          assertActive(); await target.provider.invoke("list", { active: true, limit: 1 }, context); assertActive();
+          await options.confirmStorageReady(context); assertActive();
+        }],
         ["subscribe", (listener: ProductListener) => {
           if (disposed) fail("HUB_CALLER_INACTIVE", 503);
           if (!operations.has("subscribe")) fail("HUB_OPERATION_DENIED", 403);
@@ -129,7 +150,7 @@ export function createHubProductsRegistry(options: {
         ...HUB_PRODUCT_OPERATIONS.map(operation => [operation, async (input: unknown = {}) => {
           if (!live || disposed) fail("HUB_CALLER_INACTIVE", 503);
           if (!operations.has(operation)) fail("HUB_OPERATION_DENIED", 403);
-          const identity = getVerifiedRequestIdentity();
+          const identity = hubInvocationIdentity(moduleKey, manifest, operation);
           if (!identity) fail("HUB_AUTHENTICATION_REQUIRED", 401);
           if (!identity.permissions.includes(HUB_PRODUCT_OPERATION_PERMISSIONS[operation])) fail("HUB_PERMISSION_DENIED", 403);
           const target = active;
@@ -146,6 +167,7 @@ export function createHubProductsRegistry(options: {
             sourceModule: moduleKey,
             actorAccountId: identity.accountId,
             assertActive() {
+              identity.assertCurrent();
               if (!live || disposed || !target.live || active !== target) fail("HUB_CALL_CANCELLED", 503);
             },
           });
@@ -189,6 +211,14 @@ export const hubProductsRegistry = createHubProductsRegistry({
     const hub = (await listInstalledModulesStrict()).find(module => module.key === "addon.hub");
     return { installed: Boolean(hub?.installed), enabled: Boolean(hub?.installed && hub.enabled) };
   },
-  // The original DEV68 Hub coordination is not reconstructed in this branch.
-  // Installed Hub must use its matching Core rather than receive invented audit identity.
+  async sourceInstanceId() {
+    const { getCoreInstanceId } = await import("../instance-identity/core-instance-id.js");
+    const { getPrismaClient } = await import("../database/prisma.js");
+    return getCoreInstanceId(getPrismaClient());
+  },
+  async confirmStorageReady(context) {
+    const { confirmHubProductStorage } = await import("./hub-storage-readiness.js");
+    const { getPrismaClient } = await import("../database/prisma.js");
+    await confirmHubProductStorage(getPrismaClient(), context);
+  },
 });

@@ -93,7 +93,7 @@ function AppIcon({ tile }) {
   );
 }
 
-export default function BonniCoreIndex({ user, shell, onOpenTarget, onOpenControlCenter, onOpenMySettings, onOpenMyDocuments, onLogout }) {
+export default function BonniCoreIndex({ user, shell, onOpenTarget, onOpenControlCenter, onOpenMembers, onOpenMySettings, onOpenMyDocuments, onLogout }) {
   const { branding } = useBranding();
   const holdTimerRef = useRef(null);
   const pressRef = useRef(null);
@@ -253,6 +253,7 @@ export default function BonniCoreIndex({ user, shell, onOpenTarget, onOpenContro
           <UserPanel
             user={user}
             shell={shell}
+            onOpenMembers={onOpenMembers}
             onOpenMySettings={onOpenMySettings}
             onOpenMyDocuments={onOpenMyDocuments}
             onLogout={onLogout}

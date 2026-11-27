@@ -1,4 +1,5 @@
 import type { ModuleNetworkPolicyAuthorizer } from "../network-policy/index.js";
+import {runWithVerifiedNetworkInvocation} from './verified-network-invocation.js';
 
 export const CORE_NETWORK_REQUEST_TRANSPORT_MODULE = "addon.bonni-network";
 export const CORE_NETWORK_REQUEST_MAX_PAYLOAD_BYTES = 1024 * 1024;
@@ -738,11 +739,11 @@ class CoreNetworkRequestRegistry {
     let response: unknown;
     try {
       response = await runWithTimeout(
-        (signal) => handler.handler(cloneEnvelope(envelope), {
+        (signal) => runWithVerifiedNetworkInvocation({moduleKey:handler.sourceModule,protocol,requestId:envelope.requestId,peer,remoteActorAccountId:envelope.actor?.accountId||null,signal},()=>handler.handler(cloneEnvelope(envelope), {
           peer: { ...peer },
           receivedAt: new Date().toISOString(),
           signal,
-        }),
+        })),
         timeoutMs,
         expiresAt,
         {

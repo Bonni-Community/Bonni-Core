@@ -7,6 +7,7 @@ export function getInitialRouteIntent(pathname) {
 }
 
 export function getInitialActiveTarget(pathname, launchTarget) {
+  if (String(pathname || "").trim().replace(/\/+$/u, "") === "/members") return "members";
   if (String(pathname || "").trim() === "/my-documents") return "my-documents";
   if (getInitialRouteIntent(pathname) === SYSTEM_UPDATE_ROUTE_INTENT) return "control-center";
   return launchTarget;

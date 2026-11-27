@@ -48,3 +48,9 @@ SYSTEM/backend/tests
 SYSTEM/backend/tests/**
 SYSTEM/frontend/tests
 SYSTEM/frontend/tests/**
+
+# Development tests are not part of a published container.
+SYSTEM/backend/tests
+SYSTEM/backend/tests/**
+SYSTEM/frontend/tests
+SYSTEM/frontend/tests/**

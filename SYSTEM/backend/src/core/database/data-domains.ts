@@ -12,6 +12,7 @@ export const dataDomains = [
   "gourmet",
   "capture",
   "paypal",
+  "works",
 ] as const;
 
 export type DataDomain = (typeof dataDomains)[number];
@@ -30,6 +31,7 @@ export const dataDomainSchemas: Readonly<Record<DataDomain, string>> = Object.fr
   gourmet: "gourmet",
   capture: "capture",
   paypal: "paypal",
+  works: "works",
 });
 
 export const dataDomainRuntimeRoles: Readonly<Record<DataDomain, string>> = Object.freeze({
@@ -46,6 +48,7 @@ export const dataDomainRuntimeRoles: Readonly<Record<DataDomain, string>> = Obje
   gourmet: "gourmet_user",
   capture: "capture_user",
   paypal: "paypal_user",
+  works: "works_user",
 });
 
 export const dataDomainOwnerRoles: Readonly<Record<DataDomain, string>> = Object.freeze({
@@ -62,10 +65,12 @@ export const dataDomainOwnerRoles: Readonly<Record<DataDomain, string>> = Object
   gourmet: "gourmet_owner",
   capture: "capture_owner",
   paypal: "paypal_owner",
+  works: "works_owner",
 });
 
 const moduleDomains: Readonly<Record<string, DataDomain>> = Object.freeze({
   "addon.hub": "hub",
+  "app.worksapp": "works",
   "addon.gourmet": "gourmet",
   "addon.capture": "capture",
   "addon.paypal": "paypal",
@@ -86,6 +91,7 @@ export function dataDomainForModule(
   moduleKey: string,
   declaredDomain?: unknown,
 ): DataDomain {
+  if (declaredDomain === "works" && moduleKey !== "app.worksapp" || moduleKey === "app.worksapp" && declaredDomain !== undefined && declaredDomain !== "works") throw new Error("WORKS_DATA_DOMAIN_DENIED");
   if(declaredDomain==='paypal'&&moduleKey!=='addon.paypal'||moduleKey==='addon.paypal'&&declaredDomain!==undefined&&declaredDomain!=='paypal')throw new Error('PAYPAL_DATA_DOMAIN_DENIED');
   if (declaredDomain === "capture" && moduleKey !== "addon.capture") throw new Error("CAPTURE_DATA_DOMAIN_DENIED");
   if (moduleKey === "addon.capture" && declaredDomain !== undefined && declaredDomain !== "capture") throw new Error("CAPTURE_DATA_DOMAIN_DENIED");
@@ -112,5 +118,5 @@ export function dataDomainDatabase(domain: DataDomain): "main" | "pos" {
  * a hard failure and can retry after the owning database is healthy again.
  */
 export function dataDomainAllowsJsonEmergency(domain: DataDomain): boolean {
-  return !["people", "organization", "privacy", "pos", "hub", "gourmet", "capture", "paypal"].includes(domain);
+  return !["people", "organization", "privacy", "pos", "hub", "gourmet", "capture", "paypal", "works"].includes(domain);
 }

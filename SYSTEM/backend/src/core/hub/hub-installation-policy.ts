@@ -17,7 +17,7 @@ export function usesHubProducts(module: ModuleState): boolean {
     && Array.isArray(declaration.operations) && declaration.operations.length > 0;
 }
 
-/** Count active Hub consumers. Meeting, finance and other unrelated apps do not count. */
+/** Count installed Hub consumers, including disabled apps. Meeting, finance and other unrelated apps do not count. */
 export function hubInstallationPolicy(modules: readonly ModuleState[], candidate?: ModuleState, manifests: readonly ModuleState[] = []) {
   const contracts = new Map(manifests.map(manifest => [manifest.key, manifest]));
   const states = new Map(modules.map(module => {
@@ -26,7 +26,7 @@ export function hubInstallationPolicy(modules: readonly ModuleState[], candidate
   }));
   if (candidate) states.set(candidate.key, candidate);
   const appKeys = new Set([...states.values()]
-    .filter(module => module.installed && module.enabled && usesHubProducts(module))
+    .filter(module => module.installed && usesHubProducts(module))
     .map(module => module.key));
   const hub = modules.find(module => module.key === "addon.hub");
   return Object.freeze({
@@ -41,7 +41,7 @@ export function hubRemovalBlock(key: string, modules: readonly ModuleState[], ma
   const policy = hubInstallationPolicy(modules, undefined, manifests);
   return key === "addon.hub" && policy.required
     ? { ok: false as const, error: "HUB_REQUIRED_FOR_MULTIPLE_APPS", key,
-      message: "Ab zwei aktiven Apps mit Hub-Schnittstelle ist Hub erforderlich und kann nicht deaktiviert oder entfernt werden.", appKeys: policy.appKeys }
+      message: "Ab zwei installierten Lager-Apps mit Hub-Schnittstelle ist Hub erforderlich und kann nicht deaktiviert oder entfernt werden.", appKeys: policy.appKeys }
     : null;
 }
 

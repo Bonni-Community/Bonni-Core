@@ -15,6 +15,7 @@ export const dataDomains = Object.freeze([
   "gourmet",
   "capture",
   "paypal",
+  "works",
 ]);
 
 const sourceDirectories = Object.freeze({
@@ -25,6 +26,7 @@ const sourceDirectories = Object.freeze({
   people: ["prisma/domains/people"],
   organization: ["prisma/domains/organization"],
   privacy: ["prisma/domains/system/privacy"],
+  works: ["prisma/domains/assembled/app/worksapp"],
   hocket: ["prisma/domains/assembled/app/hocketapp"],
   kontor: ["prisma/domains/assembled/app/kontorapp"],
   meet: ["prisma/domains/assembled/app/meetapp"],
@@ -37,6 +39,7 @@ const moduleDomainPackages = Object.freeze({
   gourmet: Object.freeze({ packageDirectory: "gourmet", required: false }),
   capture: Object.freeze({ packageDirectory: "capture", required: false }),
   paypal: Object.freeze({ packageDirectory: "paypal", required: false }),
+  works: Object.freeze({ packageDirectory: "worksapp", required: false }),
   hocket: Object.freeze({ packageDirectory: "hocketapp", required: false }),
   kontor: Object.freeze({ packageDirectory: "kontorapp", required: false }),
   meet: Object.freeze({ packageDirectory: "meetapp", required: false }),

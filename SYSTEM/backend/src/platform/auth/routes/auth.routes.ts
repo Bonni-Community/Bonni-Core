@@ -1,6 +1,6 @@
 import { prepareBrowserDevice, registerBrowserLogin, rememberBrowserDevice } from '../members/member-devices-runtime.js';
 import { createHash, randomUUID } from "node:crypto";
-import { Router } from "express";
+import { Router, type Request, type Response } from "express";
 import { nfcService } from "../../../core/modules/security/nfc/index.js";
 import { AccountType } from "@prisma/client";
 
@@ -9,6 +9,9 @@ import { LoginError, normalizeLoginError } from "../../../core/errors/login-erro
 import { validate } from "../../../core/http/http.js";
 import { validateExactLocalPassword } from "../../../core/modules/identity/local-password-policy.js";
 import { listModuleManifests } from "../../module-manager/manifests/index.js";
+import { enabledMemberNavigation, readMemberAreaStatus, resolveMemberNavigation } from "../../module-manager/manifests/member-navigation.js";
+import { listInstalledModules } from "../../module-manager/registry/installed-module.repository.js";
+import { moduleServicesRegistry } from "../../../core/module-services/module-services-runtime.js";
 import type {
   ModuleAccessProfile,
   ModuleManifestSummary,
@@ -480,6 +483,20 @@ function createIdentity(
   };
 }
 
+function hasMemberArea(account: NonNullable<AccountWithAuth>) {
+  return account.type === AccountType.MEMBER
+    || (account.type === AccountType.ADMIN && Boolean(account.person?.member?.id));
+}
+
+async function memberNavigationCandidates(
+  account: NonNullable<AccountWithAuth>,
+  manifests: ModuleManifestSummary[],
+  access: ResolvedModuleAccess[],
+) {
+  if (!hasMemberArea(account) || !manifests.some((manifest) => manifest.metadata?.memberNavigation?.length)) return [];
+  return resolveMemberNavigation(manifests, await listInstalledModules(), access);
+}
+
 async function createShell(account: NonNullable<AccountWithAuth>) {
   let manifests: ModuleManifestSummary[] = [];
 
@@ -518,6 +535,9 @@ async function createShell(account: NonNullable<AccountWithAuth>) {
   );
   const roles = identity.roles;
   const permissions = identity.permissions;
+  const candidates = await memberNavigationCandidates(account, manifests, moduleAccess);
+  const memberNavigation = await enabledMemberNavigation(candidates,
+    (app) => moduleServicesRegistry.invokeMemberArea(app, account.id, "status"));
 
   return {
     identity,
@@ -533,6 +553,7 @@ async function createShell(account: NonNullable<AccountWithAuth>) {
       defaultRoute,
       autoOpenApp,
       memberCapabilities: identity.memberCapabilities,
+      memberNavigation,
       navigation: interactiveTargets.map((target) => ({
         key: target.moduleKey,
         label: target.moduleName,
@@ -990,6 +1011,53 @@ router.get("/me/history", validate(ownChangeHistorySchema), async (req, res, nex
     return next(error);
   }
 });
+
+router.route("/me/member-area/:app/:section").get(memberAreaHandler).post(memberAreaHandler);
+
+async function memberAreaHandler(req: Request, res: Response) {
+  const unavailable = () => res.status(404).json({ code: "MEMBER_AREA_UNAVAILABLE", message: "Dieser Menüpunkt ist gerade nicht verfügbar." });
+  try {
+    const account = authenticatedAccountId(req) ? await getAccountFromRequest(req) : null;
+    if (!account) return res.status(401).json({ code: "UNAUTHENTICATED", message: "Nicht angemeldet" });
+    if (!hasMemberArea(account)) return unavailable();
+    const manifests = await listModuleManifests();
+    const assigned = moduleAccessFromRoles(account);
+    const candidates = await memberNavigationCandidates(account, manifests,
+      resolveModuleAccess(assigned.length ? assigned : fallbackModuleAccess(account), manifests));
+    const target = candidates.find(({ app, section }) => app === req.params.app && section === req.params.section);
+    if (!target) return unavailable();
+
+    const status = async () => {
+      const value = readMemberAreaStatus(await moduleServicesRegistry.invokeMemberArea(target.app, account.id, "status"));
+      return value?.sections.includes(target.section) ? value : null;
+    };
+    let current = await status();
+    if (!current) return unavailable();
+    if (req.method === "POST") {
+      const language = req.body?.language ?? "de";
+      if (req.body?.acknowledged !== true || typeof req.body?.version !== "string"
+        || !(language === "de" || (language === "en" && current.privacy.translations?.en))) {
+        return res.status(400).json({ code: "MEMBER_AREA_ACKNOWLEDGEMENT_INVALID" });
+      }
+      if (req.body.version !== current.privacy.version) {
+        return res.status(409).json({ code: "MEMBER_AREA_NOTICE_CHANGED" });
+      }
+      if (!current.privacy.acknowledged) {
+        await moduleServicesRegistry.invokeMemberArea(target.app, account.id, "confirmPrivacy", { version: current.privacy.version, language });
+        current = await status();
+        if (!current) return unavailable();
+      }
+    }
+    return res.json({ privacy: current.privacy });
+  } catch (error) {
+    const failure = error as { code?: string; statusCode?: number };
+    if (failure?.code === "MEMBER_AREA_UNAVAILABLE") return unavailable();
+    if (failure?.statusCode === 409 && req.method === "POST") {
+      return res.status(409).json({ code: "MEMBER_AREA_NOTICE_CHANGED" });
+    }
+    return res.status(503).json({ code: "MEMBER_AREA_CHECK_FAILED", message: "Der Status für diesen Menüpunkt konnte nicht geprüft werden." });
+  }
+}
 
 async function shellHandler(req: any, res: any) {
   try {

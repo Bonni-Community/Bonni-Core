@@ -44,6 +44,9 @@ function roleLabel(user, shell) {
 }
 
 function PanelIcon({ kind }) {
+  if (kind === "members") {
+    return <path d="M9 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8ZM2 21v-2a4 4 0 0 1 4-4h6a4 4 0 0 1 4 4v2m2-17a4 4 0 0 1 0 8m4 9v-2a4 4 0 0 0-3-4" />;
+  }
   if (kind === "index") {
     return <path d="M4 4h6v6H4zM14 4h6v6h-6zM4 14h6v6H4zM14 14h6v6h-6z" />;
   }
@@ -74,7 +77,7 @@ function MenuIcon({ kind }) {
   );
 }
 
-export default function UserPanel({ user, shell, onOpenIndex, onOpenMySettings, onOpenMyDocuments, onLogout }) {
+export default function UserPanel({ user, shell, onOpenIndex, onOpenMembers, onOpenMySettings, onOpenMyDocuments, onLogout }) {
   const [open, setOpen] = useState(false);
   const panelRef = useRef(null);
   const buttonRef = useRef(null);
@@ -167,6 +170,12 @@ export default function UserPanel({ user, shell, onOpenIndex, onOpenMySettings, 
             <button type="button" role="menuitem" onClick={() => run(onOpenIndex)}>
               <MenuIcon kind="index" />
               <span>Bonni Core</span>
+            </button>
+          ) : null}
+          {onOpenMembers ? (
+            <button type="button" role="menuitem" onClick={() => run(onOpenMembers)}>
+              <MenuIcon kind="members" />
+              <span>Mitglieder</span>
             </button>
           ) : null}
           <button type="button" role="menuitem" onClick={() => run(onOpenMySettings)}>

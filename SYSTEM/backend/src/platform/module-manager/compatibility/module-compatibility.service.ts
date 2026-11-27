@@ -37,6 +37,11 @@ export type ModuleCompatibilityResult = {
 const CORE_CAPABILITIES = new Set([
   "core.auth",
   "core.hub-products",
+  "core.hub-tree",
+  "core.hub-tree-provider",
+  "core.hub-inventory",
+  "core.hub-inventory-management",
+  "core.hub-inventory-provider",
   "core.hub-provider",
   "core.permissions",
   "core.event-bus",
@@ -213,7 +218,7 @@ export function evaluateModuleCompatibility(
   });
 
   if (requiresHub && (!hubPolicy.installed || (options.requireDependenciesEnabled && !hubPolicy.enabled))) {
-    reasons.push("Ab zwei aktiven Apps mit Hub-Schnittstelle ist Hub erforderlich. Bitte Hub installieren und aktivieren.");
+    reasons.push("Ab zwei installierten Lager-Apps mit Hub-Schnittstelle ist Hub erforderlich. Bitte Hub installieren und aktivieren.");
   }
   const dependenciesCompatible = dependencies.every((dependency) => dependency.satisfied);
   for (const dependency of dependencies.filter((entry) => !entry.satisfied)) {

@@ -1,6 +1,7 @@
 import {getVerifiedRequestIdentity,type RequestIdentity} from '../../platform/auth/request-identity/request-identity-context.js';
 
 export const MODULE_SERVICES_VERSION = 'bonni.module-services/v1' as const;
+export const MEMBER_AREA_SERVICE = { id: 'memberArea', version: 'bonni.member-area/v1' } as const;
 /** Match the Core SYSTEM_ADMIN gate on verified, personal identities; never use role display labels. */
 function canAdministerSystem(actor:RequestIdentity):boolean {
   if(actor.type!=='ADMIN' && actor.type!=='MEMBER')return false;
@@ -48,6 +49,31 @@ export function createModuleServicesRegistry(options: {connectionState?: (provid
   type Slot={module:string; offer:Offer; provider:ModuleServiceProvider; active:boolean};
   const active=new Map<string,Slot>();
   return Object.freeze({
+    /** Host-only. The auth routes supply the account from the verified session. */
+    async invokeMemberArea(
+      module: string,
+      accountId: string,
+      operation: 'status' | 'confirmPrivacy',
+      input: { version: string; language?: "de" | "en" } | Record<string, never> = {},
+    ) {
+      if (!moduleId(module) || !module.startsWith('app.') || !accountId
+        || !['status', 'confirmPrivacy'].includes(operation)) throw issue('MEMBER_AREA_OPERATION_DENIED',403);
+      const key = module + ':' + MEMBER_AREA_SERVICE.id;
+      const target = active.get(key);
+      if (!target?.active || target.offer.version !== MEMBER_AREA_SERVICE.version
+        || !target.offer.operations.includes(operation)) throw issue('MEMBER_AREA_UNAVAILABLE',404);
+      const context: ModuleServiceContext = Object.freeze({
+        sourceModule: 'core.member-area',
+        actorAccountId: accountId,
+        assertActive() {
+          if (!target.active || active.get(key) !== target) throw issue('MEMBER_AREA_UNAVAILABLE',404);
+        },
+      });
+      context.assertActive();
+      const result = await target.provider.invoke(operation, structuredClone(input), context);
+      context.assertActive();
+      return structuredClone(result);
+    },
     /** Host scheduler only; absent from every module runtime capability. */
     async cycleAccountErasure(module:string, operation:string, subject:unknown, approvedBy:string, retention?:import('../../platform/auth/users/erasure-retention-vault.js').RetentionBridge){
       if(!moduleId(module)||!['freeze','inspect','erase','verify','retentionPreview'].includes(operation)||!approvedBy)throw issue('ERASURE_OPERATION_DENIED',403);

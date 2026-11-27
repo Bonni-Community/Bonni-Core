@@ -86,6 +86,8 @@ export function FeatureModuleFrame({
   onBack,
   onOpenControlCenter,
   onOpenMySettings,
+  onOpenMembers,
+  memberSection,
   transport,
   rpcContract,
   sandboxCapabilities,
@@ -117,6 +119,7 @@ export function FeatureModuleFrame({
     branding,
     activeWorkspace,
     allowedWorkspaces,
+    memberSection,
   };
   actionHandlersRef.current = {
     onChangeWorkspace,
@@ -124,6 +127,7 @@ export function FeatureModuleFrame({
     onBack,
     onOpenControlCenter,
     onOpenMySettings,
+    onOpenMembers,
   };
 
   function postToFrame(message) {
@@ -146,6 +150,8 @@ export function FeatureModuleFrame({
           branding: current.branding,
           activeWorkspace: current.activeWorkspace,
           allowedWorkspaces: current.allowedWorkspaces,
+          memberSection: current.memberSection,
+          canOpenMembers: Boolean(actionHandlersRef.current?.onOpenMembers),
         })
       : {
           token: current.token,
@@ -154,6 +160,8 @@ export function FeatureModuleFrame({
           branding: current.branding,
           activeWorkspace: current.activeWorkspace,
           allowedWorkspaces: current.allowedWorkspaces,
+          memberSection: current.memberSection,
+          canOpenMembers: Boolean(actionHandlersRef.current?.onOpenMembers),
         };
     const signature = JSON.stringify(payload);
 
@@ -255,6 +263,7 @@ export function FeatureModuleFrame({
       if (action === "back") handlers.onBack?.();
       if (action === "open-control-center") handlers.onOpenControlCenter?.();
       if (action === "open-my-settings") handlers.onOpenMySettings?.();
+      if (action === "open-members") handlers.onOpenMembers?.();
       if (action === "change-workspace") handlers.onChangeWorkspace?.(data?.payload?.workspace);
       if (opaqueRpc && action === "navigate") {
         const target = normalizeSameOriginNavigationUrl(data?.payload?.url, window.location.origin);
@@ -374,7 +383,7 @@ export function FeatureModuleFrame({
 
   useEffect(() => {
     sendContext();
-  }, [token, user, shell, branding, activeWorkspace, allowedWorkspaces]);
+  }, [token, user, shell, branding, activeWorkspace, allowedWorkspaces, memberSection, onOpenMembers]);
 
   if (!opaqueEntryAllowed) {
     return <div style={{ padding: 24 }}>Das abgesicherte Modul darf nur aus Bonni Core selbst geladen werden.</div>;
@@ -387,7 +396,7 @@ export function FeatureModuleFrame({
       src={entryUrl.href}
       title={moduleId}
       onLoad={opaqueRpc ? probeOpaqueFrame : () => sendContext({ force: true })}
-      style={{ display: "block", width: "100%", minHeight: "100vh", border: 0 }}
+      style={{ display: "block", width: "100%", minHeight: memberSection ? 0 : "100vh", border: 0 }}
       sandbox={opaqueRpc ? opaqueSandbox : "allow-scripts allow-same-origin allow-forms allow-downloads"}
       referrerPolicy={opaqueRpc ? "same-origin" : undefined}
     />
@@ -522,6 +531,8 @@ export default function FeatureModuleHost({
           onBack={onBack}
           onOpenControlCenter={onOpenControlCenter}
           onOpenMySettings={onOpenMySettings}
+          onOpenMembers={moduleProps.onOpenMembers}
+          memberSection={moduleProps.memberSection}
           transport={transport}
           rpcContract={rpcContract}
           sandboxCapabilities={sandboxCapabilities}

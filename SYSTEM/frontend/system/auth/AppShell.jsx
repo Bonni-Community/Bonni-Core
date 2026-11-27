@@ -3,6 +3,9 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import useSession from "./useSession.js";
 import LoginView from "./LoginView.jsx";
 import BonniCoreIndex from "./BonniCoreIndex.jsx";
+import MemberArea from "./MemberArea.jsx";
+import MemberPrivacyGate from "./MemberPrivacyGate.jsx";
+import { canOpenMembers, getMemberNavigation } from "./memberNavigation.js";
 import ControlCenter from "../../platform/control-center/ControlCenter.jsx";
 import FeatureModuleHost from "../feature-modules/FeatureModuleHost.jsx";
 import {setMediaUploadSession} from "../feature-modules/moduleMediaQueue.ts";
@@ -104,6 +107,7 @@ export default function AppShell() {
     user,
     shell,
     shellLoading,
+    reloadShell,
     loginName,
     password,
     twoFactorChallenge,
@@ -148,6 +152,10 @@ export default function AppShell() {
   const [activeTarget, setActiveTarget] = useState(() => (
     getInitialActiveTarget(window.location.pathname, launchTarget)
   ));
+  const [memberSection, setMemberSection] = useState(null);
+  const memberAreaAllowed = canOpenMembers(user, shell);
+  const memberNavigation = getMemberNavigation(user, shell);
+  const selectedMemberEntry = memberNavigation.find((item) => item.key === memberSection);
   const [settingsOpen, setSettingsOpen] = useState(() => window.location.pathname === "/my-settings");
   const settingsVisible = authenticated && settingsOpen;
   const documentsReturnTargetRef = useRef(launchTarget || "home");
@@ -165,10 +173,12 @@ export default function AppShell() {
   useEffect(() => {
     if (initialRouteIntentRef.current) return;
     setActiveTarget((current) => (
-      current === "my-documents" ? current : launchTarget
+      current === "my-documents" || (current === "members" && (!user || memberAreaAllowed)) ? current : launchTarget
     ));
     if (launchWorkspace) setActiveArea(launchWorkspace);
-  }, [launchTarget, launchWorkspace, user?.accountId, user?.id]);
+  }, [launchTarget, launchWorkspace, memberAreaAllowed, user?.accountId, user?.id]);
+
+  useEffect(() => setMemberSection(null), [user?.accountId, user?.id]);
 
   useEffect(() => {
     const intent = initialRouteIntentRef.current;
@@ -221,6 +231,14 @@ export default function AppShell() {
     window.history.replaceState(null, "", "/");
   }
 
+  function openMembers() {
+    if (!memberAreaAllowed) return;
+    setMemberSection(null);
+    setActiveTarget("members");
+    window.history.replaceState(null, "", "/members");
+    void reloadShell(token, user);
+  }
+
   function openTarget(target) {
     const normalized = normalizeLaunchTarget(target);
     if (!normalized || !canOpenLaunchTarget(normalized, user, shell)) {
@@ -247,6 +265,8 @@ export default function AppShell() {
       window.history.replaceState(null, "", `/#${activeTarget}`);
     } else if (activeTarget === "my-documents") {
       window.history.replaceState(null, "", "/my-documents");
+    } else if (activeTarget === "members" && memberAreaAllowed) {
+      window.history.replaceState(null, "", "/members");
     } else {
       window.history.replaceState(null, "", "/");
     }
@@ -273,6 +293,11 @@ export default function AppShell() {
     }
     if (target.startsWith("app.") && canOpenLaunchTarget(target, user, shell)) {
       openTarget(target);
+      return;
+    }
+    if (target === "members" && memberAreaAllowed) {
+      setActiveTarget("members");
+      window.history.replaceState(null, "", "/members");
       return;
     }
     openMainMenu();
@@ -303,6 +328,32 @@ export default function AppShell() {
     content = <div style={{ padding: 24 }}>Update-Berechtigung wird geprüft...</div>;
   } else if (activeTarget === "my-documents") {
     content = <ExplorerPage token={token} personalOnly onBack={closeMyDocuments} />;
+  } else if (activeTarget === "members" && memberAreaAllowed) {
+    content = (
+      <MemberArea user={user} shell={shell} navigation={memberNavigation} selected={selectedMemberEntry}
+        onSelect={setMemberSection} onOpenIndex={openMainMenu} onOpenMySettings={openMySettings}
+        onOpenMyDocuments={openMyDocuments} onLogout={logout}>
+        {selectedMemberEntry ? (
+          <MemberPrivacyGate key={`${user.accountId || user.id}:${selectedMemberEntry.key}`} token={token} entry={selectedMemberEntry}
+            onUnavailable={() => reloadShell(token, user)}>
+            <FeatureModuleHost
+              moduleId={selectedMemberEntry.app}
+              memberSection={selectedMemberEntry.section}
+              token={token}
+              user={user}
+              shell={shell}
+              branding={branding}
+              activeWorkspace={getWorkspaceForLaunchTarget(selectedMemberEntry.app, user, shell)}
+              allowedWorkspaces={allowedWorkspaces}
+              onLogout={logout}
+              onBack={openMembers}
+              onOpenMembers={openMembers}
+              onOpenMySettings={openMySettings}
+            />
+          </MemberPrivacyGate>
+        ) : null}
+      </MemberArea>
+    );
   } else if (activeTarget === "control-center" && controlCenterAllowed) {
     content = (
       <ControlCenter
@@ -334,6 +385,7 @@ export default function AppShell() {
         onLogout={logout}
         fallbackRoute={activeTarget}
         onBack={openMainMenu}
+        onOpenMembers={memberAreaAllowed ? openMembers : undefined}
         onOpenControlCenter={controlCenterAllowed ? openControlCenter : undefined}
         onOpenMySettings={openMySettings}
       />
@@ -344,6 +396,7 @@ export default function AppShell() {
         user={user}
         shell={shell}
         onOpenTarget={openTarget}
+        onOpenMembers={memberAreaAllowed ? openMembers : undefined}
         onOpenControlCenter={openControlCenter}
         onOpenMySettings={openMySettings}
         onOpenMyDocuments={openMyDocuments}

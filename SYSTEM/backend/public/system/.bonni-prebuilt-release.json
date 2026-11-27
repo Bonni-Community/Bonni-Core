@@ -1,6 +1,6 @@
 {
   "schemaVersion": "bonni.prebuilt-frontend/v1",
-  "coreVersion": "0.1.20+h-DEV.75",
+  "coreVersion": "0.1.21+a-DEV.2",
   "files": [
     {
       "path": "assets/barkeeper-DW36THA2.jpg",
@@ -28,14 +28,14 @@
       "sha256": "4d38343f9b794cff59c171643dd5c40697feca81ef4a1c6a796b097523416bbd"
     },
     {
-      "path": "assets/index-B1zugbRm.css",
-      "bytes": 323837,
-      "sha256": "a5f6d7c5049d90f7ea6f318e1b8b5132c5baa22f09535f041d8369571682cfb2"
+      "path": "assets/index-BUPQBBjv.js",
+      "bytes": 1099150,
+      "sha256": "557d99303e762dfd66ef4dd76203cb9b48535ffef89a9858eca990918168cb5b"
     },
     {
-      "path": "assets/index-DjFPUF2b.js",
-      "bytes": 1077267,
-      "sha256": "5cea3cf53b4b40f32e525d17c6395a6da3c4e0ef8826a9dd2cf68c2b0e5c6e16"
+      "path": "assets/index-CvzdBQ1K.css",
+      "bytes": 329025,
+      "sha256": "c67a6f79dea8ccfe5ef673b4d5771528aa101c37cbded961b88c531d71c158ee"
     },
     {
       "path": "assets/kassenbuch-BGUyWM8c.jpg",
@@ -59,8 +59,8 @@
     },
     {
       "path": "index.html",
-      "bytes": 437,
-      "sha256": "51e00b2891cdb4887ae316468e0fb0313d142ed7899fbf8155030a52f71a29b9"
+      "bytes": 435,
+      "sha256": "c9a91c16e597b3f8d42125b2a68047fb24ac3216af60e110d8f40d54b81d1014"
     },
     {
       "path": "system/brand/bonni-logo-original.png",
@@ -98,5 +98,5 @@
       "sha256": "2ba1afe1dbe06b792968d00fb47344ec2157ef045102143c9495a0d1c746e21b"
     }
   ],
-  "treeSha256": "ec6622e4b1bb988ad4ac95d3205e6a88a5ea387f9d86023f7b2867685b3f7947"
+  "treeSha256": "13d6f60c95b71a1daffe099b58661d6ef73009c6440a888aca525a7acef9a034"
 }

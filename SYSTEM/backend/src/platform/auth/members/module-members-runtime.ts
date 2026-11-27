@@ -69,6 +69,7 @@ type PrismaLike = {
 };
 
 type ModuleMembersRuntimeOptions = {
+  inventoryProfilePermissions?: Record<string, string[]>;
   memberDevicesEnabled?: boolean;
   prisma?: PrismaLike;
   moduleLabel?: string;
@@ -494,6 +495,7 @@ async function ensureProfileAccess(
   moduleKey: string,
   moduleLabel: string,
   profile: ModuleAccessProfile,
+  inventoryGrants: readonly string[] = [],
 ) {
   const roleKey = canonicalRoleKey(moduleKey, profile.key);
   const permissionKey = canonicalPermissionKey(moduleKey, profile.key);
@@ -521,6 +523,10 @@ async function ensureProfileAccess(
       permissionId: permission.id,
     },
   });
+  for (const key of inventoryGrants) {
+    const grant = await transaction.permission.upsert({where:{key},create:{key,label:key},update:{}});
+    await transaction.rolePermission.upsert({where:{roleId_permissionId:{roleId:role.id,permissionId:grant.id}},create:{roleId:role.id,permissionId:grant.id},update:{}});
+  }
   return role;
 }
 
@@ -913,6 +919,7 @@ export function createModuleMembersRuntime(
             moduleKey,
             moduleLabel,
             defaultProfile,
+            options.inventoryProfilePermissions?.[defaultProfile.key],
           );
           await transaction.accountRole.upsert({
             where: {
@@ -1072,6 +1079,7 @@ export function createModuleMembersRuntime(
             moduleKey,
             moduleLabel,
             profile,
+            options.inventoryProfilePermissions?.[profile.key],
           );
           await transaction.accountRole.upsert({
             where: {
@@ -1294,6 +1302,7 @@ export function createModuleMembersRuntime(
             moduleKey,
             moduleLabel,
             profile,
+            options.inventoryProfilePermissions?.[profile.key],
           );
           await transaction.accountRole.upsert({
             where: {

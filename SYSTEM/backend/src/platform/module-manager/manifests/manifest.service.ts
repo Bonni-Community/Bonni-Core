@@ -1,5 +1,7 @@
-import {validateModuleServicesManifest} from '../../../core/module-services/module-services-runtime.js';
+import {MEMBER_AREA_SERVICE, validateModuleServicesManifest} from '../../../core/module-services/module-services-runtime.js';
+import {validateHubInventoryManifest} from "../../../core/hub/hub-inventory-registry.js";
 import { isValidModuleVersion } from "../compatibility/module-version.js";
+import { validateHubTreeManifest } from "../../../core/hub/hub-tree-registry.js";
 import { validateHubManifest } from "../../../core/hub/hub-products-registry.js";
 import { existsSync, promises as fs } from "node:fs";
 import path from "node:path";
@@ -10,6 +12,7 @@ import { normalizeDeclaredModuleTerminalAccounts } from "../../auth/terminal-acc
 import { validateCoreVersionCompatibility } from "../compatibility/module-version.js";
 import { loadModuleRpcContract, validateModuleRpcContract } from "./module-rpc-contract.js";
 import { parseStaticTypeScriptManifest } from "./static-manifest-parser.js";
+import { validMemberNavigation } from "./member-navigation.js";
 
 const PACKAGE_ROOTS: Array<{ kind: ModuleKind; directories: string[] }> = [
   { kind: "app", directories: ["app", "apps"] },
@@ -417,6 +420,8 @@ export function validateModuleManifest(manifest: any) {
   }
 
   errors.push(...validateHubManifest(manifest));
+  errors.push(...validateHubTreeManifest(manifest));
+  errors.push(...validateHubInventoryManifest(manifest));
   errors.push(...validateModuleServicesManifest(manifest));
 
   if (manifest.permissions !== undefined) {
@@ -505,7 +510,7 @@ export function validateModuleManifest(manifest: any) {
         } else if (
           database.mode === "scoped-v1"
           && !isDatabaseLessPrivacyIdeaCompatibility
-          && !["hocket", "kontor", "meet", "stueberl", "pos", "hub", "gourmet", "capture", "paypal"].includes(String(database.domain || ""))
+          && !["hocket", "kontor", "meet", "stueberl", "pos", "hub", "gourmet", "capture", "paypal", "works"].includes(String(database.domain || ""))
         ) {
           errors.push("metadata.database.domain ist ungültig.");
         } else if (database.mode === "scoped-v1" && (
@@ -531,6 +536,24 @@ export function validateModuleManifest(manifest: any) {
             ||Object.keys(upgrade).some(field=>!['schema','file','sha256'].includes(field))) {
             errors.push('metadata.database.schemaUpgrade ist ungültig.');
           }
+        }
+      }
+
+      if (manifest.metadata.memberNavigation !== undefined && (
+        kind !== "app" || !validMemberNavigation(manifest.metadata.memberNavigation)
+      )) {
+        errors.push("metadata.memberNavigation ist ungültig.");
+      }
+
+      if (Array.isArray(manifest.metadata.memberNavigation) && manifest.metadata.memberNavigation.length) {
+        const offered = manifest.metadata.moduleServices?.provides;
+        const service = Array.isArray(offered) && offered.find((candidate: any) => (
+          candidate?.id === MEMBER_AREA_SERVICE.id && candidate?.version === MEMBER_AREA_SERVICE.version
+        ));
+        if (!Array.isArray(service?.operations) || !["status", "confirmPrivacy"].every((operation) => (
+          service.operations.includes(operation)
+        ))) {
+          errors.push("metadata.memberNavigation benötigt den Moduldienst bonni.member-area/v1.");
         }
       }
 

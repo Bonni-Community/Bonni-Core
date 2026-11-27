@@ -65,7 +65,7 @@ export function getDataDomainJsonNulls(domain: DataDomain): DatabaseJsonNulls {
 }
 function modelsFor(domain:DataDomain) {return appClients.get(domain)?.models || MODEL_PROPERTIES;}
 export async function registerAppDatabaseClient(domain:DataDomain, constructor:any, models:any[], namespace?: { DbNull: unknown; JsonNull: unknown }) {
-  if(!['stueberl','hocket','kontor','meet','pos'].includes(domain))throw new Error('APP_DATABASE_DOMAIN_DENIED');
+  if(!['stueberl','hocket','kontor','meet','pos','works'].includes(domain))throw new Error('APP_DATABASE_DOMAIN_DENIED');
   if (constructor && (!namespace?.DbNull || !namespace?.JsonNull)) throw new Error('APP_DATABASE_JSON_NULLS_REQUIRED');
   for(const [key,entry] of [...clients])if(key.endsWith(':'+domain)) {
     clients.delete(key);await Promise.allSettled([entry.client.$disconnect(),entry.pool.end()]);

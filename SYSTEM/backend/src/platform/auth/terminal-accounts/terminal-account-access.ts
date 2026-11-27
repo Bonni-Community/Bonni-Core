@@ -30,7 +30,8 @@ export function resolveTerminalAccountAccess(
         // Keep explicit Hub grants from this exact technical role. App access
         // itself, other roles and wildcards never imply a product permission.
         const operations = validateHubManifest(manifest).length === 0 ? manifest.metadata?.hubProducts?.operations || [] : [];
-        const requested = new Set(operations.map(operation => HUB_PRODUCT_OPERATION_PERMISSIONS[operation]));
+        const requested = new Set<string>(operations.map(operation => HUB_PRODUCT_OPERATION_PERMISSIONS[operation]));
+        if(manifest.metadata?.hubInventory){for(const right of ["hub.stock.read","hub.stock.write"]){if((manifest.permissions as any)?.requires?.includes(right))requested.add(right);}}
         const productPermissions = assigned.role.permissions.map(({ permission }) => permission.key)
           .filter(key => requested.has(key as typeof HUB_PRODUCT_OPERATION_PERMISSIONS[keyof typeof HUB_PRODUCT_OPERATION_PERMISSIONS]));
         grants.push({ ...declared, moduleKey: manifest.key, workspace: profile.workspace,

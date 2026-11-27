@@ -90,6 +90,7 @@ async function ensureManagedAccess(
   transaction: any,
   ownerLabel: string,
   definition: NormalizedModuleTechnicalAccountDeclaration,
+  inventoryGrants: readonly string[] = [],
 ) {
   const permission = await transaction.permission.upsert({
     where: { key: definition.permissionKey },
@@ -121,6 +122,10 @@ async function ensureManagedAccess(
       permissionId: permission.id,
     },
   });
+  for (const key of inventoryGrants) {
+    const grant = await transaction.permission.upsert({where:{key},create:{key,label:key},update:{}});
+    await transaction.rolePermission.upsert({where:{roleId_permissionId:{roleId:role.id,permissionId:grant.id}},create:{roleId:role.id,permissionId:grant.id},update:{}});
+  }
   return role;
 }
 
@@ -128,6 +133,7 @@ async function reconcileOneDeclaredAccount(
   transaction: any,
   ownerLabel: string,
   definition: NormalizedModuleTechnicalAccountDeclaration,
+  inventoryGrants: readonly string[] = [],
 ): Promise<DeclaredTerminalAccountReconciliation> {
   const account = await transaction.account.findUnique({
     where: { loginName: definition.loginName },
@@ -149,7 +155,7 @@ async function reconcileOneDeclaredAccount(
       throw new TerminalAccountConflict("TERMINAL_ACCOUNT_LOGIN_CONFLICT", account.id);
     }
 
-    const role = await ensureManagedAccess(transaction, ownerLabel, definition);
+    const role = await ensureManagedAccess(transaction, ownerLabel, definition, inventoryGrants);
     const roleAdded = !hasCanonicalProof;
     await transaction.accountRole.upsert({
       where: {
@@ -209,7 +215,7 @@ async function reconcileOneDeclaredAccount(
     throw new Error("TERMINAL_ACCOUNT_LOCAL_PROVIDER_INVALID");
   }
 
-  const role = await ensureManagedAccess(transaction, ownerLabel, definition);
+  const role = await ensureManagedAccess(transaction, ownerLabel, definition, inventoryGrants);
   const created = await transaction.account.create({
     data: {
       type: AccountType.TERMINAL,
@@ -317,6 +323,7 @@ async function reconcileNormalizedDeclarations(
   ownerModule: string,
   ownerLabel: string,
   declarations: readonly NormalizedModuleTechnicalAccountDeclaration[],
+  inventoryProfilePermissions: Record<string, readonly string[]> = {},
 ) {
   if (!prisma || typeof prisma.$transaction !== "function") {
     throw new Error("TERMINAL_ACCOUNT_DATABASE_REQUIRED");
@@ -327,7 +334,7 @@ async function reconcileNormalizedDeclarations(
     let result: DeclaredTerminalAccountReconciliation;
     try {
       result = await prisma.$transaction((transaction) => (
-        reconcileOneDeclaredAccount(transaction, ownerLabel, definition)
+        reconcileOneDeclaredAccount(transaction, ownerLabel, definition, inventoryProfilePermissions[definition.profileKey])
       ));
     } catch (error) {
       if (error instanceof TerminalAccountConflict) {
@@ -383,6 +390,7 @@ export function createModuleTerminalAccountRuntime(
   ownerModuleValue: string,
   ownerLabelValue: string,
   declarationsValue: unknown,
+  inventoryProfilePermissions: Record<string, readonly string[]> = {},
 ) {
   const ownerModule = normalizeTerminalAccountOwner(ownerModuleValue);
   const ownerLabel = moduleLabel(ownerLabelValue, ownerModule);
@@ -400,6 +408,7 @@ export function createModuleTerminalAccountRuntime(
         ownerModule,
         ownerLabel,
         declarations,
+        inventoryProfilePermissions,
       );
     },
   });

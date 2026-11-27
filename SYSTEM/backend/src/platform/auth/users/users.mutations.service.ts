@@ -1,3 +1,4 @@
+import {inventoryProfileGrants} from "../../../core/hub/inventory-profile-grants.js";
 import { assertAccountNotErasing } from "./erasure-write-barrier.js";
 import {
   AccountType,
@@ -104,6 +105,7 @@ type NormalizedModuleAccess = {
   moduleName: string;
   permissions: string[];
   profiles?: ModuleAccessProfile[];
+  inventoryGrants?: Record<string,string[]>;
 };
 
 export class UserMutationError extends Error {
@@ -243,6 +245,7 @@ async function resolveModuleAccessProfiles(
       moduleName: manifest.name,
       permissions: uniqueProfiles.map((profile) => profile.key),
       profiles: uniqueProfiles,
+      inventoryGrants:Object.fromEntries(uniqueProfiles.map(p=>[p.key,inventoryProfileGrants(manifest,p.key)])),
     };
   });
 }
@@ -470,6 +473,10 @@ async function assignModuleAccess(
         create: { accountId, roleId: role.id },
       });
 
+      for(const key of assignment.inventoryGrants?.[permissionKeyPart]||[]){
+        const p=await transaction.permission.upsert({where:{key},create:{key,label:key},update:{}});
+        await transaction.rolePermission.upsert({where:{roleId_permissionId:{roleId:role.id,permissionId:p.id}},create:{roleId:role.id,permissionId:p.id},update:{}});
+      }
       if (!isAdministrator) {
         const permissionKey = profile?.permission || accessPermissionKey(assignment, permissionKeyPart);
         const permission = await transaction.permission.upsert({

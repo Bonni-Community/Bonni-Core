@@ -1,4 +1,5 @@
-import { hubRemovalBlock, createModuleLifecycleQueue } from "../../../core/hub/hub-installation-policy.js";
+import {sharedInventoryRemovalBlock} from "../../../core/hub/shared-inventory-removal.js";
+import { createModuleLifecycleQueue } from "../../../core/hub/hub-installation-policy.js";
 import { evaluateModuleCompatibility } from "../compatibility/index.js";
 import { findModuleManifest, listModuleManifests, validateModuleManifest } from "../manifests/index.js";
 import {
@@ -27,7 +28,7 @@ export async function getModuleInstallPlan(key: string) {
   const activationCompatibility = manifest
     ? evaluateModuleCompatibility(manifest, { installedModules, manifests, requireDependenciesEnabled: true })
     : null;
-  const removalBlock = hubRemovalBlock(key, installedModules);
+  const removalBlock = await sharedInventoryRemovalBlock(key, installedModules);
   const canInstall = Boolean(manifest && validation.ok && compatibility?.ok && manifest.installation?.installable !== false);
 
   return {
@@ -132,7 +133,7 @@ async function activateModulePackageInternal(key: string) {
 
 async function deactivateModulePackageInternal(key: string) {
   const [installedModules, manifests] = await Promise.all([listInstalledModulesStrict(), listModuleManifests()]);
-  const removalBlock = hubRemovalBlock(key, installedModules, manifests);
+  const removalBlock = await sharedInventoryRemovalBlock(key, installedModules, manifests);
   if (removalBlock) return removalBlock;
   const module = await findInstalledModule(key);
   if (!module) return { ok: false, error: "MODULE_NOT_INSTALLED", key };
@@ -143,7 +144,7 @@ async function deactivateModulePackageInternal(key: string) {
 
 async function uninstallModulePackageInternal(key: string) {
   const [installedModules, manifests] = await Promise.all([listInstalledModulesStrict(), listModuleManifests()]);
-  const removalBlock = hubRemovalBlock(key, installedModules, manifests);
+  const removalBlock = await sharedInventoryRemovalBlock(key, installedModules, manifests);
   if (removalBlock) return removalBlock;
   const module = await findInstalledModule(key);
   if (!module) return { ok: false, error: "MODULE_NOT_INSTALLED", key };
@@ -153,7 +154,7 @@ async function uninstallModulePackageInternal(key: string) {
 }
 
 async function deleteModulePackageInternal(key: string) {
-  const removalBlock = hubRemovalBlock(key, await listInstalledModulesStrict());
+  const removalBlock = await sharedInventoryRemovalBlock(key, await listInstalledModulesStrict());
   if (removalBlock) return removalBlock;
   const module = await findInstalledModule(key);
   if (!module) return { ok: false, error: "MODULE_NOT_INSTALLED", key };

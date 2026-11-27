@@ -78,4 +78,4 @@ export type HubProductsClient = {
 };
 export type ProductCallContext = Readonly<{ sourceInstanceId: string; sourceModule: string; actorAccountId: string; assertActive(): void }>;
 export type HubProductsProvider = { contractVersion: typeof HUB_PRODUCTS_VERSION; invoke(operation: ProductOperation, input: unknown, context: ProductCallContext): Promise<unknown> };
-export type HubProductsProviderRuntime = { readonly contractVersion: typeof HUB_PRODUCTS_VERSION; register(provider: HubProductsProvider): void; publishChange(event: ProductChange): void };
+export type HubProductsProviderRuntime = { readonly contractVersion: typeof HUB_PRODUCTS_VERSION; register(provider: HubProductsProvider): void; publishChange(event: ProductChange): void; publishInvalidation(): void };

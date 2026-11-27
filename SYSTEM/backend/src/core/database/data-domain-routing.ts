@@ -180,6 +180,7 @@ export function getDataDomainConnectionString(
 
   // Hub is a new shared data owner. Never fall back to another domain's or
   // maintenance credentials while its isolated routing is not provisioned.
+  if (domain === "works") throw new Error("WORKS_DATABASE_ROUTING_REQUIRED");
   if (domain === "hub") throw new Error("HUB_DATABASE_ROUTING_REQUIRED");
   if (domain === "gourmet") throw new Error("GOURMET_DATABASE_ROUTING_REQUIRED");
   if (domain === "capture") throw new Error("CAPTURE_DATABASE_ROUTING_REQUIRED");
